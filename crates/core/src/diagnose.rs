@@ -3,7 +3,8 @@
 //!
 //! A report that says "it stopped" and nothing else is one nobody can act
 //! on, and the things that would say why -- the app's log, the crash log,
-//! how the last run ended, what the update was doing -- are scattered over
+//! how the last run ended, how the machine was doing over the last week,
+//! how full its disks are, what the update was doing -- are scattered over
 //! folders a person has no reason to know. So they are put in one zip, here,
 //! when the person asks for it.
 //!
@@ -25,6 +26,8 @@ use regex::Regex;
 /// trouble a person is reporting is
 const LOG_LINES: usize = 4000;
 const CRASH_LINES: usize = 400;
+/// The most of a week's record that goes in, the newest of it
+const WEEK_ROOM: usize = 1024 * 1024;
 
 /// A key in a link (`?t=`, `?token=`, `&key=`, `?pair=`, `?code=`) or in a
 /// header (`X-Token:`), whatever its shape -- this app's own keys are plain
@@ -92,6 +95,14 @@ const USER: &str = "[user]";
 /// The words of a log as they may leave this machine, and how many things
 /// were hidden in them
 pub fn hidden(text: &str, known: &[String]) -> (String, usize) {
+    hidden_lines(text, known, true)
+}
+
+/// [`hidden`], told whether a long line is cut. The app's own record of the
+/// machine (`crate::health`) is written by this program alone, a number and
+/// a file name at a time, and its long lines are the ones that name the
+/// programs behind the trouble: they are kept whole
+fn hidden_lines(text: &str, known: &[String], cut: bool) -> (String, usize) {
     let mut n = 0;
     let mut kept = String::with_capacity(text.len());
     for line in text.lines() {
@@ -102,7 +113,7 @@ pub fn hidden(text: &str, known: &[String]) -> (String, usize) {
                 line = re.replace(&line, format!("${{1}}{LEFT_OUT}")).into_owned();
             }
         }
-        if line.chars().count() > LINE_KEPT {
+        if cut && line.chars().count() > LINE_KEPT {
             n += 1;
             line = line.chars().take(LINE_KEPT).collect::<String>() + " " + LEFT_OUT;
         }
@@ -241,6 +252,139 @@ fn tail(path: &std::path::Path, n: usize) -> Option<String> {
     Some(lines[lines.len().saturating_sub(n)..].join("\n"))
 }
 
+/// The most files counted to say how much the folders hold, all of them
+/// together, and the longest the counting may take: a folder with a million
+/// files is already answered by "more than this"
+const FILES_MOST: u64 = 400_000;
+const COUNT_FOR: std::time::Duration = std::time::Duration::from_secs(8);
+
+/// How much a folder holds on disk: its bytes and files, and whether the
+/// counting was stopped before the end. A second name for something
+/// elsewhere (a link, a junction) is not followed: what is behind it is not
+/// in this folder
+fn folder_size(at: &std::path::Path, left: &mut u64, until: std::time::Instant) -> (u64, u64, bool) {
+    let (mut bytes, mut files) = (0u64, 0u64);
+    let mut todo = vec![at.to_path_buf()];
+    while let Some(dir) = todo.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for e in entries.flatten() {
+            if *left == 0 || std::time::Instant::now() >= until {
+                return (bytes, files, true);
+            }
+            let Ok(kind) = e.file_type() else { continue };
+            if kind.is_symlink() {
+                continue;
+            }
+            if kind.is_dir() {
+                todo.push(e.path());
+            } else if let Ok(m) = e.metadata() {
+                bytes += m.len();
+                files += 1;
+                *left -= 1;
+            }
+        }
+    }
+    (bytes, files, false)
+}
+
+/// What a disk reached over a network is called
+const SHARE: &str = "a network share";
+
+/// The disk a folder is on, as a report may name it: its letter, or that it
+/// is on a network. Never the share's name, which says where somebody works
+fn disk_name(at: &std::path::Path) -> String {
+    let s = at.to_string_lossy();
+    let s = s.strip_prefix(r"\\?\").unwrap_or(&s);
+    let b = s.as_bytes();
+    if b.len() >= 2 && b[1] == b':' && b[0].is_ascii_alphabetic() {
+        return format!("{}:", (b[0] as char).to_ascii_uppercase());
+    }
+    if s.starts_with(r"\\") || s.starts_with("UNC") {
+        return SHARE.into();
+    }
+    "this machine's disk".into()
+}
+
+/// How full the disks are and how much the folders of the desks hold.
+///
+/// A folder is said by a number, not by its name: its name is a project's or
+/// a customer's, and what a report needs is that one of them holds two
+/// hundred gigabytes, not which. The person reading it on their own machine
+/// can tell which by its size
+fn storage() -> String {
+    let size = crate::pressure::size;
+    let mut s = String::new();
+    let mut disks: Vec<(String, u64, u64)> = Vec::new();
+    let mut disk = |at: &std::path::Path| {
+        let name = disk_name(at);
+        if let Some((free, total)) = crate::health::disk_room(at)
+            && !disks.iter().any(|(n, _, t)| *n == name && *t == total)
+        {
+            disks.push((name, free, total));
+        }
+    };
+    disk(&crate::config::root_dir());
+    let mut folders: Vec<(std::path::PathBuf, bool)> = Vec::new();
+    if let Some(cfg) = crate::config::load() {
+        let (desks, _) = cfg.resolve_desks();
+        for d in &desks {
+            for f in &d.folders {
+                // One on another machine is not on these disks
+                if f.host.is_some() {
+                    continue;
+                }
+                // One on a share is named as that and not asked anything:
+                // a share that has stopped answering holds whoever asks
+                if let Some(at) = &f.cwd
+                    && !folders.iter().any(|(p, _)| p == at)
+                {
+                    folders.push((at.clone(), disk_name(at) != SHARE && crate::repo::is_linked(at)));
+                }
+            }
+        }
+    }
+    for (at, _) in &folders {
+        if disk_name(at) != SHARE {
+            disk(at);
+        }
+    }
+    for (name, free, total) in &disks {
+        s.push_str(&format!("disk {name}: {} free of {}\n", size(*free), size(*total)));
+    }
+    let (mut left, until) = (FILES_MOST, std::time::Instant::now() + COUNT_FOR);
+    for (i, (at, linked)) in folders.iter().enumerate() {
+        let kind = if *linked { "a worktree" } else { "a folder" };
+        let on = disk_name(at);
+        if on == SHARE {
+            s.push_str(&format!("folder {}: on {on}, not counted\n", i + 1));
+            continue;
+        }
+        if !at.exists() {
+            s.push_str(&format!("folder {}: {kind} on {on}, not there\n", i + 1));
+            continue;
+        }
+        let (bytes, files, more) = folder_size(at, &mut left, until);
+        let more = if more { "more than " } else { "" };
+        s.push_str(&format!("folder {}: {kind} on {on}, {more}{} in {more}{files} files\n", i + 1, size(bytes)));
+    }
+    s
+}
+
+/// The longest the disks and folders are waited for
+const STORAGE_FOR: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// [`storage`], given up on after `wait`: a disk that has stopped answering
+/// -- a drive letter for a share whose network is gone -- holds whoever asks
+/// it for as long as it likes, and the rest of the report is worth having
+/// without it
+fn storage_within(wait: std::time::Duration) -> String {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let _ = std::thread::Builder::new().name("shikisha-diag-storage".into()).spawn(move || {
+        let _ = tx.send(storage());
+    });
+    rx.recv_timeout(wait).unwrap_or_else(|_| "the disks did not answer in time, and are left out\n".to_string())
+}
+
 /// What this copy is and what it runs on, in a few lines
 fn about() -> String {
     let mut s = String::new();
@@ -285,7 +429,18 @@ fn about() -> String {
 pub fn bundle() -> Result<(String, Vec<u8>, usize)> {
     let known = known_keys();
     let mut hid = 0;
-    let mut files: Vec<(&str, String)> = vec![("about.txt", about())];
+    let mut files: Vec<(&str, String)> = vec![("about.txt", about()), ("storage.txt", storage_within(STORAGE_FOR))];
+    // The records that say when each line was written go in by the week:
+    // what a person reports has often been going on for days
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    for (name, path) in [("health.log", crate::health::file()), ("memory.log", crate::lastexit::memory_notes_file())] {
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            let week = crate::health::recent(&text, now, WEEK_ROOM);
+            if !week.is_empty() {
+                files.push((name, week));
+            }
+        }
+    }
     let logs = crate::config::logs_dir();
     let state = |name: &str| crate::config::state_path(name);
     let sources: [(&str, std::path::PathBuf, usize); 7] = [
@@ -321,7 +476,7 @@ pub fn bundle() -> Result<(String, Vec<u8>, usize)> {
     let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
     let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
     for (name, text) in files {
-        let (text, n) = hidden(&text, &known);
+        let (text, n) = hidden_lines(&text, &known, name != "health.log");
         hid += n;
         zip.start_file(name, opts)?;
         zip.write_all(text.as_bytes())?;
@@ -404,6 +559,59 @@ mod tests {
         std::fs::write(format!("{file}.hidden"), out).unwrap();
     }
 
+    /// A folder's size is what is in it: what a link in it points to is
+    /// somewhere else, and the counting stops where it is told to
+    #[test]
+    fn a_folder_is_counted_without_what_its_links_point_to() {
+        let dir = std::env::temp_dir().join(format!("shikisha-diag-size-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("in/deeper")).unwrap();
+        std::fs::create_dir_all(dir.join("elsewhere")).unwrap();
+        std::fs::write(dir.join("in/a.txt"), [0u8; 100]).unwrap();
+        std::fs::write(dir.join("in/deeper/b.txt"), [0u8; 50]).unwrap();
+        std::fs::write(dir.join("elsewhere/big.bin"), [0u8; 4000]).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(dir.join("elsewhere"), dir.join("in/link")).unwrap();
+        #[cfg(windows)]
+        let _ = std::os::windows::fs::symlink_dir(dir.join("elsewhere"), dir.join("in/link"));
+        let far = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        let mut left = 100;
+        assert_eq!(folder_size(&dir.join("in"), &mut left, far), (150, 2, false));
+        assert_eq!(left, 98);
+        let mut left = 1;
+        let (_, files, more) = folder_size(&dir.join("in"), &mut left, far);
+        assert!(more && files == 1, "the counting went on past what it was allowed");
+        let mut left = 100;
+        assert!(folder_size(&dir.join("in"), &mut left, std::time::Instant::now()).2, "the counting went on past its time");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The app's own record of the machine keeps its long lines, which name
+    /// the programs; any other log's long line is somebody's words
+    #[test]
+    fn the_record_of_the_machine_keeps_its_long_lines() {
+        let long = format!("[pid 1 at 2] cpu 93% | most memory: {}", "msedgewebview2.exe 2.6 GB, ".repeat(20));
+        assert!(long.len() > LINE_KEPT);
+        let (cut, n) = hidden(&long, &[]);
+        assert!(cut.contains(LEFT_OUT) && n == 1, "{cut}");
+        let (whole, n) = hidden_lines(&long, &[], false);
+        assert_eq!(whole.trim_end(), long.trim_end());
+        assert_eq!(n, 0);
+    }
+
+    /// A disk is named by its letter, a share only as a share
+    #[test]
+    fn a_disk_is_named_without_saying_where_a_share_is() {
+        use std::path::Path;
+        assert_eq!(disk_name(Path::new(r"d:\work\shop")), "D:");
+        assert_eq!(disk_name(Path::new(r"\\?\C:\work")), "C:");
+        for share in [r"\\nas01\projects\shop", r"\\?\UNC\nas01\projects\shop"] {
+            let said = disk_name(Path::new(share));
+            assert_eq!(said, "a network share", "{share}");
+        }
+        assert_eq!(disk_name(Path::new("/home/someone/work")), "this machine's disk");
+    }
+
     /// The bundle opens, holds what a report needs, and never a key
     #[test]
     fn the_bundle_is_a_zip_of_what_a_report_needs() {
@@ -413,5 +621,8 @@ mod tests {
         let mut about = String::new();
         std::io::Read::read_to_string(&mut zip.by_name("about.txt").unwrap(), &mut about).unwrap();
         assert!(about.contains(env!("CARGO_PKG_VERSION")), "{about}");
+        let mut storage = String::new();
+        std::io::Read::read_to_string(&mut zip.by_name("storage.txt").unwrap(), &mut storage).unwrap();
+        assert!(storage.contains("disk ") && storage.contains(" free of "), "the disks are not in it: {storage}");
     }
 }

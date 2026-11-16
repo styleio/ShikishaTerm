@@ -113,6 +113,7 @@ pub mod portinfo;
 pub mod pr;
 pub mod prnews;
 pub mod pressure;
+pub mod health;
 pub mod profile;
 pub mod push;
 pub mod pwa;

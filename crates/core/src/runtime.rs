@@ -3342,6 +3342,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
 
     // Something watches that this loop keeps going (`crate::watchdog`)
     crate::watchdog::start();
+    // ...and something writes down how the machine is doing as it does (`crate::health`)
+    crate::health::start();
     loop {
         crate::watchdog::beat(crate::watchdog::Part::Work);
         #[cfg(debug_assertions)]

@@ -78,6 +78,9 @@ impl Part {
 /// When each part last said it is alive, in milliseconds of the machine
 /// being awake. Zero: it has not been watched yet
 static LAST: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
+/// How long each part had gone without answering at the worst look since
+/// this was last taken, in milliseconds (`take_late`)
+static LATE: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
 /// How many dialogs each part is waiting on a person to answer
 static HELD: [AtomicU32; 2] = [AtomicU32::new(0), AtomicU32::new(0)];
 
@@ -102,6 +105,16 @@ fn awake_ms() -> u64 {
         static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
         START.get_or_init(std::time::Instant::now).elapsed().as_millis() as u64 + 1
     }
+}
+
+/// How late each part -- the work part, then the window part -- answered at
+/// the worst look since this was last asked, in milliseconds. A part that is
+/// keeping up is a few milliseconds late (the window as much as the two
+/// seconds between the times it is asked); one that was busy for a while,
+/// short of the time after which it is taken to have stopped, shows here and
+/// nowhere else
+pub fn take_late() -> [u64; 2] {
+    [LATE[0].swap(0, Ordering::SeqCst), LATE[1].swap(0, Ordering::SeqCst)]
 }
 
 /// A part says it is alive, from its own thread
@@ -314,6 +327,7 @@ fn watch() {
                 continue;
             }
             let quiet = Duration::from_millis(now.saturating_sub(last));
+            LATE[i].fetch_max(quiet.as_millis() as u64, Ordering::SeqCst);
             match (&stopped[i], quiet >= HUNG_AFTER) {
                 (None, true) => {
                     // And looked at once more: a dialog opened, or a beat

@@ -3717,20 +3717,30 @@ fn handle(
         // What a bug report carries, made now and handed to the person, never
         // sent anywhere (`crate::diagnose`). How many things were hidden in it
         // goes along, so the page can say to look before attaching it
-        ("GET", "/api/diagnostics") => match crate::diagnose::bundle() {
-            Ok((name, bytes, hid)) => {
-                let cd = format!("attachment; filename=\"{name}\"");
-                let resp = Response::from_data(bytes)
-                    .with_header(Header::from_bytes(&b"Content-Type"[..], &b"application/zip"[..]).unwrap())
-                    .with_header(Header::from_bytes(&b"Content-Disposition"[..], cd.as_bytes()).unwrap())
-                    .with_header(Header::from_bytes(&b"X-Hidden"[..], hid.to_string().as_bytes()).unwrap())
-                    .with_header(Header::from_bytes(&b"X-File-Name"[..], name.as_bytes()).unwrap());
-                req.respond(resp)?;
-            }
-            Err(e) => {
-                req.respond(Response::from_string(format!("{e:#}")).with_status_code(500))?;
-            }
-        },
+        //
+        // Made and answered on a thread of its own: counting the folders, or a
+        // disk that has stopped answering, can take many seconds, and this
+        // server takes one request at a time -- the page would not load or
+        // save anything until the file was ready
+        ("GET", "/api/diagnostics") => {
+            let _ = std::thread::Builder::new().name("shikisha-diagnostics".into()).spawn(move || {
+                let said = match crate::diagnose::bundle() {
+                    Ok((name, bytes, hid)) => {
+                        let cd = format!("attachment; filename=\"{name}\"");
+                        let resp = Response::from_data(bytes)
+                            .with_header(Header::from_bytes(&b"Content-Type"[..], &b"application/zip"[..]).unwrap())
+                            .with_header(Header::from_bytes(&b"Content-Disposition"[..], cd.as_bytes()).unwrap())
+                            .with_header(Header::from_bytes(&b"X-Hidden"[..], hid.to_string().as_bytes()).unwrap())
+                            .with_header(Header::from_bytes(&b"X-File-Name"[..], name.as_bytes()).unwrap());
+                        req.respond(resp)
+                    }
+                    Err(e) => req.respond(Response::from_string(format!("{e:#}")).with_status_code(500)),
+                };
+                if let Err(e) = said {
+                    crate::append_hook_log(&format!("WebUI: {e}"));
+                }
+            });
+        }
         // The durable replay script: css/xpath anchors only, no digest/ref
         // dependency — paste into ▶ run mode or an automation, on any PC.
         // ?run=<id> for a specific run, otherwise the latest. 404 when the
