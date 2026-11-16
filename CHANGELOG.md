@@ -138,6 +138,11 @@ once it reaches its first tagged release.
   still never asked.
 
 ### Fixed
+- **Conversations on a Mac reached over SSH can be searched and read
+  without the bridge.** The commands used in its place asked `stat` and
+  `base64` for options only the Linux ones have, so on a Mac they found
+  nothing. Applying a change from the git panel on such a server had the
+  same trouble on older macOS.
 - **A server that was paused no longer drops every connected app as it
   wakes.** The SHIKISHA bridge on a server counted the time the machine
   slept or was paused as time the apps had said nothing, cut every line

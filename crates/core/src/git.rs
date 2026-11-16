@@ -547,8 +547,9 @@ pub fn far_line(dir: &Path, args: &[&str], input: &[u8], who: &As) -> String {
     let fed = match input.is_empty() {
         true => String::new(),
         false => format!(
-            "printf '%s' {} | base64 -d | ",
-            base64::engine::general_purpose::STANDARD.encode(input)
+            "printf '%s' {} | {} | ",
+            base64::engine::general_purpose::STANDARD.encode(input),
+            crate::elsewhere::sh::UNBASE64
         ),
     };
     format!("cd {} && {fed}{}", sh_word(&dir.to_string_lossy().replace('\\', "/")), words.join(" "))
@@ -2167,7 +2168,7 @@ mod tests {
         let sealed = far_line(Path::new("/srv/p"), &["fetch"], b"", &As::sealed());
         assert_eq!(sealed, "cd /srv/p && GIT_TERMINAL_PROMPT=0 GIT_ASKPASS= GIT_OPTIONAL_LOCKS=0 LANGUAGE=en GIT_SSH_COMMAND=false git -c credential.helper= fetch");
         let fed = far_line(Path::new("/srv/p"), &["apply", "-"], b"@@ -1 +1 @@\n", &As::default());
-        assert_eq!(fed, "cd /srv/p && printf '%s' QEAgLTEgKzEgQEAK | base64 -d | GIT_TERMINAL_PROMPT=0 GIT_ASKPASS= GIT_OPTIONAL_LOCKS=0 LANGUAGE=en git apply -");
+        assert_eq!(fed, "cd /srv/p && printf '%s' QEAgLTEgKzEgQEAK | { base64 -d 2>/dev/null || base64 -D; } | GIT_TERMINAL_PROMPT=0 GIT_ASKPASS= GIT_OPTIONAL_LOCKS=0 LANGUAGE=en git apply -");
     }
 
     /// The machine noted answers for the folder noted, one inside it and the

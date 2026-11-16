@@ -387,12 +387,15 @@ fn far_search_prelude(query: &str) -> String {
     );
     let take = FAR_CANDIDATE_LINES + 1;
     format!(
-        "cd \"$HOME\" 2>/dev/null || exit 0; q=$(printf %s '{q}' | base64 -d); \
+        "cd \"$HOME\" 2>/dev/null || exit 0; q=$(printf %s '{q}' | {unb64}); \
 one() {{ if [ -z \"$q\" ]; then m=''; else \
 m=$(sed -E '{strip}' \"$2\" 2>/dev/null | grep -i -F -m $(($3 + {take})) -e \"$q\" | tail -n +$(($3 + 1)) | head -c {FAR_CANDIDATE_BYTES}); \
 [ -z \"$m\" ] && return 1; fi; \
-printf '@@F %s %s %s %s\\n' \"$1\" \"$(stat -c %Y \"$2\" 2>/dev/null || echo 0)\" \"$3\" \"$2\"; \
-head -c {FOLDER_CAP} \"$2\" | base64 -w0; echo; printf %s \"$m\" | base64 -w0; echo; }}; "
+printf '@@F %s %s %s %s\\n' \"$1\" \"{mtime}\" \"$3\" \"$2\"; \
+head -c {FOLDER_CAP} \"$2\" | {b64}; echo; printf %s \"$m\" | {b64}; echo; }}; ",
+        unb64 = crate::elsewhere::sh::UNBASE64,
+        mtime = crate::elsewhere::sh::mtime("\"$2\""),
+        b64 = crate::elsewhere::sh::BASE64,
     )
 }
 
@@ -683,7 +686,9 @@ fn far_listing(verify: &str) -> Option<String> {
     }
     Some(format!(
         "cd \"$HOME\" 2>/dev/null || exit 0; ls -t {rest} 2>/dev/null | head -n {LOOK_CAP} | while IFS= read -r f; do \
-printf '@@F %s %s\\n' \"$(stat -c %Y \"$f\" 2>/dev/null || echo 0)\" \"$f\"; head -c {FOLDER_CAP} \"$f\" | base64 -w0; echo; done"
+printf '@@F %s %s\\n' \"{mtime}\" \"$f\"; head -c {FOLDER_CAP} \"$f\" | {b64}; echo; done",
+        mtime = crate::elsewhere::sh::mtime("\"$f\""),
+        b64 = crate::elsewhere::sh::BASE64,
     ))
 }
 
@@ -916,7 +921,7 @@ pub fn where_is(program: &str, id: &str, at: Option<&crate::elsewhere::Elsewhere
     use base64::Engine as _;
     let path = crate::reader::locate_far(at, &src.verify, id).ok_or_else(|| t("err.vault.no_record"))?;
     let quoted = crate::worktree::for_a_shell(std::slice::from_ref(&path));
-    let ran = crate::elsewhere::exec(at, &format!("head -c {FOLDER_CAP} {quoted} | base64 -w0"), 60_000)
+    let ran = crate::elsewhere::exec(at, &format!("head -c {FOLDER_CAP} {quoted} | {}", crate::elsewhere::sh::BASE64), 60_000)
         .map_err(|e| format!("{}: {e:#}", t("err.vault.unreadable")))?;
     let head = base64::engine::general_purpose::STANDARD.decode(ran.out.trim()).unwrap_or_default();
     let head = String::from_utf8_lossy(&head);

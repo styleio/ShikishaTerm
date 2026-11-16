@@ -1211,7 +1211,7 @@ fn far_pieces<'a>(at: &'a crate::elsewhere::Elsewhere, path: &str) -> std::io::R
     use base64::Engine as _;
     let err = |e: anyhow::Error| std::io::Error::other(format!("{e:#}"));
     let quoted = crate::worktree::for_a_shell(&[path.to_string()]);
-    let len: u64 = crate::elsewhere::exec(at, &format!("stat -c %s -- {quoted}"), 30_000)
+    let len: u64 = crate::elsewhere::exec(at, &crate::elsewhere::sh::size(&quoted), 30_000)
         .map_err(err)?
         .out
         .trim()
@@ -1220,7 +1220,7 @@ fn far_pieces<'a>(at: &'a crate::elsewhere::Elsewhere, path: &str) -> std::io::R
     Ok((len, Box::new(move |start: u64, n: usize| {
         let ran = crate::elsewhere::exec(
             at,
-            &format!("tail -c +{} -- {quoted} | head -c {n} | base64 -w0", start + 1),
+            &format!("tail -c +{} -- {quoted} | head -c {n} | {}", start + 1, crate::elsewhere::sh::BASE64),
             60_000,
         )
         .map_err(err)?;

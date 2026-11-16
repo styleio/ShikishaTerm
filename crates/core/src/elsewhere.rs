@@ -103,6 +103,61 @@ pub fn files(
     }
 }
 
+/// Pieces of shell for the commands run on another machine, written once so
+/// that they are the same on a Linux server and on a Mac: the two ship
+/// different `stat` and `base64`, and an option one of them does not know
+/// ends the command with nothing read.
+pub mod sh {
+    /// What is piped in, as base64 on one line. (`base64 -w0` is GNU's; a
+    /// Mac's has no `-w` and wraps nothing, GNU's wraps at 76 columns)
+    pub const BASE64: &str = "base64 | tr -d '\\n'";
+    /// What is piped in, back from base64. (`-d` is GNU's and a recent
+    /// Mac's; an older Mac's is `-D`. The first fails on its option before
+    /// it reads anything, so the second still has the input)
+    pub const UNBASE64: &str = "{ base64 -d 2>/dev/null || base64 -D; }";
+
+    /// When a file was last written, in seconds since 1970, or 0. `file` is
+    /// the file as the shell is to read it (a quoted path, a `\"$f\"`)
+    pub fn mtime(file: &str) -> String {
+        format!("$(stat -c %Y {file} 2>/dev/null || stat -f %m {file} 2>/dev/null || echo 0)")
+    }
+
+    /// How many bytes a file holds: the number alone, on both (`wc` on a
+    /// Mac pads it with spaces, which whoever reads it trims)
+    pub fn size(file: &str) -> String {
+        format!("wc -c < {file}")
+    }
+
+    /// The pieces, run by the shell on this machine where there is one: what
+    /// they hand back is what the callers read, whichever `stat` and `base64`
+    /// the machine has
+    #[cfg(all(test, unix))]
+    #[test]
+    fn the_pieces_say_the_same_on_whatever_machine_runs_them() {
+        let dir = std::env::temp_dir().join(format!("shikisha-sh-{}", crate::random_hex(6)));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a b.txt");
+        // Longer than one wrapped line of base64, so a wrap would show
+        let words = "line of words ".repeat(20);
+        std::fs::write(&file, &words).unwrap();
+        let quoted = format!("'{}'", file.display());
+        let run = |script: String| {
+            let out = std::process::Command::new("sh").arg("-c").arg(&script).output().unwrap();
+            assert!(out.status.success(), "{script}: {}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8_lossy(&out.stdout).into_owned()
+        };
+        assert_eq!(run(size(&quoted)).trim().parse::<usize>().unwrap(), words.len());
+        let coded = run(format!("cat {quoted} | {BASE64}"));
+        assert!(!coded.contains('\n'), "the base64 is on more than one line");
+        assert_eq!(run(format!("printf %s {coded} | {UNBASE64}")), words);
+        let when: u64 = run(format!("printf %s \"{}\"", mtime(&quoted))).trim().parse().unwrap();
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        assert!(when > now - 600 && when <= now + 5, "not when the file was written: {when} (now {now})");
+        assert_eq!(run(format!("printf %s \"{}\"", mtime("/no/such/file"))).trim(), "0");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
 /// Run one command on it, and wait for the answer.
 pub fn exec(at: &Elsewhere, command: &str, wait_ms: u64) -> Result<crate::ssh::Ran> {
     match at {
