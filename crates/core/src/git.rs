@@ -2239,11 +2239,11 @@ mod tests {
             ("credential.https://github.com.helper".into(), "!f() { echo 'x y'; }; f".into()),
         ]);
         let mut ask = std::process::Command::new("git");
-        ask.args(["config", "--get", "user.name"]).env("GIT_CONFIG_PARAMETERS", &said);
+        ask.args(["config", "--get", "user.name"]).current_dir(std::env::temp_dir()).env("GIT_CONFIG_PARAMETERS", &said);
         let Ok(out) = crate::detach_console(&mut ask).output() else { return };
         assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "Ada O'Neil");
         let mut ask = std::process::Command::new("git");
-        ask.args(["config", "--get", "credential.https://github.com.helper"]).env("GIT_CONFIG_PARAMETERS", &said);
+        ask.args(["config", "--get", "credential.https://github.com.helper"]).current_dir(std::env::temp_dir()).env("GIT_CONFIG_PARAMETERS", &said);
         let out = crate::detach_console(&mut ask).output().unwrap();
         assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "!f() { echo 'x y'; }; f");
         let who = As { name: Some("Ada".into()), email: Some("ada@example.test".into()), ..Default::default() };
