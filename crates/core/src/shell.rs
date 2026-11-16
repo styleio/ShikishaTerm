@@ -16213,7 +16213,16 @@ function drawStrip() {
 // whether the AI is at work, and the keyboard and the phone close tabs too --
 // so this only says which row, and what that row was when it was pressed
 function closeTab(t) {
-  const go = () => send({kind:"closetab", tab:t.index, key:t.key || "", sure:false});
+  const go = () => {
+    // What was unsaved in it goes with it: a tab opened again under the same
+    // name must not bring back what the person just chose to throw away
+    const tab = t.id || t.name;
+    for (const k of Array.from(edDrafts.keys())) {
+      try { if (JSON.parse(k)[0] === tab) edDrafts.delete(k); } catch (e) {}
+    }
+    if (ED.key === tab) { ED.dirty = false; ED.outside = false; }
+    send({kind:"closetab", tab:t.index, key:t.key || "", sure:false});
+  };
   // An editor tab with typing in it that was never saved: closing it throws
   // the typing away, and nothing else would say so -- the app knows only
   // that the tab is not busy. Asked here, with the files named
@@ -17654,7 +17663,9 @@ window.__state = function (json) {
   // down in the middle of a sentence is what it spares)
   // ...nor while a line is on its way: its answer would have nowhere to land
   const typing = (castInput && document.activeElement === castInput && castInput.value) || sayFlying > 0;
-  if (S && S.build && BUILD && S.build !== BUILD && !window.__reloading && !typing) {
+  // ...nor with unsaved typing in the editor that could not be written down
+  // to come back (the browser keeps only so much): the page stays as it is
+  if (S && S.build && BUILD && S.build !== BUILD && !window.__reloading && !typing && edDraftsKept()) {
     window.__reloading = true;
     location.reload();
     return;
@@ -18928,16 +18939,30 @@ function edUnsaved(t) {
 // other -- put back when their file is opened, with the mark they were typed
 // against. Too much to write down (the browser keeps a few megabytes) is not
 // written, and nothing else is lost for it
+// Answers whether everything unsaved is written down (true when there is
+// nothing unsaved): a page about to load itself again asks, and stays if not
 function edDraftsKept() {
   try {
+    // The visual editor's last words first: they reach the text a moment
+    // after they are typed, and a page leaving in that moment would write
+    // down the text as it was before them
+    mdRichFlush();
     const all = Array.from(edDrafts.entries());
     if (ED.path && ED.dirty && edAce) {
       all.push([edDraftKey(ED.path), {text: edAce.getValue(), base: ED.text, mark: ED.mark, stamp: ED.stamp,
-        encoding: ED.encoding, exact: ED.exact, encPicked: ED.encPicked}]);
+        encoding: ED.encoding, exact: ED.exact, encPicked: ED.encPicked, folder: edFolderNow()}]);
     }
     if (all.length) sessionStorage.setItem("shikisha_ed_drafts", JSON.stringify(all));
     else sessionStorage.removeItem("shikisha_ed_drafts");
-  } catch (e) {}
+    return true;
+  } catch (e) { return false; }
+}
+// The folder the editor tab on screen edits in. A draft is of a file in a
+// folder: the same tab pointed at another folder has a file of the same
+// name that is another file, and a draft is never put back onto that one
+function edFolderNow() {
+  const t = editorTab();
+  return (t && t.folder) || "";
 }
 try {
   for (const [k, d] of JSON.parse(sessionStorage.getItem("shikisha_ed_drafts") || "[]")) {
@@ -18955,7 +18980,7 @@ function edStash() {
   if (ED.path && ED.dirty && edAce) {
     edDrafts.set(edDraftKey(ED.path),
       {text: edAce.getValue(), base: ED.text, mark: ED.mark, stamp: ED.stamp,
-       encoding: ED.encoding, exact: ED.exact, encPicked: ED.encPicked});
+       encoding: ED.encoding, exact: ED.exact, encPicked: ED.encPicked, folder: edFolderNow()});
   }
   // Nothing of this file is on screen as far as the next read is concerned:
   // what was typed is in the draft now. Left set, a file of the same name in
@@ -19067,8 +19092,11 @@ function editHeard(d) {
     // against, so a save still cannot land on bytes that changed since; and if
     // they did change, that is said the same way as for a file open on screen
     const key = edDraftKey(d.path);
-    const draft = edDrafts.get(key);
+    const kept = edDrafts.get(key);
     edDrafts.delete(key);
+    // Only a draft of this folder's file (one written down before folders
+    // were, with none named, is taken as it was)
+    const draft = kept && (!kept.folder || !edFolderNow() || kept.folder === edFolderNow()) ? kept : null;
     if (draft) {
       ED.outside = draft.mark !== d.mark;
       ED.mark = draft.mark; ED.stamp = draft.stamp; ED.text = draft.base;
@@ -32382,7 +32410,7 @@ function piece(start) {
 const wait = page.match(/const ED_SAVE_WAIT_MS = \d+;/)[0] + page.match(/const ED_PAGE = [^;]+;/)[0];
 const src = [
   "const ED = {", "function edStash() {", "function editHeard(d) {", "function editWrite(opts) {",
-  "function edLineBack() {", "function editReload() {",
+  "function edLineBack() {", "function editReload() {", "function edFolderNow() {",
 ].map(piece).join("") + wait;
 let text = "", rich = null, asks = [];
 const changed = () => { ED.dirty = text !== ED.text; };        // the editor's own change handler
@@ -32394,7 +32422,8 @@ const edAce = {
             getScrollTop: () => 0, setScrollTop() {}},
 };
 const edDrafts = new Map(), edDraftKey = p => JSON.stringify([ED.key, p]), T = {};
-const drawEdit = () => {}, edGotoNow = () => {}, editorTab = () => ({id: "e"});
+let tabFolder = "";
+const drawEdit = () => {}, edGotoNow = () => {}, editorTab = () => ({id: "e", folder: tabFolder});
 const editAsk = (act, args) => asks.push({act, args});
 const edRead = () => editAsk("read", {path: ED.path});
 const mdRichFlush = () => { if (rich !== null) { text = rich; rich = null; changed(); } };
@@ -32461,6 +32490,13 @@ open("A"); type("unsaved in the first tab");
 edStash(); ED.key = "other"; ED.path = "a.md"; ED.loading = true;
 editHeard({act: "read", ok: true, path: "a.md", mark: "n0", text: "the other tab's file"});
 say(text === "the other tab's file" && !ED.dirty && !ED.outside && ED.mark === "n0", "the other tab's file was kept out by the first tab's typing");
+
+// 10. A draft is of a file in a folder: the same tab pointed at another folder has another file
+tabFolder = "/work/a"; open("A"); type("typed in folder a"); edStash();
+tabFolder = "/work/b"; ED.path = "a.md"; ED.loading = true;
+editHeard({act: "read", ok: true, path: "a.md", mark: "m0", text: "folder b's file"});
+say(text === "folder b's file" && !ED.dirty, "a draft of one folder's file was put onto another folder's");
+tabFolder = "";
 "##;
         let page = super::page();
         let dir = std::env::temp_dir();
@@ -32635,7 +32671,7 @@ say(text === "the other tab's file" && !ED.dirty && !ED.outside && ED.mark === "
         // and brings it back when that file is opened again
         let switching = p.find("if (ED.key !== key || (want && want !== ED.path)) {").expect("there is no switch");
         assert!(p[switching..switching + 500].matches("edStash();").count() == 2, "opening another file loses the unsaved changes");
-        assert!(p.contains("const draft = edDrafts.get(key);"), "the unsaved changes do not come back");
+        assert!(p.contains("const kept = edDrafts.get(key);"), "the unsaved changes do not come back");
         // The save carries the mark it was given, so the app can refuse
         assert!(
             p.contains(r#"mark: opts.overwrite ? "" : ED.mark, encoding: opts.encoding || ED.encoding"#),

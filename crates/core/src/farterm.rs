@@ -815,6 +815,8 @@ impl FarTerm {
         change_saved(|all| {
             if let Some(s) = all.iter_mut().find(|s| s.on(&machine) && s.generation == generation && s.term == term) {
                 s.left = run;
+                // Held by this account's bridge, so written under it from now on
+                s.machine = machine.clone();
             }
         });
         crate::append_hook_log(&format!("far terminal {}: let go of, left running ({:?})", self.term(), self.away()));

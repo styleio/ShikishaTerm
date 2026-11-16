@@ -4666,7 +4666,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     }
                     let machine = match &at {
                         crate::elsewhere::Elsewhere::Cloud(h) => h.instance.clone().unwrap_or_else(|| h.name.clone()),
-                        other => other.address(),
+                        // By who signs in: the hook file is in that account's home
+                        other => other.machine_key(),
                     };
                     // Kept per the machine's name in the settings; a machine
                     // reached without an entry is known by its address
@@ -4991,7 +4992,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 // question -- a screen redrawn in the middle
                                 // of one comes back here
                                 let t = &mut tabs[idx - 1];
-                                let lately = t.ask_told_ms.is_some_and(|at| now_ms.saturating_sub(at) < ASK_TOLD_AGAIN_MS);
+                                // (a question after the person typed
+                                // something is another question, however
+                                // soon it comes)
+                                let lately = t.ask_told_ms.is_some_and(|at| {
+                                    now_ms.saturating_sub(at) < ASK_TOLD_AGAIN_MS && t.last_manual_ms.is_none_or(|typed| typed <= at)
+                                });
                                 if let (true, false, Some(dest)) = (t.notify_ask, lately, t.notify_on_done.clone()) {
                                     t.ask_told_ms = Some(now_ms);
                                     let msg = i18n::tp("msg.notify.on_ask", &[("name", &t.title)]);
@@ -11708,7 +11714,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 for f in &d.folders {
                     let Some(host) = f.host.as_ref() else { continue };
                     let Ok(at) = crate::elsewhere::Elsewhere::of(host) else { continue };
-                    let key = format!("{}\u{1f}{}", at.address(), host.instance.as_deref().unwrap_or_default());
+                    let key = format!("{}\u{1f}{}", at.machine_key(), host.instance.as_deref().unwrap_or_default());
                     if seen.contains(&key) {
                         continue;
                     }
@@ -18511,7 +18517,7 @@ fn files_look(
         let listed = match &place {
             FilesAt::Here(root) => crate::files::quick_list(root),
             FilesAt::There { at, root } => {
-                let key = format!("{}\0{root}", at.address());
+                let key = format!("{}\0{root}", at.machine_key());
                 let command = crate::files::far::names_command(root);
                 // Read there once for the few seconds a name is typed in; a
                 // reading that failed is said, and not kept as an empty folder
@@ -18695,7 +18701,9 @@ fn files_there(
                 ssh::FileJob::Write { to, .. } => to.clone(),
                 _ => named(&path),
             };
-            let turn = far_file_turn(&at.machine_key(), &goes_to);
+            // (by the server's address, not by who signs in: two accounts
+            // that can both write a file are writing the same file)
+            let turn = far_file_turn(&at.address(), &goes_to);
             std::thread::spawn(move || {
                 // Looking at the mark and writing are two trips to the
                 // machine. Two saves of one file at once (a page that came

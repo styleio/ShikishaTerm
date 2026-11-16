@@ -82,7 +82,12 @@ fn too_old_for(name: &str) -> Option<(String, String)> {
     let needs = crate::profile::all().into_iter().find(|p| p.name == name)?.resume.as_ref()?.hook.as_ref()?.needs.clone()?;
     let command = crate::profile::files().into_iter().find(|p| p.name == name)?.command_match.first()?.trim().to_string();
     let has = version_said_by(&command)?;
-    (version_of(&has)? < version_of(&needs)?).then_some((has, needs))
+    let old = version_of(&has)? < version_of(&needs)?;
+    if old {
+        // Asked again next time: the answer to "too old" is to update it
+        version_forgotten(&command);
+    }
+    old.then_some((has, needs))
 }
 
 /// The numbers of a version (`2.1.139`), to be compared in order
@@ -103,7 +108,6 @@ fn version_in(said: &str) -> Option<String> {
 /// command while the app runs, and waited for only a few seconds
 #[cfg_attr(test, allow(dead_code))]
 fn version_said_by(command: &str) -> Option<String> {
-    static SAID: std::sync::Mutex<Option<std::collections::HashMap<String, Option<String>>>> = std::sync::Mutex::new(None);
     if let Some(known) = SAID.lock().ok().and_then(|s| s.as_ref().and_then(|m| m.get(command).cloned())) {
         return known;
     }
@@ -129,10 +133,36 @@ fn version_said_by(command: &str) -> Option<String> {
         let _ = child.wait();
         version_in(&said?)
     })();
-    if let Ok(mut s) = SAID.lock() {
+    // Only what was said: a CLI that did not answer this once is asked again
+    if let (Ok(mut s), Some(_)) = (SAID.lock(), &asked) {
         s.get_or_insert_with(Default::default).insert(command.to_string(), asked.clone());
     }
     asked
+}
+
+#[cfg_attr(test, allow(dead_code))]
+fn version_forgotten(command: &str) {
+    if let Ok(mut s) = SAID.lock()
+        && let Some(known) = s.as_mut()
+    {
+        known.remove(command);
+    }
+}
+
+/// What each CLI said its version is, by its command
+static SAID: std::sync::Mutex<Option<std::collections::HashMap<String, Option<String>>>> = std::sync::Mutex::new(None);
+
+/// The same question as [`too_old_for`], asked of the CLI on another machine,
+/// through the shell a person signs in to there (where their PATH is)
+fn far_too_old_for(at: &crate::elsewhere::Elsewhere, name: &str) -> Option<(String, String)> {
+    let needs = crate::profile::all().into_iter().find(|p| p.name == name)?.resume.as_ref()?.hook.as_ref()?.needs.clone()?;
+    let command = crate::profile::files().into_iter().find(|p| p.name == name)?.command_match.first()?.trim().to_string();
+    if !command.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return None;
+    }
+    let said = crate::elsewhere::exec(at, &format!("\"${{SHELL:-sh}}\" -lc '{command} --version' 2>/dev/null"), 20_000).ok()?;
+    let has = version_in(&said.out)?;
+    (version_of(&has)? < version_of(&needs)?).then_some((has, needs))
 }
 
 /// Whether this program was started as a hook by something that dropped the
@@ -153,14 +183,37 @@ pub fn started_as_a_hook_with_no_words() -> bool {
     if std::io::stdin().is_terminal() {
         return false;
     }
-    let (tx, rx) = std::sync::mpsc::channel();
+    // Piece by piece, and judged as soon as what has come is whole: a CLI
+    // may write the event and keep its end of the pipe open while the hook
+    // runs, so the end of the input is not waited for
+    let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
     std::thread::spawn(move || {
-        let mut said = Vec::new();
-        let _ = std::io::stdin().lock().take(1 << 20).read_to_end(&mut said);
-        let _ = tx.send(said);
+        let mut input = std::io::stdin().lock();
+        let mut piece = [0u8; 4096];
+        while let Ok(n) = input.read(&mut piece) {
+            if n == 0 || tx.send(piece[..n].to_vec()).is_err() {
+                break;
+            }
+        }
     });
-    let Ok(said) = rx.recv_timeout(std::time::Duration::from_millis(300)) else { return false };
-    serde_json::from_slice::<serde_json::Value>(&said).is_ok_and(|v| is_a_hooks_event(&v))
+    let until = std::time::Instant::now() + std::time::Duration::from_millis(300);
+    let mut said = Vec::new();
+    loop {
+        let left = until.saturating_duration_since(std::time::Instant::now());
+        match rx.recv_timeout(left) {
+            Ok(piece) => {
+                said.extend(piece);
+                if said.len() > (1 << 20) {
+                    return false;
+                }
+                if serde_json::from_slice::<serde_json::Value>(&said).is_ok_and(|v| is_a_hooks_event(&v)) {
+                    return true;
+                }
+            }
+            // Its end, or nothing more in time: whatever came is all there is
+            Err(_) => return serde_json::from_slice::<serde_json::Value>(&said).is_ok_and(|v| is_a_hooks_event(&v)),
+        }
+    }
 }
 
 /// Whether a piece of JSON is what a CLI hands a hook: an object that names
@@ -1952,6 +2005,12 @@ fn far_swap(at: &crate::elsewhere::Elsewhere, t: &Target, path: &str, base: Opti
 }
 
 fn far_put(at: &crate::elsewhere::Elsewhere, t: &Target, path: &str, existing: Option<&str>) -> Result<(), String> {
+    // Not into the settings of a CLI too old to read it, there as here
+    if let Some((has, needs)) = far_too_old_for(at, &t.name) {
+        let why = crate::i18n::tp("err.hook.cli_too_old", &[("name", &t.name), ("has", &has), ("needs", &needs)]);
+        crate::append_hook_log(&format!("{} on {}: {why}", t.name, at.address()));
+        return Err(why);
+    }
     far_change(at, t, path, existing, &|now| far_edited(t, now), "written")
 }
 
