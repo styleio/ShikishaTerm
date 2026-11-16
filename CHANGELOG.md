@@ -141,6 +141,10 @@ once it reaches its first tagged release.
   another device goes on pressing OK until both ends are this version.
 
 ### Fixed
+- **When the SHIKISHA bridge cannot be put on a server, the reason is
+  said.** A full disk and a home folder that programs may not run from
+  (`noexec`) both ended as "did not run there". Each is now said as what
+  it is, with how much room is needed.
 - **The server gets its browser back after the browser dies.** When the
   server's Chromium crashed or was killed for the memory it used, every
   page opened afterwards failed until the server was restarted; a new one

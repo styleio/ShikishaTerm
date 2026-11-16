@@ -859,12 +859,36 @@ pub fn install(at: &crate::elsewhere::Elsewhere) -> Result<()> {
     let program = format!("{home}/{}", program_name(env!("CARGO_PKG_VERSION")));
     let q = |s: &str| crate::ssh::sh_quote(s);
     crate::elsewhere::exec(at, &format!("mkdir -p {}/bin && chmod 700 {}", q(&home), q(&home)), 30_000)?;
+    // Whether it fits is asked before it is sent, and again if sending
+    // fails: a disk that fills part way through says only that the write
+    // failed, and "not enough room" is the one thing the person can act on
+    let needs = std::fs::metadata(&from).map(|m| m.len()).unwrap_or(0);
+    let no_room = || -> Option<anyhow::Error> {
+        let said = crate::elsewhere::exec(at, &format!("df -Pk {}", q(&home)), 30_000).ok()?;
+        let free = free_bytes(&said.out)?;
+        (free < needs.saturating_add(ROOM_TO_SPARE)).then(|| {
+            anyhow!(crate::i18n::tp(
+                "err.bridge.no_room",
+                &[
+                    ("host", &at.address()),
+                    ("folder", &home),
+                    ("needs", &(needs.saturating_add(ROOM_TO_SPARE) / 1_048_576 + 1).to_string()),
+                    ("free", &(free / 1_048_576).to_string()),
+                ],
+            ))
+        })
+    };
+    if let Some(e) = no_room() {
+        return Err(e);
+    }
     let part = format!("{program}.part");
-    crate::elsewhere::files(
+    if let Err(e) = crate::elsewhere::files(
         at,
         crate::ssh::FileJob::Put { from, to: part.clone(), overwrite: true },
         10 * 60_000,
-    )?;
+    ) {
+        return Err(no_room().unwrap_or(e));
+    }
     let shim = shim(&home, &program);
     let bin = format!("{home}/bin/shikisha");
     let ran = crate::elsewhere::exec(
@@ -880,11 +904,41 @@ pub fn install(at: &crate::elsewhere::Elsewhere) -> Result<()> {
         60_000,
     )?;
     if !ran.out.contains(env!("CARGO_PKG_VERSION")) {
-        bail!("the bridge was put on {} but did not run there: {}", at.address(), ran.err.trim());
+        bail!(not_run(&at.address(), &home, ran.code, ran.err.trim()));
     }
     clear_old_builds(at, &home, &program);
     crate::append_hook_log(&format!("bridge: installed on {}", at.address()));
     Ok(())
+}
+
+/// Room left over after the bridge is written: what it keeps beside itself
+/// (its key, its socket, what it holds for tabs) is small, and a disk left
+/// with nothing fails the next thing anybody does there
+const ROOM_TO_SPARE: u64 = 8 * 1_048_576;
+
+/// How much room `df -Pk` says is left where it was asked about, in bytes.
+/// The last line's fourth column, in kilobytes -- the same on every `df`
+/// asked for the portable form
+fn free_bytes(df: &str) -> Option<u64> {
+    let last = df.lines().rev().find(|l| !l.trim().is_empty())?;
+    let kb: u64 = last.split_whitespace().nth(3)?.parse().ok()?;
+    Some(kb.saturating_mul(1024))
+}
+
+/// Why the bridge, written to the machine, did not answer with its version.
+///
+/// A shell that is refused the running of a file ends with 126, in whatever
+/// language it then says so: the folder is on a disk mounted so that nothing
+/// on it may be run (`noexec`, usual for a home on a hardened or shared
+/// server). That is said as what it is -- it is the machine's setting, the
+/// same answer would come every time, and "it did not run" would send the
+/// person looking at the bridge. Anything else is said in the machine's own
+/// words
+fn not_run(host: &str, folder: &str, code: i32, said: &str) -> String {
+    match code {
+        126 => crate::i18n::tp("err.bridge.noexec", &[("host", host), ("folder", folder)]),
+        _ => crate::i18n::tp("err.bridge.did_not_run", &[("host", host), ("said", said)]),
+    }
 }
 
 /// The tabs' command, `bin/shikisha`: the bridge's own, under the name the
@@ -1338,6 +1392,27 @@ impl Keeper {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Why the bridge could not be put on a machine is said as what the
+    /// person can do about: no room, or a folder nothing may be run from
+    #[test]
+    fn a_bridge_that_cannot_be_installed_says_why() {
+        // What `df -Pk` prints, on Linux and with a long device name that wraps nothing in -P
+        let df = "Filesystem     1024-blocks      Used Available Capacity Mounted on
+/dev/mapper/vg-home  51475068 51470000      5068     100% /home
+";
+        assert_eq!(free_bytes(df), Some(5068 * 1024));
+        assert_eq!(free_bytes(""), None);
+        assert_eq!(free_bytes("df: /nope: No such file or directory
+"), None);
+        // 126 is the shell refused the running of the file, whatever it then said
+        let said = not_run("srv:22", "/home/ada/.shikisha", 126, "sh: 1: /home/ada/.shikisha/shikisha-bridge-1: Permission denied");
+        assert!(said.contains("noexec") && said.contains("/home/ada/.shikisha") && said.contains("srv:22"), "{said}");
+        let said = not_run("srv:22", "/home/ada/.shikisha", 126, "sh: 1: 許可がありません");
+        assert!(said.contains("noexec"), "{said}");
+        // Anything else is said in the machine's own words
+        let said = not_run("srv:22", "/home/ada/.shikisha", 127, "error while loading shared libraries: libc.so.6");
+        assert!(said.contains("libc.so.6") && !said.contains("noexec"), "{said}");
+    }
 
     /// The tabs' command runs the build of the resident process that opened
     /// the tab; without one, the build put there last; without that, any
