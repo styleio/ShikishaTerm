@@ -141,6 +141,10 @@ once it reaches its first tagged release.
   another device goes on pressing OK until both ends are this version.
 
 ### Fixed
+- **The git column follows a commit or checkout typed into a terminal.**
+  It read its folder again only when an AI tab there finished work, so
+  after `git commit` or `git checkout` in a plain terminal it went on
+  showing the folder as it had been.
 - **Stopping a clone, or a git that took too long, stops all of it.** Only
   git itself was ended; the programs it had started -- the one talking to
   the server, the one unpacking -- went on, writing into a folder that

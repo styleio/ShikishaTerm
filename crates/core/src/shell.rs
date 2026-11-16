@@ -27470,6 +27470,15 @@ function gitAfterWork(before) {
   const was = new Map((before.tabs || []).map(x => [x.index, x.state]));
   if ((S.tabs || []).some(x => x.group === t.group && was.get(x.index) === "BUSY" && x.state !== "BUSY")) {
     gitRefresh(true);
+    return;
+  }
+  // ...and a commit, a checkout or a pull typed into a plain terminal there,
+  // which is no tab's "work": the folder's branch, or how far it stands from
+  // its remote, is not what it was (the app reads both off the disk)
+  const stands = g => g ? JSON.stringify([g.folder, g.branch || "", g.drift || null]) : "";
+  if (stands((before.groups || [])[t.group]) !== stands((S.groups || [])[t.group])
+      && ((before.groups || [])[t.group] || {}).folder === ((S.groups || [])[t.group] || {}).folder) {
+    gitRefresh(true);
   }
 }
 // Coming back to the window -- or, on a phone, to the page -- is read again
@@ -32889,6 +32898,63 @@ say(field.value === "nobody", "words typed into one prompt turned up in another"
         match ran {
             Ok(done) => assert!(done.status.success(), "{}", String::from_utf8_lossy(&done.stderr)),
             Err(e) => eprintln!("node is missing, so the question was not driven ({e}). It runs in CI"),
+        }
+    }
+
+    /// The git column reads its folder again when a tab there finishes work,
+    /// and when the folder's branch or its distance from the remote changes
+    /// with no tab at work -- a commit typed into a plain terminal
+    #[test]
+    fn the_git_column_notices_a_commit_typed_into_a_terminal() {
+        const DRIVE: &str = r##"
+const fs = require("fs");
+const page = fs.readFileSync(process.argv[2], "utf8");
+function piece(start) {
+  const at = page.indexOf(start);
+  if (at < 0) throw new Error("not in the page: " + start);
+  let depth = 0, i = page.indexOf("{", at);
+  for (; i < page.length; i++) {
+    if (page[i] === "{") depth++;
+    else if (page[i] === "}" && --depth === 0) break;
+  }
+  return page.slice(at, i + 1) + ";\n";
+}
+let S = null, read = 0;
+const panel = {hidden: false};
+const document = {getElementById: () => panel};
+const G = {panel: true, busy: false};
+const gitTab = () => ({group: 0});
+const gitRefresh = () => { read++; };
+eval(piece("function gitAfterWork(before) {"));
+const say = (ok, what) => { if (!ok) { console.error("FAILED: " + what + " (read " + read + ")"); process.exit(1); } };
+const st = (state, g0, g1) => ({tabs: [{index: 1, group: 0, state}],
+  groups: [Object.assign({folder: "/work/shop", branch: "main", drift: {behind: 0, ahead: 0}}, g0 || {}),
+           Object.assign({folder: "/work/site", branch: "main", drift: {behind: 0, ahead: 0}}, g1 || {})]});
+const step = (before, now) => { read = 0; S = now; gitAfterWork(before); return read; };
+say(step(st("WAIT"), st("WAIT")) === 0, "read again with nothing changed");
+say(step(st("BUSY"), st("DONE")) === 1, "a tab finishing work there is not noticed");
+say(step(st("WAIT"), st("WAIT", {drift: {behind: 0, ahead: 1}})) === 1, "a commit typed into a terminal is not noticed");
+say(step(st("WAIT"), st("WAIT", {branch: "fix/crash"})) === 1, "a checkout typed into a terminal is not noticed");
+say(step(st("WAIT"), st("WAIT", null, {drift: {behind: 2, ahead: 0}})) === 0, "another folder's change read this one again");
+say(step(st("BUSY"), st("DONE", {drift: {behind: 0, ahead: 1}})) === 1, "one change read twice");
+say(step(st("WAIT"), st("WAIT", {folder: "/work/other", branch: "x"})) === 0, "folders moving in the list read as a change in one");
+panel.hidden = true;
+say(step(st("WAIT"), st("WAIT", {drift: {behind: 0, ahead: 1}})) === 0, "read while the column is put away");
+"##;
+        let page = super::page();
+        let dir = std::env::temp_dir();
+        let (pagefile, drive) = (
+            dir.join(format!("shikisha-gitcol-page-{}.html", std::process::id())),
+            dir.join(format!("shikisha-gitcol-drive-{}.js", std::process::id())),
+        );
+        std::fs::write(&pagefile, page).expect("could not write the page out");
+        std::fs::write(&drive, DRIVE).expect("could not write the script out");
+        let ran = std::process::Command::new("node").arg(&drive).arg(&pagefile).output();
+        let _ = std::fs::remove_file(&pagefile);
+        let _ = std::fs::remove_file(&drive);
+        match ran {
+            Ok(done) => assert!(done.status.success(), "{}", String::from_utf8_lossy(&done.stderr)),
+            Err(e) => eprintln!("node is missing, so the column was not driven ({e}). It runs in CI"),
         }
     }
 
