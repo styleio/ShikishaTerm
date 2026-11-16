@@ -148,6 +148,19 @@ pub struct ProfileFile {
     /// this CLI has none, and the @ list says so instead of offering it
     #[serde(default)]
     pub skills: Option<String>,
+    /// Words added to the command when this app opens the tab itself
+    /// (`open_ai_tab`: one AI handing work to another) rather than a person
+    /// typing the command into a tab of their own.
+    ///
+    /// Such a tab is typed into by the app as soon as it is up, with nobody
+    /// reading what it shows first. A CLI that opens on a question of its own
+    /// -- Codex's "Update available: update now?" -- has the handed-over
+    /// work typed into that question, and the Enter that sends it answers
+    /// yes: the CLI updates itself, which nobody asked for, and the work is
+    /// lost. The words here are the CLI's own way of not asking at start. A
+    /// tab a person opens is not given them: there the question is theirs
+    #[serde(default)]
+    pub opened_args: Vec<String>,
     /// This CLI follows pasted text only when words typed at its prompt ask it
     /// to: what arrives as a paste it holds at arm's length, as something the
     /// person may not have written. So work handed to it (`orch`) is asked for

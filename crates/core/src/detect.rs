@@ -676,6 +676,8 @@ mod tests {
             interrupt: vec![],
             helpers: vec![],
             skills: None,
+
+            opened_args: vec![],
             paste_needs_typed_request: false,
             install_url: None,
             install_on_linux: None,

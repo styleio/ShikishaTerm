@@ -141,6 +141,12 @@ once it reaches its first tagged release.
   another device goes on pressing OK until both ends are this version.
 
 ### Fixed
+- **Work handed to a new Codex tab is no longer typed into Codex's
+  "Update available" question.** A tab the app opens for another AI
+  (`open_ai_tab`) is typed into as soon as it is up, and when Codex opened
+  on that question the Enter answered "update now": Codex updated itself
+  and the work was lost. Such a tab now starts without the question. A
+  Codex tab you open yourself still asks.
 - **A `.cmd` or `.bat` in a folder with a space in its name starts with
   its arguments.** Given an argument that also had a space, the tab said
   the first word of the path "is not recognized as a command" (for

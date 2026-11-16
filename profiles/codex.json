@@ -23,6 +23,7 @@
   "screen_decoration": "[⠀-⣿]",
   "interrupt": ["esc"],
   "helpers": ["codex-code-mode-host.exe"],
+  "opened_args": ["-c", "check_for_update_on_startup=false"],
   "skills": "{home}/.agents/skills",
   "resume": {
     "process_flag": "--no-daemon",

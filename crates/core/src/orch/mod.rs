@@ -382,30 +382,57 @@ fn outcome_of(word: &str) -> Option<bool> {
     }
 }
 
-/// The command a new AI tab of `ai` starts with: the CLI's own command, and
-/// its "act without asking" flag only when the person's Yolo setting puts it
-/// on every new AI tab. Never a command anyone wrote -- which is what makes
+/// The command a new AI tab of `ai` starts with: the CLI's own command, its
+/// "act without asking" flag only when the person's Yolo setting puts it on
+/// every new AI tab, and the CLI's own words for not opening on a question
+/// (`ProfileFile::opened_args`), since what is typed into this tab next is
+/// typed by the app. Never a command anyone wrote -- which is what makes
 /// `open_ai_tab` safe to open to an AI
 pub fn ai_command(ai: &str) -> Result<String, String> {
+    let yolo = crate::config::load().map(|c| c.yolo).unwrap_or(false);
+    ai_command_as(ai, yolo)
+}
+
+fn ai_command_as(ai: &str, yolo: bool) -> Result<String, String> {
     let want = ai.trim().trim_start_matches('@').to_lowercase();
     let files = crate::profile::files();
-    let head = files
+    let (head, opened) = files
         .iter()
         .find(|pf| {
             pf.command_match.first().is_some_and(|c| c.trim().eq_ignore_ascii_case(&want))
                 || pf.name.to_lowercase() == want
         })
-        .and_then(|pf| pf.command_match.first())
-        .map(|c| c.trim().to_string())
+        .and_then(|pf| Some((pf.command_match.first()?.trim().to_string(), pf.opened_args.clone())))
         .ok_or_else(|| {
             let known: Vec<String> = files.iter().filter_map(|pf| pf.command_match.first().cloned()).collect();
             format!("{ai} is not an AI this app knows; one of: {}", known.join(", "))
         })?;
-    let yolo = crate::config::load().map(|c| c.yolo).unwrap_or(false);
-    Ok(match (yolo, crate::tab::bypass_flag(&head)) {
-        (true, Some(flag)) => format!("{head} {flag}"),
-        _ => head,
-    })
+    let mut words = vec![head.clone()];
+    if let (true, Some(flag)) = (yolo, crate::tab::bypass_flag(&head)) {
+        words.push(flag.to_string());
+    }
+    words.extend(opened);
+    Ok(words.join(" "))
+}
+
+/// A tab the app opens for an AI does not open on the CLI's own question
+/// about updating itself: what the app types next would answer it
+#[cfg(test)]
+#[test]
+fn an_ai_tab_the_app_opens_does_not_start_on_the_clis_update_question() {
+    assert_eq!(ai_command_as("codex", false).unwrap(), "codex -c check_for_update_on_startup=false");
+    assert_eq!(
+        ai_command_as("@Codex", true).unwrap(),
+        "codex --dangerously-bypass-approvals-and-sandbox -c check_for_update_on_startup=false"
+    );
+    // A CLI with no such question is started as it always was
+    assert_eq!(ai_command_as("claude", false).unwrap(), "claude");
+    assert_eq!(ai_command_as("claude", true).unwrap(), "claude --dangerously-skip-permissions");
+    assert!(ai_command_as("rm -rf /", false).is_err());
+    // The words are one word each: they are joined into a command line as they are
+    for pf in crate::profile::files() {
+        assert!(pf.opened_args.iter().all(|w| !w.is_empty() && !w.contains(char::is_whitespace)), "{}: {:?}", pf.name, pf.opened_args);
+    }
 }
 
 impl Default for Orchestra {
