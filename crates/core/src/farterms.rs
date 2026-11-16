@@ -368,8 +368,26 @@ impl Before {
     /// of it that was written down. A process id is handed out again, and
     /// after the PC starts again a small one is soon some other program's
     fn runs(&self) -> bool {
-        session_runs(self.session) && self.mark.as_ref().is_none_or(|m| run_mark(self.session).as_ref() == Some(m))
+        session_runs(self.session) && self.mark.as_ref().is_none_or(|m| run_mark(self.session).is_some_and(|now| same_run(m, &now)))
     }
+}
+
+/// Whether two marks are of one run of a session. Each is the start of the
+/// machine and, where it could be read, the start of the process leading the
+/// session ("<machine> <process>"). The machine's must be the same. The
+/// process's too when both have it -- and when either has none (written by
+/// an older resident process, or the leader has ended while others of its
+/// session run, which keeps the id from being handed to anything else) the
+/// machine's alone decides. On Windows a mark is one word, compared whole
+fn same_run(written: &str, now: &str) -> bool {
+    let parts = |m: &str| -> (String, Option<String>) {
+        match m.rsplit_once(" at ") {
+            Some((machine, process)) => (machine.to_string(), Some(process.to_string())),
+            None => (m.to_string(), None),
+        }
+    };
+    let ((was_machine, was), (machine, is)) = (parts(written), parts(now));
+    was_machine == machine && (was.is_none() || is.is_none() || was == is)
 }
 
 /// When the process that leads a session was started, which no later process
@@ -392,15 +410,44 @@ fn run_mark(session: u32) -> Option<String> {
     }
 }
 
-/// This start of the machine: a session of an earlier one does not run,
-/// whatever now leads one with the same id. Linux names each start; a Mac
-/// has no such name, and the moment it started serves the same way
+/// This start of the machine, and of the process leading the session: a
+/// session of an earlier start of the machine does not run, whatever now
+/// leads one with the same id -- and within one start, process ids come
+/// round again, so a later session given the same id is told apart by when
+/// its leader started. Linux names each start of the machine; a Mac has no
+/// such name, and the moment it started serves the same way
 #[cfg(unix)]
-fn run_mark(_session: u32) -> Option<String> {
-    std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
+fn run_mark(session: u32) -> Option<String> {
+    let machine = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
         .ok()
         .map(|s| s.trim().to_string())
-        .or_else(|| Some(format!("started {}", sysinfo::System::boot_time())))
+        .unwrap_or_else(|| format!("started {}", sysinfo::System::boot_time()));
+    Some(match leader_started(session) {
+        Some(at) => format!("{machine} at {at}"),
+        None => machine,
+    })
+}
+
+/// When the process with this id started, as the kernel counts it: in ticks
+/// since the machine started, read from the process's own record. Not the
+/// time of day, which is worked out from the machine's start and moves when
+/// the clock is corrected (in WSL, by NTP) -- the same process would read as
+/// another one
+#[cfg(target_os = "linux")]
+fn leader_started(pid: u32) -> Option<String> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // After the name, which is in brackets and may hold anything: the state
+    // is the third field, the start the twenty-second
+    let after = &stat[stat.rfind(')')? + 1..];
+    after.split_whitespace().nth(19).map(str::to_string)
+}
+
+/// Where the kernel keeps no such record to read, the time of day the
+/// process started serves: that machine works it out once, when it starts
+#[cfg(all(unix, not(target_os = "linux")))]
+fn leader_started(pid: u32) -> Option<String> {
+    let table = crate::repo::process_table(None, sysinfo::ProcessRefreshKind::nothing());
+    table.process(sysinfo::Pid::from_u32(pid)).map(|p| p.start_time().to_string())
 }
 
 /// Whether the program a terminal started still runs. On Windows every
@@ -1306,6 +1353,35 @@ mod tests {
         assert!(at(run_mark(mine)).runs(), "this very run");
         assert!(at(None).runs(), "written without a mark");
         assert!(!at(Some("another run".into())).runs(), "another program given the same id");
+    }
+
+    /// Within one start of the machine an id comes round again: the leader's
+    /// own start tells the two apart, and a mark without one (an older
+    /// resident process's, or a leader that has ended) goes by the machine's
+    #[test]
+    fn a_later_session_given_the_same_id_is_not_the_one_written_down() {
+        assert!(same_run("boot-1 at 4200", "boot-1 at 4200"));
+        assert!(!same_run("boot-1 at 4200", "boot-1 at 9900"), "another process given the same id, in the same start");
+        assert!(!same_run("boot-1 at 4200", "boot-2 at 4200"), "the machine started again");
+        assert!(same_run("boot-1", "boot-1 at 4200"), "written by an older resident process");
+        assert!(same_run("boot-1 at 4200", "boot-1"), "its leader ended, others of the session run");
+        assert!(!same_run("boot-1", "boot-2"));
+        // One word, as Windows writes it
+        assert!(same_run("133123456789", "133123456789") && !same_run("133123456789", "133123456790"));
+        #[cfg(target_os = "linux")]
+        {
+            let me = std::process::id();
+            let first = leader_started(me).expect("this process has no start in /proc");
+            assert!(first.parse::<u64>().is_ok(), "not a count of ticks: {first}");
+            assert_eq!(leader_started(me).as_deref(), Some(first.as_str()), "it changes between two readings");
+            assert_eq!(leader_started(u32::MAX - 7), None);
+            // SAFETY: getsid only reads
+            let mine = unsafe { libc::getsid(0) } as u32;
+            let mark = run_mark(mine).unwrap();
+            let at = |mark: String| Before { generation: "g".into(), term: 1, tab: "t".into(), session: mine, mark: Some(mark) };
+            let machine = mark.rsplit_once(" at ").map_or(mark.as_str(), |(m, _)| m).to_string();
+            assert!(!at(format!("{machine} at 1")).runs(), "a session led by a process started at another time is taken for this one");
+        }
     }
 
     /// A session runs while any of its processes does: this test's own does,
