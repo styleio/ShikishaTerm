@@ -45,6 +45,9 @@ impl Page {
     pub fn port(&self) -> Port {
         match self.0 {}
     }
+    pub fn dialogs_heard(&self) {
+        match self.0 {}
+    }
     pub fn load(&self, _url: &str) -> Result<()> {
         match self.0 {}
     }

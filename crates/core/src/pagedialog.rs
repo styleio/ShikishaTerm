@@ -66,13 +66,30 @@ pub struct Dialog {
     /// Who is asking, as a person reads it: the host of the frame that
     /// opened it, so a page inside a page cannot speak as the site around it
     pub host: String,
+    /// When it opened: a wait on the page gives up a moment after this
+    #[serde(skip)]
+    pub at: std::time::Instant,
 }
 
 static OPEN: Mutex<Vec<Dialog>> = Mutex::new(Vec::new());
 static NEXT: AtomicU64 = AtomicU64::new(1);
 /// Other names the pages with a box open are known by where they are
-/// waited on: a browser on this machine speaks to a page by its session
-static ALSO: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// waited on (a browser on this machine speaks to a page by its session),
+/// each with when its box opened
+static ALSO: Mutex<Vec<(String, std::time::Instant)>> = Mutex::new(Vec::new());
+/// Things to say on the board, once each, about boxes that are not held
+static SAID: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Say something on the board the next time it is drawn
+pub fn say(text: String) {
+    SAID.lock().unwrap_or_else(|e| e.into_inner()).push(text);
+}
+
+/// What was to be said, oldest first, taken
+pub fn take_said() -> Option<String> {
+    let mut said = SAID.lock().unwrap_or_else(|e| e.into_inner());
+    (!said.is_empty()).then(|| said.remove(0))
+}
 
 fn open() -> std::sync::MutexGuard<'static, Vec<Dialog>> {
     OPEN.lock().unwrap_or_else(|e| e.into_inner())
@@ -120,6 +137,7 @@ pub fn opened(page: &str, kind: &str, message: &str, preset: &str, url: &str) ->
         preset: if kind == "prompt" { cut_to(preset, PRESET_KEPT) } else { String::new() },
         shown: if kind == "prompt" { cut_to(preset, PRESET_SHOWN) } else { String::new() },
         cut: kind == "prompt" && preset.chars().nth(PRESET_SHOWN).is_some(),
+        at: std::time::Instant::now(),
         host: crate::pagenotice::site(url).map(|s| crate::pagenotice::shown(&s).to_string()).unwrap_or_default(),
     });
     Some(id)
@@ -179,21 +197,50 @@ pub fn gone_among(pages: &[String]) {
 /// A page with a box open is also known as `name` where it is waited on
 pub fn also(name: &str) {
     let mut also = ALSO.lock().unwrap_or_else(|e| e.into_inner());
-    if !also.iter().any(|n| n == name) {
-        also.push(name.to_string());
+    if !also.iter().any(|(n, _)| n == name) {
+        also.push((name.to_string(), std::time::Instant::now()));
     }
 }
 
 /// ...and no longer: its box is gone, or the page is
 pub fn no_longer(name: &str) {
-    ALSO.lock().unwrap_or_else(|e| e.into_inner()).retain(|n| n != name);
+    ALSO.lock().unwrap_or_else(|e| e.into_inner()).retain(|(n, _)| n != name);
 }
 
-/// Whether what is waited for on this page is stopped behind a box: the
-/// page has one open. `on` is the page's in-window name, or another name
-/// it was given here (`also`)
+/// Since when what is waited for on this page has been stopped behind a
+/// box: the page has one open. `on` is the page's in-window name, or
+/// another name it was given here (`also`)
+pub fn stopped_since(on: &str) -> Option<std::time::Instant> {
+    open()
+        .iter()
+        .find(|d| d.page == on)
+        .map(|d| d.at)
+        .or_else(|| ALSO.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(n, _)| n == on).map(|(_, at)| *at))
+}
+
+/// Whether the page has a box open
 pub fn stops(on: &str) -> bool {
-    open().iter().any(|d| d.page == on) || ALSO.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|n| n == on)
+    stopped_since(on).is_some()
+}
+
+/// Whether a request runs the page's own script: those wait behind a box
+/// and are run when it is gone, whatever became of whoever asked
+fn runs_script(method: &str) -> bool {
+    matches!(method, "Runtime.evaluate" | "Runtime.callFunctionOn")
+}
+
+/// Refuse to send a page's script something to run while the page has a box
+/// open. Sent, it would wait in the browser and be run when the box is
+/// answered -- after whoever asked was told it failed: a recording started
+/// that nobody knows is on, a click made a second time by a retry. Not
+/// sent, nothing happened, and that is what is said. (What was already on
+/// its way when the box opened cannot be taken back; that is said too, by
+/// whoever words the failure)
+pub fn not_behind(to: Option<&str>, method: &str) -> anyhow::Result<()> {
+    match to.is_some_and(stops) && runs_script(method) {
+        true => Err(anyhow::anyhow!(crate::i18n::t("err.browser.no_result"))),
+        false => Ok(()),
+    }
 }
 
 /// Which page a request waits on, for `wait`: the page it was sent to --
@@ -224,9 +271,12 @@ pub fn wait<T>(
     }
 }
 
-/// Whether a wait on `on` that began at `started` ends here, behind a box
+/// Whether a wait on `on` that began at `started` ends here, behind a
+/// box: the browser has had its moment since the later of the two -- the
+/// asking, and the box opening (a request long on its way when the box
+/// opens is given the same moment as one made after)
 pub fn gives_up(on: Option<&str>, started: std::time::Instant) -> bool {
-    started.elapsed() >= GRACE && on.is_some_and(stops)
+    on.and_then(stopped_since).is_some_and(|opened| started.max(opened).elapsed() >= GRACE)
 }
 
 /// What a browser's "a dialog is opening" says, as this program's report of
@@ -354,6 +404,23 @@ mod tests {
         assert!(took(None) >= Duration::from_millis(1400));
         assert_eq!(watched(Some(&p), ANSWER), None);
         assert_eq!(watched(Some(&p), "Runtime.evaluate"), Some(p.as_str()));
+        // Script is not sent to a page behind its box; what the browser
+        // answers regardless still is
+        assert!(not_behind(Some(&p), "Runtime.evaluate").is_err());
+        assert!(not_behind(Some(&p), "Runtime.callFunctionOn").is_err());
+        assert!(not_behind(Some(&p), "Page.navigate").is_ok());
+        assert!(not_behind(Some(&p), ANSWER).is_ok());
+        assert!(not_behind(Some(&other), "Runtime.evaluate").is_err(), "the other page has a box of its own");
+        assert!(not_behind(Some("test-dialog/quiet"), "Runtime.evaluate").is_ok());
+        assert!(not_behind(None, "Runtime.evaluate").is_ok());
+        // A wait that began long before the box opened is given the same
+        // moment after it as any other
+        let long_ago = Instant::now().checked_sub(Duration::from_secs(30)).unwrap();
+        gone(&p);
+        opened(&p, "alert", "just now", "", "");
+        assert!(!gives_up(Some(&p), long_ago), "a request on its way was cut the instant the box opened");
+        std::thread::sleep(GRACE + Duration::from_millis(50));
+        assert!(gives_up(Some(&p), long_ago));
         // An answer that comes in time is the answer, box or no box
         let (tx, rx2) = std::sync::mpsc::channel::<u8>();
         tx.send(7).unwrap();

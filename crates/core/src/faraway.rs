@@ -124,6 +124,13 @@ struct Inner {
     heard: Mutex<Vec<Ev>>,
     /// The pages over there that have a box open, as far as was heard
     asking: Mutex<Vec<String>>,
+    /// Which coming of a client this is: one more each time one arrives and
+    /// each time one goes. What a line of an earlier coming says or does --
+    /// its thread ending late, a report still on its way -- is not this
+    /// client's, and is left alone
+    coming: AtomicU64,
+    /// The coming it was last said of that its browser presses OK on boxes
+    told_old: AtomicU64,
 }
 
 /// The browser on a connected client, as something that shows pages.
@@ -136,6 +143,15 @@ pub struct Far {
 #[derive(Clone)]
 pub struct Line {
     inner: Arc<Inner>,
+    /// The coming this line is of (shared by its copies: the two halves of
+    /// one client's connection)
+    mine: Arc<AtomicU64>,
+}
+
+impl Line {
+    fn current(&self) -> bool {
+        self.mine.load(Ordering::SeqCst) == self.inner.coming.load(Ordering::SeqCst)
+    }
 }
 
 impl Default for Far {
@@ -155,13 +171,15 @@ impl Far {
                 refs: Mutex::new(HashMap::new()),
                 heard: Mutex::new(Vec::new()),
                 asking: Mutex::new(Vec::new()),
+                coming: AtomicU64::new(0),
+                told_old: AtomicU64::new(u64::MAX),
             }),
         }
     }
 
     /// The end a socket holds.
     pub fn line(&self) -> Line {
-        Line { inner: Arc::clone(&self.inner) }
+        Line { inner: Arc::clone(&self.inner), mine: Arc::new(AtomicU64::new(self.inner.coming.load(Ordering::SeqCst))) }
     }
 
     /// Whether there is a browser over there at all.
@@ -183,6 +201,7 @@ impl Far {
 impl Line {
     /// A client has arrived, and will answer from now on.
     pub fn attach(&self, asks: Sender<String>, who: &str) {
+        self.mine.store(self.inner.coming.fetch_add(1, Ordering::SeqCst) + 1, Ordering::SeqCst);
         *self.inner.who.lock().unwrap_or_else(|e| e.into_inner()) = who.to_string();
         *self.inner.line.lock().unwrap_or_else(|e| e.into_inner()) = Some(asks);
     }
@@ -193,6 +212,13 @@ impl Line {
     /// own deadline: a script that asked a browser which is no longer there
     /// should hear about it now, while the reason is still obvious.
     pub fn detach(&self) {
+        // A line of an earlier coming, ending late: another client is here
+        // now, and what it holds is not this line's to take down
+        if !self.current() {
+            return;
+        }
+        // From here on this line is of a coming that is over
+        self.inner.coming.fetch_add(1, Ordering::SeqCst);
         *self.inner.line.lock().unwrap_or_else(|e| e.into_inner()) = None;
         // The boxes its pages had open went with it: nobody can answer them
         // now, and nothing will say they closed
@@ -213,6 +239,11 @@ impl Line {
 
     /// One line from the client.
     pub fn heard(&self, line: &str) {
+        // Said by a client that has gone since: nothing waits for it, and a
+        // box it reports is not one anybody here could answer
+        if !self.current() {
+            return;
+        }
         let Ok(said) = serde_json::from_str::<Said>(line) else { return };
         match said {
             Said::Answer { id, ok, value } => {
@@ -470,14 +501,30 @@ impl BrowserHost for Far {
         rect: (i32, i32, i32, i32),
         profile: BrowserProfile,
     ) -> anyhow::Result<()> {
-        self.inner.tell(&Ask::Open {
-            name: name.to_string(),
-            url: url.to_string(),
-            rect,
-            profile,
-            // The boxes its pages open come here to be answered
-            holds: true,
-        })
+        let said = self.inner.ask(
+            &Ask::Open {
+                name: name.to_string(),
+                url: url.to_string(),
+                rect,
+                profile,
+                // The boxes its pages open come here to be answered
+                holds: true,
+            },
+            10_000,
+        )?;
+        // A browser that holds them says so. One from before they were held
+        // does not know the word, opens the page, and goes on pressing OK on
+        // every box: that cannot be changed from here, so it is said -- once
+        // for each coming of that device -- with what changes it
+        if said.get("holds").and_then(serde_json::Value::as_bool) != Some(true) {
+            let coming = self.inner.coming.load(Ordering::SeqCst);
+            if self.inner.told_old.swap(coming, Ordering::SeqCst) != coming {
+                let who = self.inner.who();
+                crate::append_hook_log(&format!("pages: the browser on {who:?} is from before dialogs were held; it presses OK on them"));
+                crate::pagedialog::say(crate::i18n::tp("msg.browser.dialogs_pressed_there", &[("who", &who)]));
+            }
+        }
+        Ok(())
     }
 
     fn child_bounds(&self, name: &str, rect: (i32, i32, i32, i32)) -> anyhow::Result<()> {
@@ -542,7 +589,8 @@ pub fn perform<B: BrowserHost + Speaks>(ask: &Ask, browser: &B) -> (bool, serde_
             if opened.is_ok() && !*holds {
                 let _ = browser.auto_dialogs(Some(name), true);
             }
-            done(opened)
+            // ...and whoever said they answer them is told they are held
+            opened.map(|()| if *holds { serde_json::json!({ "holds": true }) } else { serde_json::Value::Null })
         }
         Ask::Bounds { name, rect } => done(browser.child_bounds(name, *rect)),
         Ask::Close { name } => done(browser.close_child(name)),
@@ -1061,8 +1109,10 @@ mod tests {
             profile: BrowserProfile::shared_default(),
             holds: true,
         };
-        assert!(perform(&new, &browser).0);
+        let (ok, said) = perform(&new, &browser);
+        assert!(ok && said["holds"] == true, "whoever answers the boxes is not told they are held: {said}");
         assert!(browser.auto.borrow().is_empty(), "a page whose boxes are answered over there has them pressed here");
+        assert_eq!(perform(&old, &browser).1, serde_json::Value::Null);
 
         // A browser that goes takes its pages' boxes with it
         let far = Far::new();
@@ -1083,6 +1133,44 @@ mod tests {
         assert!(crate::pagedialog::stops(page));
         line.detach();
         assert!(!crate::pagedialog::stops(page), "a box nobody can answer any more is still listed");
+
+        // A line of a client that has gone is not heard, and its ending late
+        // does not take down what the next client holds
+        let report = |page: &str| {
+            serde_json::to_string(&Said::Report {
+                ev: Box::new(Ev::PageDialog {
+                    from: Some(page.into()),
+                    kind: "alert".into(),
+                    message: "x".into(),
+                    preset: String::new(),
+                    url: String::new(),
+                }),
+            })
+            .unwrap()
+        };
+        let first = far.line();
+        let (tx, _rx) = channel::<String>();
+        first.attach(tx, "first");
+        let first_other_half = first.clone();
+        let second = far.line();
+        let (tx, _rx2) = channel::<String>();
+        second.attach(tx, "second");
+        second.heard(&report("far-gen/new"));
+        assert!(crate::pagedialog::stops("far-gen/new"));
+        // The first client's threads end now, after the second arrived
+        first.detach();
+        first_other_half.detach();
+        assert!(far.here(), "an earlier client's line ending cut the one that is here");
+        assert!(crate::pagedialog::stops("far-gen/new"), "an earlier client's line ending took the new client's box away");
+        first.heard(&report("far-gen/stale"));
+        assert!(!crate::pagedialog::stops("far-gen/stale"), "a report from a client that has gone was kept");
+        // Both halves of one connection end: once is enough, and the second is not a new ending
+        let other_half = second.clone();
+        second.detach();
+        other_half.detach();
+        assert!(!far.here() && !crate::pagedialog::stops("far-gen/new"));
+        second.heard(&report("far-gen/after"));
+        assert!(!crate::pagedialog::stops("far-gen/after"), "a report after the line ended was kept");
     }
 
     /// A browser that answers, and can be told what to have reported.

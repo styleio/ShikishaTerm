@@ -5186,6 +5186,7 @@
   "far.device": "つないだ端末",
   "err.far.not_let_in": "盤面がこの端末を入れてくれませんでした。",
   "err.far.nobody": "ページを描く端末がつながっていません。",
+  "msg.browser.dialogs_pressed_there": "{who} のアプリが古い版のため、その端末に描いているページが開く alert・confirm・prompt は、これまでどおりすぐに OK されます。人に確認されるようにするには、その端末のアプリを更新してください。",
   "err.far.gone": "ページを描いていた端末が居なくなりました。",
   "err.far.no_answer": "{who} が答えませんでした。",
   "err.far.no_cast": "このページは {who} で描かれているので、送る絵がありません。別の場所から見たいページはサーバ側に置いてください。",

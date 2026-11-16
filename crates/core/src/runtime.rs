@@ -9156,6 +9156,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         if let Some(said) = crate::aitrust::take_said() {
             flash = Some(said);
         }
+        // ...and what there is to say about pages' boxes that are not held
+        if let Some(said) = crate::pagedialog::take_said() {
+            flash = Some(said);
+        }
         // The person's answer, from the window or a phone: kept, and told to
         // every page of the site that was waiting for it
         for (site, allow) in shell.mail().take_notice_answers() {

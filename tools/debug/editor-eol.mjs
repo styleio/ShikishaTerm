@@ -101,6 +101,29 @@ try {
   await chrome.run('edAce.selectAll(); edAce.onPaste("x\\ny"); "ok"');
   check((await text()) === 'x\ny', 'everything replaced is the new text, with the file\'s usual ending: ' + j(await text()));
 
+  // A line moved down with the editor's own command keeps its ending
+  await open('a\r\nb\nc\n');
+  await chrome.run('edAce.moveCursorTo(0, 0); edAce.clearSelection(); edAce.moveLinesDown(); "ok"');
+  check((await text()) === 'b\na\r\nc\n', 'a line moved down keeps its ending: ' + j(await text()));
+  await chrome.run('edAce.undo(); "ok"');
+  check((await text()) === 'a\r\nb\nc\n', 'and moved back by undo, it is the file: ' + j(await text()));
+  // Very many removals undone at once: more than were once remembered
+  const many = 'x\r\n' + 'y\n'.repeat(300);
+  await open(many);
+  await chrome.run(`(() => { const s = edAce.session; s.remove({start: {row: 0, column: 1}, end: {row: 1, column: 0}});
+    for (let i = 0; i < 250; i++) s.remove({start: {row: 0, column: 2 + i}, end: {row: 1, column: 0}});
+    s.getUndoManager().undo(s); let n = 0; while (edText() !== ${JSON.stringify(many)} && n++ < 400) s.getUndoManager().undo(s); return "ok"; })()`);
+  check((await text()) === many, 'an undo of 251 removals puts every ending back: ' + j((await text()).slice(0, 24)));
+  // The visual editor's words, written back into a file that mixes its endings
+  const md = '# A\r\n\r\nfirst\n\nsecond\n';
+  await open(md);
+  check(await chrome.run(`edEolsCarried(${JSON.stringify('# A\n\nfirst, edited\n\nsecond\n')})`) === '# A\r\n\r\nfirst, edited\n\nsecond\n',
+    'text the visual editor makes keeps the endings of the lines it did not touch');
+  if (await chrome.run('!!(window.MdKit && window.MdKit.keep)')) {
+    const kept = await chrome.run(`edEolsCarried(window.MdKit.keep(${JSON.stringify(md)}, ${JSON.stringify('# A\n\nfirst\n\nsecond\n')}, ${JSON.stringify('# A\n\nfirst, edited\n\nsecond\n')}))`);
+    check(kept === '# A\r\n\r\nfirst, edited\n\nsecond\n', 'through the visual editor\'s own keeper too: ' + j(kept));
+  }
+
   console.log('2. a CRLF file');
   const crlf = 'a\r\nb\r\nc\r\n';
   await open(crlf);

@@ -610,7 +610,17 @@ impl Shell for Headless {
         {
             return LockAnswer::Password(pw);
         }
+        // Told to stop while it waits to be unlocked (`systemctl stop` on a
+        // server that came up locked): there is no window to press quit on,
+        // and waiting for a password that is not coming would have the
+        // service killed instead of stopped
+        if crate::serve::told_to_end() {
+            return LockAnswer::Quit;
+        }
         std::thread::sleep(wait);
+        if crate::serve::told_to_end() {
+            return LockAnswer::Quit;
+        }
         LockAnswer::Nothing
     }
     /// Nothing here puts up a prompt, so a `None` is never a person's no.

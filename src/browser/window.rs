@@ -759,6 +759,7 @@ pub(super) fn run_window(
                                     let _ = tx.send(said);
                                 },
                             ) {
+                                v.dialogs_heard();
                                 dialogs.insert(Some(name.clone()), arm);
                             }
                             shikisha_core::append_hook_log(&format!(

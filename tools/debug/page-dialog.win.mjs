@@ -207,7 +207,7 @@ try {
   await until(boxUp, 'the prompt', 10000);
   check(await board.run('!document.getElementById("sq").hidden && document.getElementById("sq").value === "nobody"'), 'a prompt has its field, starting with what the page put there');
   await board.shot('2-prompt');
-  await board.run('document.getElementById("sq").value = " Ada "; document.querySelector("#sask .brow > .go").click()');
+  await board.run('const sq = document.getElementById("sq"); sq.value = " Ada "; sq.dispatchEvent(new Event("input")); document.querySelector("#sask .brow > .go").click()');
   await until(async () => (await titleNow()) === 'p:" Ada "', 'the typed words reaching the page', 8000).catch(() => {});
   check((await titleNow()) === 'p:" Ada "', 'what was typed reaches the page as typed, its spaces too: ' + await titleNow());
   await noBox();

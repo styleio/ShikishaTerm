@@ -258,6 +258,11 @@ pub(super) struct Hooks {
     shared: Rc<Shared>,
     /// This program is closing the page; its closing is not the page's asking
     going: Cell<bool>,
+    /// The program hears this page's alert, confirm and prompt and has them
+    /// answered (`cdp::arm_dialogs`). Only then is Chromium's own box kept
+    /// away: a page nobody listens to -- the board's own, a window a page
+    /// opened -- would be left stopped with nothing on the screen to answer
+    dialogs_heard: Cell<bool>,
     /// For a window a page asked for: its name and address, until it exists
     popup: RefCell<Option<(String, String)>>,
     /// Where the results of the browser's own search go
@@ -375,6 +380,11 @@ impl Page {
 
     pub fn port(&self) -> Port {
         self.port.clone()
+    }
+
+    /// The program hears this page's boxes from now on (see `Hooks`)
+    pub fn dialogs_heard(&self) {
+        self.hooks.dialogs_heard.set(true);
     }
 
     pub fn load(&self, url: &str) -> Result<()> {
@@ -605,6 +615,7 @@ impl Pages {
             wiring: spec.wiring,
             shared: Rc::clone(&self.shared),
             going: Cell::new(false),
+            dialogs_heard: Cell::new(false),
             popup: RefCell::new(None),
             finds: RefCell::new(None),
             bar_of,
@@ -994,13 +1005,14 @@ mod hooks {
                 Some(Permissions::new())
             }
             fn jsdialog_handler(&self) -> Option<JsdialogHandler> {
-                Some(Dialogs::new(Rc::new(std::cell::RefCell::new(None))))
+                Some(Dialogs::new(Rc::clone(&self.hooks), Rc::new(std::cell::RefCell::new(None))))
             }
         }
     }
 
     wrap_jsdialog_handler! {
         pub struct Dialogs {
+            hooks: Rc<Hooks>,
             // The box that is open, kept so that it stays open (a plain
             // comment: the macro takes no attribute on a field)
             held: Rc<std::cell::RefCell<Option<JsdialogCallback>>>,
@@ -1027,6 +1039,11 @@ mod hooks {
                 callback: Option<&mut JsdialogCallback>,
                 _suppress_message: Option<&mut ::std::os::raw::c_int>,
             ) -> ::std::os::raw::c_int {
+                // A page nobody listens to keeps Chromium's own box: it is
+                // the only thing there to answer it
+                if !self.hooks.dialogs_heard.get() {
+                    return 0;
+                }
                 let Some(callback) = callback else { return 0 };
                 let was = self.held.borrow_mut().replace(callback.clone());
                 drop(was);
@@ -1042,6 +1059,9 @@ mod hooks {
                 _is_reload: ::std::os::raw::c_int,
                 callback: Option<&mut JsdialogCallback>,
             ) -> ::std::os::raw::c_int {
+                if !self.hooks.dialogs_heard.get() {
+                    return 0;
+                }
                 let Some(callback) = callback else { return 0 };
                 callback.cont(1, None);
                 1
@@ -1172,6 +1192,9 @@ mod hooks {
                     wiring: popups.wiring(&name),
                     shared,
                     going: std::cell::Cell::new(false),
+                    // A window a page opened is not listened to: Chromium's own
+                    // box is what answers there
+                    dialogs_heard: std::cell::Cell::new(false),
                     popup: std::cell::RefCell::new(Some((name, uri))),
                     finds: std::cell::RefCell::new(None),
                     bar_of: None,

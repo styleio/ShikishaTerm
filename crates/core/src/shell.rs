@@ -16461,7 +16461,9 @@ function tabFromLink() {
 }
 window.addEventListener("hashchange", tabFromLink);
 
-let pageDialogAsking = 0;
+// What was typed into a prompt that another question then covered: put back
+// when the prompt comes back, for the same opening
+let pageDialogAsking = 0, pageDialogTyped = null;
 function drawPageDialogs() {
   const box = document.getElementById("sask");
   const front = S && S.tabs ? S.tabs.find(t => t.index === S.active) : null;
@@ -16484,6 +16486,13 @@ function drawPageDialogs() {
     send({kind:"dialog-answer", page:d.page, id:d.id, accept, text});
   };
   const alone = d.kind === "alert";
+  const sq = document.getElementById("sq");
+  // What the person typed into a prompt's field, once they have typed
+  // there at all. Whether they did is what decides what the page gets --
+  // not what the field holds: typed over with the very words the field
+  // began with, those words are the answer, and the rest of something long
+  // the page had put there is not
+  let words = null;
   askQuestion({
     title: d.host ? (T["tui.pagedialog.title"] || "").replaceAll("{site}", d.host) : (T["tui.pagedialog.title.page"] || ""),
     say: d.message,
@@ -16491,18 +16500,24 @@ function drawPageDialogs() {
     label: T["tui.pagedialog.ok"] || "",
     pageSays: true,
     alone,
-    go: () => {
-      // As typed, spaces and all: the words are the page's to judge. Left
-      // as the page filled it, the page gets its own words back -- all of
-      // them, when the field holds only the beginning of something long
-      const typed = d.kind === "prompt" ? document.getElementById("sq").value : null;
-      answer(true, typed === d.shown ? null : typed);
-    },
+    // As typed, spaces and all: the words are the page's to judge. Left as
+    // the page filled it, the page gets its own words back -- all of them,
+    // when the field holds only the beginning of something long
+    go: () => answer(true, d.kind === "prompt" ? words : null),
     // Put away by the person: Cancel (an alert's one answer is OK). Taken
-    // over by another question, it is not answered at all
-    back: () => { if (!sAskReplacing) answer(alone, null); },
+    // over by another question, it is not answered at all, and what was
+    // typed so far is kept for when it comes back
+    back: () => {
+      if (!sAskReplacing) { answer(alone, null); return; }
+      if (words !== null) pageDialogTyped = {id: d.id, words};
+    },
   });
   box.dataset.pagedialog = String(d.id);
+  if (d.kind === "prompt") {
+    if (pageDialogTyped && pageDialogTyped.id === d.id) { words = pageDialogTyped.words; sq.value = words; }
+    sq.oninput = () => { words = sq.value; };
+  }
+  pageDialogTyped = null;
 }
 
 // An AI CLI that trusts a project but asks again in every new worktree of it:
@@ -19656,9 +19671,22 @@ function mdShown() {
 // every edit, and put back when the text is read out. Lines typed in take
 // the ending most of the file uses; lines taken out and put back (an undo)
 // come back with the endings they had.
-let edEols = null, edEolMain = "\n", edEolsPutting = false, edEolsGone = [];
-// How many removals are remembered for an undo to put back
-const ED_EOLS_GONE = 200;
+let edEols = null, edEolMain = "\n", edEolsPutting = false, edEolsGone = [], edEolsGoneN = 0;
+// How many endings of removed lines are remembered, in all, for the lines
+// to be put back with (an undo, a line moved): by endings and not by
+// removals, so that one undo of very many small removals still finds each
+const ED_EOLS_GONE = 2000000;
+// What a removal is known by when the same lines come back: where in its
+// line it began, how many lines, and a number made from what they say (not
+// the words themselves, which may be a whole file)
+function edEolsKey(delta) {
+  let h = 2166136261;
+  for (const line of delta.lines) {
+    for (let i = 0; i < line.length; i++) h = Math.imul(h ^ line.charCodeAt(i), 16777619);
+    h = Math.imul(h ^ 10, 16777619);
+  }
+  return delta.start.column + ":" + delta.lines.length + ":" + (h >>> 0);
+}
 function edEolsOf(text) {
   const all = text.match(/\r\n|\r|\n/g) || [];
   const count = new Map();
@@ -19679,7 +19707,7 @@ function edPut(text) {
   // edit for the list to follow
   edEolMain = e.main;
   edEols = e.kept ? e.all : null;
-  edEolsGone = [];
+  edEolsGone = []; edEolsGoneN = 0;
   edEolsPutting = true;
   try { doc.setValue(text); } finally { edEolsPutting = false; }
 }
@@ -19688,23 +19716,39 @@ function edEolsEdited(delta) {
   if (!edEols || edEolsPutting || !delta || !delta.lines || !delta.start) return;
   const n = delta.lines.length - 1, at = delta.start.row;
   if (n <= 0) return;
-  // The same lines at the same place: what an undo puts back is what was
-  // taken out, and it comes back as it was
-  const key = delta.start.column + "\n" + delta.lines.join("\n");
+  // The same lines again: what an undo puts back, and what a line moved up
+  // or down is put down as, is what was taken out -- wherever it lands --
+  // and it comes back with the endings it had
+  const key = edEolsKey(delta);
   if (delta.action === "insert") {
-    const i = edEolsGone.findLastIndex(g => g.at === at && g.key === key);
-    const back = i < 0 ? new Array(n).fill(edEolMain) : edEolsGone.splice(i, 1)[0].eols;
-    edEols = edEols.slice(0, at).concat(back, edEols.slice(at));
+    const i = edEolsGone.findLastIndex(g => g.key === key);
+    let back = null;
+    if (i >= 0) { back = edEolsGone.splice(i, 1)[0].eols; edEolsGoneN -= back.length; }
+    edEols = edEols.slice(0, at).concat(back || new Array(n).fill(edEolMain), edEols.slice(at));
   } else {
-    edEolsGone.push({at, key, eols: edEols.slice(at, at + n)});
-    if (edEolsGone.length > ED_EOLS_GONE) edEolsGone.shift();
+    edEolsGone.push({key, eols: edEols.slice(at, at + n)});
+    edEolsGoneN += n;
+    while (edEolsGoneN > ED_EOLS_GONE && edEolsGone.length > 1) edEolsGoneN -= edEolsGone.shift().eols.length;
     edEols = edEols.slice(0, at).concat(edEols.slice(at + n));
   }
 }
-// Text made by the program for a file that ends its lines one way, with
-// that ending throughout: what is written anew does not bring another in
-function edEolsLike(text) {
-  return edEols ? text : text.replace(/\r\n|\r|\n/g, edEolMain);
+// Text the program made out of what is in the editor (the visual editor's
+// words, which come with one ending throughout), given the file's endings.
+// A file that ends its lines one way gets that way. One that mixes them
+// keeps, for every line that is as it was -- from the top down to the first
+// that differs, and from the bottom up -- the ending it had; the lines
+// between, which are the ones that were edited, take the file's usual one
+function edEolsCarried(text) {
+  if (!edEols || !edAce) return text.replace(/\r\n|\r|\n/g, edEolMain);
+  const now = text.split(/\r\n|\r|\n/);
+  const was = edAce.session.doc.getAllLines();
+  const ends = new Array(Math.max(0, now.length - 1)).fill(edEolMain);
+  let top = 0;
+  while (top < was.length - 1 && top < now.length - 1 && was[top] === now[top]) { ends[top] = edEols[top] || edEolMain; top++; }
+  for (let k = 1; was.length - k - 1 >= top && now.length - k - 1 >= top && was[was.length - k] === now[now.length - k]; k++) {
+    ends[now.length - k - 1] = edEols[was.length - k - 1] || edEolMain;
+  }
+  return now.map((line, i) => line + (i < now.length - 1 ? ends[i] : "")).join("");
 }
 function edText() {
   if (!edAce) return ED.text;
@@ -20409,7 +20453,7 @@ function mdRichFlush() {
   const m = MD.rich;
   if (!m || !edAce || m.path !== ED.path) return;
   const now = m.r.markdown();
-  const text = edEolsLike(m.front + window.MdKit.keep(m.base, m.was, now));
+  const text = edEolsCarried(m.front + window.MdKit.keep(m.base, m.was, now));
   m.wrote = text;
   if (text !== edText()) edPut(text);
   ED.dirty = edText() !== ED.text;
@@ -32577,7 +32621,7 @@ const src = [
   "function edLineBack() {", "function editReload() {", "function edFolderNow() {",
   "function edEolsOf(text) {", "function edPut(text) {", "function edText() {",
 ].map(piece).join("") + wait;
-let edEols = null, edEolMain = "\n", edEolsPutting = false, edEolsGone = [];
+let edEols = null, edEolMain = "\n", edEolsPutting = false, edEolsGone = [], edEolsGoneN = 0;
 let text = "", rich = null, asks = [];
 const changed = () => { ED.dirty = text !== ED.text; };        // the editor's own change handler
 const type = t => { text = t; changed(); };
@@ -32705,7 +32749,7 @@ function piece(start) {
   return page.slice(at, i + 1) + ";\n";
 }
 const src = piece("function drawPageDialogs() {");
-let pageDialogAsking = 0, sAskReplacing = false, S = null;
+let pageDialogAsking = 0, pageDialogTyped = null, sAskReplacing = false, S = null;
 const T = {"tui.pagedialog.title": "A message from {site}", "tui.pagedialog.title.page": "A message from this page", "tui.pagedialog.ok": "OK"};
 const box = {hidden: true, dataset: {}};
 const field = {value: ""};
@@ -32794,9 +32838,36 @@ say(sent.length === 1 && sent[0].accept === true && sent[0].text === null, "a pr
 sent.length = 0; pageDialogAsking = 0;
 S = state(1, {shop: dlg(9, "prompt", {shown: "nobody"})});
 drawPageDialogs();
-field.value = " Ada ";
+const type = t => { field.value = t; field.oninput(); };
+type(" Ada ");
 press();
 say(sent.length === 1 && sent[0].text === " Ada ", "what was typed was changed on the way");
+sent.length = 0; pageDialogAsking = 0;
+
+// 7. Typed over with the very words the field showed, of something longer: those words are the answer
+S = state(1, {shop: dlg(10, "prompt", {shown: "x".repeat(2000), cut: true})});
+drawPageDialogs();
+type("");
+type("x".repeat(2000));
+press();
+say(sent.length === 1 && sent[0].text === "x".repeat(2000), "words typed that match the shown beginning were replaced by the page's long ones");
+sent.length = 0; pageDialogAsking = 0;
+
+// 8. Words typed into a prompt that another question covers are there when it comes back
+S = state(1, {shop: dlg(11, "prompt", {shown: "nobody"})});
+drawPageDialogs();
+type("Grace Hop");
+askQuestion({title: "Close the tab?", back: () => {}});
+closeAsk();
+drawPageDialogs();
+say(!box.hidden && field.value === "Grace Hop" && sent.length === 0, "what was typed was lost when the prompt was covered: " + JSON.stringify(field.value));
+press();
+say(sent.length === 1 && sent[0].text === "Grace Hop", "the words kept were not the answer");
+sent.length = 0; pageDialogAsking = 0;
+// ...and they are not put into the next prompt
+S = state(1, {shop: dlg(12, "prompt", {shown: "nobody"})});
+drawPageDialogs();
+say(field.value === "nobody", "words typed into one prompt turned up in another");
 "##;
         let page = super::page();
         // The frame's two promises the stand-in keeps
@@ -32842,9 +32913,9 @@ function piece(start) {
   return page.slice(at, i + 1) + ";\n";
 }
 const src = ["function edEolsOf(text) {", "function edPut(text) {", "function edEolsEdited(delta) {",
-  "function edEolsLike(text) {", "function edText() {"].map(piece).join("");
-let edEols = null, edEolMain = "\n", edEolsPutting = false, edEolsGone = [];
-const ED_EOLS_GONE = 200;
+  "function edEolsKey(delta) {", "function edEolsCarried(text) {", "function edText() {"].map(piece).join("");
+let edEols = null, edEolMain = "\n", edEolsPutting = false, edEolsGone = [], edEolsGoneN = 0;
+const ED_EOLS_GONE = 2000000;
 const ED = {text: ""};
 // The library's document: lines, a mode for the ending it writes, and every
 // edit told as the rows it covers
@@ -32917,13 +32988,32 @@ say(mode === "windows" && edEols === null && edText() === "a\r\nb\r\n", "a CRLF 
 insert(0, 1, "\nx");
 say(edText() === "a\r\nx\r\nb\r\n", "a line typed into a CRLF file did not end with CRLF");
 // ...and text the program makes for it (the visual editor's) is given that ending
-say(edEolsLike("p\nq\r\nr") === "p\r\nq\r\nr", "text made for a CRLF file brought another ending in");
+say(edEolsCarried("p\nq\r\nr") === "p\r\nq\r\nr", "text made for a CRLF file brought another ending in");
 
 // 7. An LF file whose first line happens to end with CRLF is mostly LF: new lines are LF
 edPut("first\r\n" + "x\n".repeat(20));
 insert(5, 0, "added\n");
 say(edText() === "first\r\n" + "x\n".repeat(4) + "added\n" + "x\n".repeat(16), "a new line took the first line's ending and not the file's");
-say(edEolsLike("p\nq") === "p\nq", "text made for a mixed file was rewritten");
+// Text the program makes for a mixed file: the lines that are as they were keep their endings
+edPut("# A\r\n\r\nfirst\n\nsecond\n");
+say(edEolsCarried("# A\n\nfirst, edited\n\nsecond\n") === "# A\r\n\r\nfirst, edited\n\nsecond\n", "an edit made in the visual editor changed the endings of lines it did not touch: " + JSON.stringify(edEolsCarried("# A\n\nfirst, edited\n\nsecond\n")));
+say(edEolsCarried("# A\n\nfirst\n\nsecond\n") === "# A\r\n\r\nfirst\n\nsecond\n", "text that says the same came back with other endings");
+say(edEolsCarried("# A\n\nnew para\n\nfirst\n\nsecond\n") === "# A\r\n\r\nnew para\n\nfirst\n\nsecond\n", "a paragraph added moved the endings around it");
+say(edEolsCarried("") === "" && edEolsCarried("one line") === "one line", "text with no line break was given one");
+
+// A line moved down (taken out of one row, put down at another) keeps its ending
+edPut("a\r\nb\nc\n");
+removeRows(0, 0, 1, 0);
+insert(1, 0, "a\n");
+say(edText() === "b\na\r\nc\n", "a line moved down lost its ending");
+
+// Many removals in one undo: each comes back with its own (more than the old limit of 200)
+edPut("x\r\n" + "y\n".repeat(300));
+removeRows(0, 1, 1, 0);                                  // the CRLF, first
+for (let i = 0; i < 250; i++) removeRows(0, 2 + i, 1, 0);   // then 250 line feeds, each its own removal
+for (let i = 249; i >= 0; i--) insert(0, 2 + i, "\n");     // undone, last first
+insert(0, 1, "\n");
+say(edText() === "x\r\n" + "y\n".repeat(300), "an undo of many removals lost the first one's ending");
 
 // 8. A file of lone CRs (an old Mac's) is written with CRs
 edPut("a\rb\rc");

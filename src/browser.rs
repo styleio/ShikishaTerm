@@ -1349,6 +1349,7 @@ impl Browser {
         params: serde_json::Value,
         timeout_ms: u64,
     ) -> Result<serde_json::Value> {
+        shikisha_core::pagedialog::not_behind(to, method)?;
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         self.send(Cmd::Cdp {
             id,
@@ -3034,6 +3035,7 @@ impl Speaks for Browser {
     }
 
     fn eval(&self, to: Option<&str>, js: &str, timeout_ms: u64) -> Result<String> {
+        shikisha_core::pagedialog::not_behind(to, "Runtime.evaluate")?;
         let id = self.eval_in(to, js)?;
         self.wait_result_on(to, id, std::time::Duration::from_millis(timeout_ms))
     }

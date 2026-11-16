@@ -700,6 +700,10 @@ fn read_ws_endpoint(child: &mut std::process::Child) -> anyhow::Result<String> {
 /// How long an answer is waited for when the caller names no time of its own.
 const CALL_MS: u64 = 30_000;
 
+/// What whoever listens to a browser is told when the line to it ends. Not
+/// one of the browser's own words
+const GONE: &str = "shikisha.gone";
+
 /// Something the browser said that nobody asked about: a frame of a
 /// screencast, a page reporting what a person did, a request wanting
 /// credentials.
@@ -790,8 +794,14 @@ impl Cdp {
         std::thread::Builder::new()
             .name("shikisha-cdp".into())
             .spawn(move || {
-                read_frames(reading, post, heard);
+                read_frames(reading, post, Arc::clone(&heard));
                 still.store(false, Ordering::Relaxed);
+                // The browser is gone, and nothing more will be said about
+                // its pages: whoever listens is told that once, in the
+                // browser's own voice
+                if let Some(sink) = heard.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+                    sink(Event { session: None, method: GONE.to_string(), params: serde_json::Value::Null });
+                }
             })?;
 
         Ok(Self {
@@ -813,6 +823,7 @@ impl Cdp {
         if !self.alive.load(Ordering::Relaxed) {
             anyhow::bail!(crate::i18n::t("err.chrome.gone"));
         }
+        crate::pagedialog::not_behind(session, method)?;
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         let mut msg = serde_json::json!({ "id": id, "method": method, "params": params });
         if let Some(s) = session {
@@ -1186,7 +1197,22 @@ impl Pages {
         let speaker = chrome.speaker();
         let seen = Arc::clone(&self.seen);
         let key = key.to_string();
+        // The pages of this browser with a box open, by session: what is
+        // left to clear if the browser goes with one still up
+        let asking: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
         chrome.on_event(move |ev| {
+            // The browser went (crashed, killed) with boxes open: nobody can
+            // answer them now, and nothing will say they closed
+            if ev.session.is_none() && ev.method == GONE {
+                let left = std::mem::take(&mut *asking.lock().unwrap_or_else(|e| e.into_inner()));
+                let mut book = seen.lock().unwrap_or_else(|e| e.into_inner());
+                for (session, page) in left {
+                    crate::pagedialog::gone(&page);
+                    crate::pagedialog::no_longer(&session);
+                    book.mail.push(shikisha_shared::Ev::PageDialogGone { from: Some(page) });
+                }
+                return;
+            }
             // The browser itself, rather than a page in it: downloads are
             // reported there, whichever page started them
             if ev.session.is_none() {
@@ -1205,6 +1231,7 @@ impl Pages {
                         crate::pagedialog::heard(&said);
                         // Whatever waits on this session gives up behind it
                         crate::pagedialog::also(&session);
+                        asking.lock().unwrap_or_else(|e| e.into_inner()).push((session.clone(), page.clone()));
                         book.mail.push(said);
                     }
                     None => speaker.tell(Some(&session), crate::pagedialog::ANSWER, serde_json::json!({ "accept": true })),
@@ -1213,6 +1240,7 @@ impl Pages {
                     let said = shikisha_shared::Ev::PageDialogGone { from: Some(page) };
                     crate::pagedialog::heard(&said);
                     crate::pagedialog::no_longer(&session);
+                    asking.lock().unwrap_or_else(|e| e.into_inner()).retain(|(s, _)| *s != session);
                     book.mail.push(said);
                 }
                 "Page.screencastFrame" => {

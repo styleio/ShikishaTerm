@@ -171,6 +171,11 @@ impl Page {
         self.port.clone()
     }
 
+    /// The program hears this page's boxes from now on. WebView2 draws none
+    /// of its own for a page whose boxes are heard, so there is nothing to
+    /// keep away here (the Mac's engine has; see its `Hooks`)
+    pub fn dialogs_heard(&self) {}
+
     pub fn load(&self, url: &str) -> Result<()> {
         Ok(self.v().load_url(url)?)
     }

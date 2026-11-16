@@ -5223,6 +5223,7 @@
   "far.device": "the connected device",
   "err.far.not_let_in": "The board did not let this device in.",
   "err.far.nobody": "No device is connected to draw pages on.",
+  "msg.browser.dialogs_pressed_there": "The app on {who} is an older version: an alert, confirm or prompt opened by a page drawn there is still answered OK at once. Update the app on that device to be asked instead.",
   "err.far.gone": "The device drawing the pages has gone.",
   "err.far.no_answer": "{who} did not answer.",
   "err.far.no_cast": "This page is drawn on {who}, so there is no picture of it to send. A page that has to be watched from somewhere else belongs on the server.",

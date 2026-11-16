@@ -589,11 +589,20 @@ pub fn daemon(home: PathBuf) -> Result<()> {
         for job in core.jobs() {
             job.tick(&core);
         }
-        for line in core.silent() {
+        // Who is silent, and whether it is time to go, are judged from
+        // clocks read just now -- and thrown away if the process turns out
+        // not to have run between the look above and here (stopped in the
+        // middle of the jobs' turn): the next look gives that time back
+        // before anybody is judged by it
+        let (silent, done) = (core.silent(), core.done());
+        if looked.elapsed() > STALLED {
+            continue;
+        }
+        for line in silent {
             log(&format!("line {line} has been silent too long"));
             core.drop_line(line);
         }
-        if core.done() {
+        if done {
             break;
         }
         if TOLD_TO_END.load(Ordering::SeqCst) {

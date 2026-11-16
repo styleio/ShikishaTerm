@@ -888,8 +888,14 @@ impl Capabilities {
         // What went wrong behind a box the page has open is said as that:
         // the wait gave up there (`pagedialog::wait`), and "no result" would
         // send whoever asked looking for the wrong thing
+        // A box that was open before anything was asked: what waits on the
+        // page's script was not sent (`pagedialog::not_behind`), so nothing
+        // was done. One that opened meanwhile cut short something already
+        // on its way, which may have been done
+        let before = crate::pagedialog::open_on(&key).map(|d| d.id);
         match self.with_as_is(name, f) {
             Err(e) => match crate::pagedialog::open_on(&key) {
+                Some(open) if before == Some(open.id) => Err(anyhow::anyhow!(open.refusal(name))),
                 Some(open) => Err(anyhow::anyhow!(open.cut_in(name))),
                 None => Err(e),
             },
