@@ -138,6 +138,12 @@ once it reaches its first tagged release.
   still never asked.
 
 ### Fixed
+- **The editor no longer rewrites a file's line endings.** A file that
+  ended some lines with CRLF and others with LF was shown as changed the
+  moment it was opened, and saving it gave every line the ending of the
+  first one. Now each line keeps its own ending, a line you type takes the
+  ending most of the file uses, and undo puts back the endings it removed.
+  A CRLF Markdown file edited in the visual editor also stays CRLF.
 - **The git panel's ✨ no longer stays on "The AI is writing the message"
   for good.** The message the AI wrote was lost when the settings were
   saved while it wrote, which happens on its own, for example when a new

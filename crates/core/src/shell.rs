@@ -18990,7 +18990,7 @@ function edDraftsKept() {
     mdRichFlush();
     const all = Array.from(edDrafts.entries());
     if (ED.path && ED.dirty && edAce) {
-      all.push([edDraftKey(ED.path), {text: edAce.getValue(), base: ED.text, mark: ED.mark, stamp: ED.stamp,
+      all.push([edDraftKey(ED.path), {text: edText(), base: ED.text, mark: ED.mark, stamp: ED.stamp,
         encoding: ED.encoding, exact: ED.exact, encPicked: ED.encPicked, folder: edFolderNow()}]);
     }
     if (all.length) sessionStorage.setItem("shikisha_ed_drafts", JSON.stringify(all));
@@ -19020,7 +19020,7 @@ function edStash() {
   ED.saving = null; ED.saveNext = null; ED.replace = false;
   if (ED.path && ED.dirty && edAce) {
     edDrafts.set(edDraftKey(ED.path),
-      {text: edAce.getValue(), base: ED.text, mark: ED.mark, stamp: ED.stamp,
+      {text: edText(), base: ED.text, mark: ED.mark, stamp: ED.stamp,
        encoding: ED.encoding, exact: ED.exact, encPicked: ED.encPicked, folder: edFolderNow()});
   }
   // Nothing of this file is on screen as far as the next read is concerned:
@@ -19156,7 +19156,7 @@ function editHeard(d) {
       const again = ED.shown === ED.path && !ED.goto
         ? {pos: edAce.getCursorPosition(), top: edAce.session.getScrollTop()} : null;
       // Setting the text is not the person typing, so it must not look like it
-      edAce.session.doc.setValue(draft ? draft.text : ED.text);
+      edPut(draft ? draft.text : ED.text);
       edAce.session.getUndoManager().reset();
       edAce.clearSelection();
       if (again) {
@@ -19196,17 +19196,17 @@ function editHeard(d) {
     ED.encoding = d.encoding || ED.encoding; ED.exact = true; ED.stop = null;
     // What the file holds now is the text this save carried -- not what is
     // in the editor, which may have been typed in since and is not on disk
-    const now = edAce ? edAce.getValue() : ED.text;
+    const now = edText();
     const carried = sent.text;
     if (typeof d.text === "string") {
       // Saved with question marks: what is in the file is what is shown,
       // unless more was typed meanwhile, which stays as typed
       ED.text = d.text;
-      if (edAce && now === carried) { edAce.session.doc.setValue(d.text); edAce.clearSelection(); }
+      if (edAce && now === carried) { edPut(d.text); edAce.clearSelection(); }
     } else {
       ED.text = carried;
     }
-    ED.dirty = (edAce ? edAce.getValue() : ED.text) !== ED.text;
+    ED.dirty = edText() !== ED.text;
     ED.outside = false;
     ED.said = T["tui.edit.saved"] || ""; ED.bad = false;
     drawEdit();
@@ -19248,7 +19248,7 @@ function editWrite(opts) {
     return;
   }
   ED.asked = opts;
-  const text = edAce ? edAce.getValue() : ED.text;
+  const text = edText();
   // This page's own, so the answer to another page's save of the same file
   // (the phone and the PC both have it open, and both hear every answer) is
   // never taken for this one's
@@ -19529,8 +19529,9 @@ function drawEdit() {
       edAce.commands.addCommand({
         name: "save", bindKey: {win: "Ctrl-S", mac: "Cmd-S"}, exec: editSave
       });
-      edAce.on("change", () => {
-        const now = edAce.getValue();
+      edAce.on("change", (delta) => {
+        edEolsEdited(delta);
+        const now = edText();
         const was = ED.dirty;
         ED.dirty = now !== ED.text;
         // The drawn words follow the text: the AI next door writing the
@@ -19542,7 +19543,7 @@ function drawEdit() {
         ED.stop = null;
         if (was !== ED.dirty || stopped) drawEdit();
       });
-      edAce.session.doc.setValue(ED.text);
+      edPut(ED.text);
       edAce.session.getUndoManager().reset();
       edAce.clearSelection();
       // Which file's text the editor holds: a later reading of the same one
@@ -19605,7 +19606,77 @@ function mdShown() {
   const u = edUi;
   return u && !u.md.hidden && ED.path && mdFile(ED.path) ? mdView() : "";
 }
-function edText() { return edAce ? edAce.getValue() : ED.text; }
+// The line endings of the file in the editor.
+//
+// A file ends its lines one way (LF, or CRLF) or, now and then, both ways --
+// a file edited on two systems, a paste from another program. The editor
+// library keeps lines without their endings and, left to itself, looks at
+// the first ending in the file and writes every line with it: saving a file
+// that mixes the two changed every line that ended the other way, and showed
+// the file as changed the moment it was opened. So the library is told which
+// ending to write, and for a file that mixes them each line's own ending is
+// kept here beside the lines (`edEols`: the ending after line i), following
+// every edit, and put back when the text is read out. Lines typed in take
+// the ending most of the file uses; lines taken out and put back (an undo)
+// come back with the endings they had.
+let edEols = null, edEolMain = "\n", edEolsPutting = false, edEolsGone = [];
+// How many removals are remembered for an undo to put back
+const ED_EOLS_GONE = 200;
+function edEolsOf(text) {
+  const all = text.match(/\r\n|\r|\n/g) || [];
+  const count = new Map();
+  for (const e of all) count.set(e, (count.get(e) || 0) + 1);
+  let main = "\n", most = 0;
+  for (const [e, n] of count) if (n > most) { main = e; most = n; }
+  // (a file of lone CRs is written by the list too: the library has no such mode)
+  return {all, main, kept: count.size > 1 || main === "\r"};
+}
+// Text put into the editor by the program -- a file read, a draft coming
+// back, what a save left in the file. Not the person typing
+function edPut(text) {
+  const e = edEolsOf(text);
+  const doc = edAce.session.doc;
+  if (doc.setNewLineMode) doc.setNewLineMode(!e.kept && e.main === "\r\n" ? "windows" : "unix");
+  // The list is the new text's before the text goes in, so whoever reads
+  // the text as it lands reads it whole; and the putting itself is not an
+  // edit for the list to follow
+  edEolMain = e.main;
+  edEols = e.kept ? e.all : null;
+  edEolsGone = [];
+  edEolsPutting = true;
+  try { doc.setValue(text); } finally { edEolsPutting = false; }
+}
+// An edit, followed by the list: the line breaks it added or took away
+function edEolsEdited(delta) {
+  if (!edEols || edEolsPutting || !delta || !delta.lines || !delta.start) return;
+  const n = delta.lines.length - 1, at = delta.start.row;
+  if (n <= 0) return;
+  // The same lines at the same place: what an undo puts back is what was
+  // taken out, and it comes back as it was
+  const key = delta.start.column + "\n" + delta.lines.join("\n");
+  if (delta.action === "insert") {
+    const i = edEolsGone.findLastIndex(g => g.at === at && g.key === key);
+    const back = i < 0 ? new Array(n).fill(edEolMain) : edEolsGone.splice(i, 1)[0].eols;
+    edEols = edEols.slice(0, at).concat(back, edEols.slice(at));
+  } else {
+    edEolsGone.push({at, key, eols: edEols.slice(at, at + n)});
+    if (edEolsGone.length > ED_EOLS_GONE) edEolsGone.shift();
+    edEols = edEols.slice(0, at).concat(edEols.slice(at + n));
+  }
+}
+// Text made by the program for a file that ends its lines one way, with
+// that ending throughout: what is written anew does not bring another in
+function edEolsLike(text) {
+  return edEols ? text : text.replace(/\r\n|\r|\n/g, edEolMain);
+}
+function edText() {
+  if (!edAce) return ED.text;
+  if (!edEols) return edAce.getValue();
+  const lines = edAce.session.doc.getAllLines();
+  const out = new Array(lines.length);
+  for (let i = 0; i < lines.length; i++) out[i] = lines[i] + (i < lines.length - 1 ? (edEols[i] || edEolMain) : "");
+  return out.join("");
+}
 function mdChoose(v) {
   if (!ED.path) return;
   mdRichFlush();
@@ -20301,10 +20372,10 @@ function mdRichFlush() {
   const m = MD.rich;
   if (!m || !edAce || m.path !== ED.path) return;
   const now = m.r.markdown();
-  const text = m.front + window.MdKit.keep(m.base, m.was, now);
+  const text = edEolsLike(m.front + window.MdKit.keep(m.base, m.was, now));
   m.wrote = text;
-  if (text !== edAce.getValue()) edAce.session.doc.setValue(text);
-  ED.dirty = edAce.getValue() !== ED.text;
+  if (text !== edText()) edPut(text);
+  ED.dirty = edText() !== ED.text;
 }
 // The text changed under the visual editor (a reload, the AI writing the
 // file): taken in, with the cursor kept where it was as nearly as it can be
@@ -32457,14 +32528,17 @@ const wait = page.match(/const ED_SAVE_WAIT_MS = \d+;/)[0] + page.match(/const E
 const src = [
   "const ED = {", "function edStash() {", "function editHeard(d) {", "function editWrite(opts) {",
   "function edLineBack() {", "function editReload() {", "function edFolderNow() {",
+  "function edEolsOf(text) {", "function edPut(text) {", "function edText() {",
 ].map(piece).join("") + wait;
+let edEols = null, edEolMain = "\n", edEolsPutting = false, edEolsGone = [];
 let text = "", rich = null, asks = [];
 const changed = () => { ED.dirty = text !== ED.text; };        // the editor's own change handler
 const type = t => { text = t; changed(); };
 const edAce = {
   getValue: () => text, clearSelection() {}, moveCursorToPosition() {},
   getCursorPosition: () => ({row: 0, column: 0}),
-  session: {doc: {setValue: v => { text = v; changed(); }}, getUndoManager: () => ({reset() {}}),
+  session: {doc: {setValue: v => { text = v; changed(); }, getAllLines: () => text.split(/\r\n|\r|\n/)},
+            getUndoManager: () => ({reset() {}}),
             getScrollTop: () => 0, setScrollTop() {}},
 };
 const edDrafts = new Map(), edDraftKey = p => JSON.stringify([ED.key, p]), T = {};
@@ -32549,6 +32623,137 @@ tabFolder = "";
         let (pagefile, drive) = (
             dir.join(format!("shikisha-ed-page-{}.html", std::process::id())),
             dir.join(format!("shikisha-ed-drive-{}.js", std::process::id())),
+        );
+        std::fs::write(&pagefile, page).expect("could not write the page out");
+        std::fs::write(&drive, DRIVE).expect("could not write the script out");
+        let ran = std::process::Command::new("node").arg(&drive).arg(&pagefile).output();
+        let _ = std::fs::remove_file(&pagefile);
+        let _ = std::fs::remove_file(&drive);
+        match ran {
+            Ok(done) => assert!(done.status.success(), "{}", String::from_utf8_lossy(&done.stderr)),
+            Err(e) => eprintln!("node is missing, so the editor was not driven ({e}). It runs in CI"),
+        }
+    }
+
+    /// A file that ends its lines two ways keeps each line's own ending
+    /// through opening, editing and saving; a file that ends them one way is
+    /// written that way. The page's own functions, driven against a stand-in
+    /// for the editor's document that does what the library does: keeps lines
+    /// without their endings and reports each edit as rows added or removed.
+    #[test]
+    fn the_editor_keeps_each_lines_own_ending() {
+        const DRIVE: &str = r##"
+const fs = require("fs");
+const page = fs.readFileSync(process.argv[2], "utf8");
+function piece(start) {
+  const at = page.indexOf(start);
+  if (at < 0) throw new Error("not in the page: " + start);
+  let depth = 0, i = page.indexOf("{", at);
+  for (; i < page.length; i++) {
+    if (page[i] === "{") depth++;
+    else if (page[i] === "}" && --depth === 0) break;
+  }
+  return page.slice(at, i + 1) + ";\n";
+}
+const src = ["function edEolsOf(text) {", "function edPut(text) {", "function edEolsEdited(delta) {",
+  "function edEolsLike(text) {", "function edText() {"].map(piece).join("");
+let edEols = null, edEolMain = "\n", edEolsPutting = false, edEolsGone = [];
+const ED_EOLS_GONE = 200;
+const ED = {text: ""};
+// The library's document: lines, a mode for the ending it writes, and every
+// edit told as the rows it covers
+let lines = [""], mode = "auto", auto = "\n";
+const told = d => edEolsEdited(d);
+const doc = {
+  setNewLineMode: m => { mode = m; },
+  getAllLines: () => lines.slice(),
+  setValue(v) {
+    const was = lines.length;
+    told({action: "remove", start: {row: 0, column: 0}, end: {row: was - 1, column: 0}, lines: lines.slice()});
+    const m = v.match(/\r\n|\r|\n/);
+    auto = m ? m[0] : "\n";
+    lines = v.split(/\r\n|\r|\n/);
+    told({action: "insert", start: {row: 0, column: 0}, end: {row: lines.length - 1, column: 0}, lines: lines.slice()});
+  },
+};
+const edAce = {
+  session: {doc},
+  getValue: () => lines.join(mode === "windows" ? "\r\n" : mode === "unix" ? "\n" : auto),
+};
+// Typing: text put in at a place, and a range taken out
+const insert = (row, col, s) => {
+  const add = s.split("\n");
+  const [head, tail] = [lines[row].slice(0, col), lines[row].slice(col)];
+  const put = add.map((l, i) => (i === 0 ? head : "") + l + (i === add.length - 1 ? tail : ""));
+  lines.splice(row, 1, ...put);
+  told({action: "insert", start: {row, column: col}, end: {row: row + add.length - 1, column: 0}, lines: add});
+};
+const removeRows = (row, col, toRow, toCol) => {
+  // (told as the library tells it: the text taken out, a piece a row)
+  const gone = lines.slice(row, toRow + 1).map((l, i, all) => l.slice(i === 0 ? col : 0, i === all.length - 1 ? toCol : undefined));
+  lines.splice(row, toRow - row + 1, lines[row].slice(0, col) + lines[toRow].slice(toCol));
+  told({action: "remove", start: {row, column: col}, end: {row: toRow, column: toCol}, lines: gone});
+};
+eval(src);
+const say = (ok, what) => { if (!ok) { console.error("FAILED: " + what + "\n  text: " + JSON.stringify(edText())); process.exit(1); } };
+
+// 1. Opened and not touched, a file that mixes its endings reads back as it is
+const mixed = "one\r\ntwo\nthree\r\nfour\nfive\n";
+edPut(mixed);
+say(edText() === mixed, "a file that mixes its endings is changed by being opened");
+say(mode === "unix" && Array.isArray(edEols), "the mixed file is left to the library's guess");
+
+// 2. A character typed into one line changes that line and no ending
+insert(1, 3, "!");
+say(edText() === "one\r\ntwo!\nthree\r\nfour\nfive\n", "typing in a line changed an ending");
+
+// 3. A line added takes the ending most of the file uses, and the lines around keep theirs
+insert(0, 3, "\nnew");
+say(edText() === "one\nnew\r\ntwo!\nthree\r\nfour\nfive\n", "a line typed in moved the endings of the others");
+
+// 4. Lines taken out take their own endings with them
+removeRows(1, 3, 3, 0);
+say(edText() === "one\nnewthree\r\nfour\nfive\n", "removing lines left the wrong endings behind");
+// ...and put back by an undo (the same lines at the same place), they have them again
+insert(1, 3, "\ntwo!\n");
+say(edText() === "one\nnew\r\ntwo!\nthree\r\nfour\nfive\n", "an undo brought the lines back with other endings");
+removeRows(1, 3, 3, 0);
+
+// 5. A paste of many lines, then undone (the same edit, the other way)
+insert(2, 0, "a\nb\nc\n");
+say(edText() === "one\nnewthree\r\na\nb\nc\nfour\nfive\n", "a paste moved the endings");
+removeRows(2, 0, 5, 0);
+say(edText() === "one\nnewthree\r\nfour\nfive\n", "undoing the paste did not put the endings back");
+
+// 6. A file that ends its lines with CRLF throughout is written with CRLF, new lines too
+edPut("a\r\nb\r\n");
+say(mode === "windows" && edEols === null && edText() === "a\r\nb\r\n", "a CRLF file is not kept as CRLF");
+insert(0, 1, "\nx");
+say(edText() === "a\r\nx\r\nb\r\n", "a line typed into a CRLF file did not end with CRLF");
+// ...and text the program makes for it (the visual editor's) is given that ending
+say(edEolsLike("p\nq\r\nr") === "p\r\nq\r\nr", "text made for a CRLF file brought another ending in");
+
+// 7. An LF file whose first line happens to end with CRLF is mostly LF: new lines are LF
+edPut("first\r\n" + "x\n".repeat(20));
+insert(5, 0, "added\n");
+say(edText() === "first\r\n" + "x\n".repeat(4) + "added\n" + "x\n".repeat(16), "a new line took the first line's ending and not the file's");
+say(edEolsLike("p\nq") === "p\nq", "text made for a mixed file was rewritten");
+
+// 8. A file of lone CRs (an old Mac's) is written with CRs
+edPut("a\rb\rc");
+insert(2, 1, "\nd");
+say(edText() === "a\rb\rc\rd", "a file of lone CRs was not kept");
+
+// 9. Text with no line break yet, and an empty file
+edPut("");
+insert(0, 0, "a\nb");
+say(edText() === "a\nb", "an empty file did not take plain line feeds");
+"##;
+        let page = super::page();
+        let dir = std::env::temp_dir();
+        let (pagefile, drive) = (
+            dir.join(format!("shikisha-eol-page-{}.html", std::process::id())),
+            dir.join(format!("shikisha-eol-drive-{}.js", std::process::id())),
         );
         std::fs::write(&pagefile, page).expect("could not write the page out");
         std::fs::write(&drive, DRIVE).expect("could not write the script out");
