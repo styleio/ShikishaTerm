@@ -95,6 +95,14 @@ const USER: &str = "[user]";
 /// The words of a log as they may leave this machine, and how many things
 /// were hidden in them
 pub fn hidden(text: &str, known: &[String]) -> (String, usize) {
+    hidden_lines(text, known, true)
+}
+
+/// [`hidden`], told whether a long line is cut. The app's own record of the
+/// machine (`crate::health`) is written by this program alone, a number and
+/// a file name at a time, and its long lines are the ones that name the
+/// programs behind the trouble: they are kept whole
+fn hidden_lines(text: &str, known: &[String], cut: bool) -> (String, usize) {
     let mut n = 0;
     let mut kept = String::with_capacity(text.len());
     for line in text.lines() {
@@ -105,7 +113,7 @@ pub fn hidden(text: &str, known: &[String]) -> (String, usize) {
                 line = re.replace(&line, format!("${{1}}{LEFT_OUT}")).into_owned();
             }
         }
-        if line.chars().count() > LINE_KEPT {
+        if cut && line.chars().count() > LINE_KEPT {
             n += 1;
             line = line.chars().take(LINE_KEPT).collect::<String>() + " " + LEFT_OUT;
         }
@@ -279,6 +287,9 @@ fn folder_size(at: &std::path::Path, left: &mut u64, until: std::time::Instant) 
     (bytes, files, false)
 }
 
+/// What a disk reached over a network is called
+const SHARE: &str = "a network share";
+
 /// The disk a folder is on, as a report may name it: its letter, or that it
 /// is on a network. Never the share's name, which says where somebody works
 fn disk_name(at: &std::path::Path) -> String {
@@ -289,7 +300,7 @@ fn disk_name(at: &std::path::Path) -> String {
         return format!("{}:", (b[0] as char).to_ascii_uppercase());
     }
     if s.starts_with(r"\\") || s.starts_with("UNC") {
-        return "a network share".into();
+        return SHARE.into();
     }
     "this machine's disk".into()
 }
@@ -322,16 +333,20 @@ fn storage() -> String {
                 if f.host.is_some() {
                     continue;
                 }
+                // One on a share is named as that and not asked anything:
+                // a share that has stopped answering holds whoever asks
                 if let Some(at) = &f.cwd
                     && !folders.iter().any(|(p, _)| p == at)
                 {
-                    folders.push((at.clone(), crate::repo::is_linked(at)));
+                    folders.push((at.clone(), disk_name(at) != SHARE && crate::repo::is_linked(at)));
                 }
             }
         }
     }
     for (at, _) in &folders {
-        disk(at);
+        if disk_name(at) != SHARE {
+            disk(at);
+        }
     }
     for (name, free, total) in &disks {
         s.push_str(&format!("disk {name}: {} free of {}\n", size(*free), size(*total)));
@@ -340,6 +355,10 @@ fn storage() -> String {
     for (i, (at, linked)) in folders.iter().enumerate() {
         let kind = if *linked { "a worktree" } else { "a folder" };
         let on = disk_name(at);
+        if on == SHARE {
+            s.push_str(&format!("folder {}: on {on}, not counted\n", i + 1));
+            continue;
+        }
         if !at.exists() {
             s.push_str(&format!("folder {}: {kind} on {on}, not there\n", i + 1));
             continue;
@@ -349,6 +368,21 @@ fn storage() -> String {
         s.push_str(&format!("folder {}: {kind} on {on}, {more}{} in {more}{files} files\n", i + 1, size(bytes)));
     }
     s
+}
+
+/// The longest the disks and folders are waited for
+const STORAGE_FOR: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// [`storage`], given up on after `wait`: a disk that has stopped answering
+/// -- a drive letter for a share whose network is gone -- holds whoever asks
+/// it for as long as it likes, and the rest of the report is worth having
+/// without it
+fn storage_within(wait: std::time::Duration) -> String {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let _ = std::thread::Builder::new().name("shikisha-diag-storage".into()).spawn(move || {
+        let _ = tx.send(storage());
+    });
+    rx.recv_timeout(wait).unwrap_or_else(|_| "the disks did not answer in time, and are left out\n".to_string())
 }
 
 /// What this copy is and what it runs on, in a few lines
@@ -395,7 +429,7 @@ fn about() -> String {
 pub fn bundle() -> Result<(String, Vec<u8>, usize)> {
     let known = known_keys();
     let mut hid = 0;
-    let mut files: Vec<(&str, String)> = vec![("about.txt", about()), ("storage.txt", storage())];
+    let mut files: Vec<(&str, String)> = vec![("about.txt", about()), ("storage.txt", storage_within(STORAGE_FOR))];
     // The records that say when each line was written go in by the week:
     // what a person reports has often been going on for days
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
@@ -442,7 +476,7 @@ pub fn bundle() -> Result<(String, Vec<u8>, usize)> {
     let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
     let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
     for (name, text) in files {
-        let (text, n) = hidden(&text, &known);
+        let (text, n) = hidden_lines(&text, &known, name != "health.log");
         hid += n;
         zip.start_file(name, opts)?;
         zip.write_all(text.as_bytes())?;
@@ -550,6 +584,19 @@ mod tests {
         let mut left = 100;
         assert!(folder_size(&dir.join("in"), &mut left, std::time::Instant::now()).2, "the counting went on past its time");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The app's own record of the machine keeps its long lines, which name
+    /// the programs; any other log's long line is somebody's words
+    #[test]
+    fn the_record_of_the_machine_keeps_its_long_lines() {
+        let long = format!("[pid 1 at 2] cpu 93% | most memory: {}", "msedgewebview2.exe 2.6 GB, ".repeat(20));
+        assert!(long.len() > LINE_KEPT);
+        let (cut, n) = hidden(&long, &[]);
+        assert!(cut.contains(LEFT_OUT) && n == 1, "{cut}");
+        let (whole, n) = hidden_lines(&long, &[], false);
+        assert_eq!(whole.trim_end(), long.trim_end());
+        assert_eq!(n, 0);
     }
 
     /// A disk is named by its letter, a share only as a share

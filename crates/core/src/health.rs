@@ -220,22 +220,41 @@ fn most<T: Copy + PartialOrd>(all: &std::collections::HashMap<String, T>) -> Vec
 fn top() -> Top {
     use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
     let kind = ProcessRefreshKind::nothing().with_cpu().with_memory().without_tasks();
+    // Where a program is named by what it calls itself, its file is asked for too (`program`)
+    #[cfg(not(windows))]
+    let kind = kind.with_exe(sysinfo::UpdateKind::OnlyIfNotSet);
     let mut sys = System::new();
+    // All the machine's processors, not the ones this program is let onto:
+    // what a program uses is read off the machine's own clock. Known before
+    // the programs are looked at, which is worked out from how many there are
+    sys.refresh_cpu_list(sysinfo::CpuRefreshKind::nothing());
+    let cores = sys.cpus().len().max(1) as f32;
     sys.refresh_processes_specifics(ProcessesToUpdate::All, true, kind);
     std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL.max(Duration::from_millis(500)));
     sys.refresh_processes_specifics(ProcessesToUpdate::All, true, kind);
-    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1) as f32;
     let mut cpu: std::collections::HashMap<String, f32> = Default::default();
     let mut memory: std::collections::HashMap<String, u64> = Default::default();
     for p in sys.processes().values() {
-        let name = p.name().to_string_lossy().into_owned();
-        if name.is_empty() {
-            continue;
-        }
+        let name = program(p);
         *cpu.entry(name.clone()).or_default() += p.cpu_usage() / cores;
         *memory.entry(name).or_default() += p.memory();
     }
     Top { cpu: most(&cpu), memory: most(&memory) }
+}
+
+/// What stands for the programs whose file cannot be read
+const UNNAMED: &str = "(other programs)";
+
+/// A program by the name of its file. On Windows that is what the system
+/// calls it; elsewhere a program can call itself anything -- a service
+/// named after the customer it serves -- so the file it was started from is
+/// read instead, and one that does not show its file is not named at all
+fn program(p: &sysinfo::Process) -> String {
+    #[cfg(windows)]
+    let name = Some(p.name().to_string_lossy().into_owned());
+    #[cfg(not(windows))]
+    let name = p.exe().and_then(|e| e.file_name()).map(|n| n.to_string_lossy().into_owned());
+    name.filter(|n| !n.is_empty()).unwrap_or_else(|| UNNAMED.to_string())
 }
 
 /// Look at the machine once a minute for as long as the app runs, on a
@@ -359,6 +378,9 @@ mod tests {
             let stop = stop.clone();
             std::thread::spawn(move || while !stop.load(std::sync::atomic::Ordering::Relaxed) { std::hint::spin_loop() })
         };
+        // ...and has been for a moment: a program that has used no time yet
+        // has nothing for its next look to be measured against
+        std::thread::sleep(Duration::from_millis(300));
         let top = top();
         stop.store(true, std::sync::atomic::Ordering::Relaxed);
         let _ = busy.join();
