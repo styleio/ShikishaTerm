@@ -16447,6 +16447,20 @@ function drawNoticeAsks() {
 // Another question up first is left alone and this one waits for it; one
 // asked over this one takes the frame, and this one comes back after it --
 // being covered is not an answer
+// A notification on a phone is tapped: the board opens (or the one already
+// open is brought forward) at an address that names the tab the notification
+// was about -- `#tab=N`, the tab's number on the board. That tab is put in
+// front, once, and the name taken out of the address: left there, a reload
+// days later would jump to whatever is under that number by then
+function tabFromLink() {
+  const m = /^#tab=(\d+)$/.exec(location.hash || "");
+  if (!m || !S || !S.tabs) return;
+  try { history.replaceState(null, "", location.pathname + location.search); } catch (e) { location.hash = ""; }
+  const n = Number(m[1]);
+  if (S.active !== n && S.tabs.some(t => t.index === n)) send({kind:"select", tab:n});
+}
+window.addEventListener("hashchange", tabFromLink);
+
 let pageDialogAsking = 0;
 function drawPageDialogs() {
   const box = document.getElementById("sask");
@@ -17756,6 +17770,7 @@ window.__state = function (json) {
   drawKeyChanges();
   drawNoticeAsks();
   drawPageDialogs();
+  tabFromLink();
   drawTrustAsks();
   drawHookAsk();
   drawStatus();

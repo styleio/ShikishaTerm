@@ -141,6 +141,9 @@ once it reaches its first tagged release.
   another device goes on pressing OK until both ends are this version.
 
 ### Fixed
+- **Tapping a notification on a phone opens the tab it is about.** Unless
+  the tab was set to send a reply link, the tap opened the board wherever
+  it was last left, and the finished tab had to be found by hand.
 - **When the SHIKISHA bridge cannot be put on a server, the reason is
   said.** A full disk and a home folder that programs may not run from
   (`noexec`) both ended as "did not run there". Each is now said as what

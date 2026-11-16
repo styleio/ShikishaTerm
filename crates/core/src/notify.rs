@@ -240,6 +240,19 @@ pub fn send_blocking(dest: &Destination, text: &str) -> Result<(), String> {
     send_blocking_about(dest, text, None)
 }
 
+/// Where a tap on a phone's notification goes: the reply link when the
+/// message carries one, and otherwise the board at the tab the message is
+/// about. Without the second a notification saying a tab finished opened the
+/// board wherever it was last left, and the tab had to be found by hand.
+///
+/// By the tab's number on the board, in the address's fragment: the phone
+/// subscribed from the board itself and opens it at its own address, so
+/// nothing about this machine travels in the message -- which is what a
+/// tab set to send no reply link asked for
+fn tap_goes_to(link: Option<&str>, tab: Option<usize>) -> Option<String> {
+    link.map(str::to_string).or_else(|| tab.map(|n| format!("/#tab={n}")))
+}
+
 pub fn send_blocking_about(
     dest: &Destination,
     text: &str,
@@ -268,7 +281,8 @@ pub fn send_blocking_about(
             None => &rest[..],
         };
         let body = clip(body.join(" ").trim(), dest.limit());
-        return crate::push::send(title, &body, link).map(|_| ());
+        let to = tap_goes_to(link, tab);
+        return crate::push::send(title, &body, to.as_deref()).map(|_| ());
     }
     // Nothing to post, nothing to time out: this one is a call into the shell.
     if let Destination::Windows {} = dest {
@@ -352,6 +366,17 @@ pub fn banner_raise() {
     if let Some(t) = local_banners() {
         t.raise();
     }
+}
+
+#[cfg(test)]
+#[test]
+fn a_tap_on_a_phones_notification_goes_to_the_tab_it_is_about() {
+    assert_eq!(tap_goes_to(Some("http://100.64.1.2:8787/r/K3fQ92mZxAbC"), Some(3)).as_deref(), Some("http://100.64.1.2:8787/r/K3fQ92mZxAbC"));
+    assert_eq!(tap_goes_to(None, Some(3)).as_deref(), Some("/#tab=3"));
+    assert_eq!(tap_goes_to(None, None), None);
+    // The board reads it, and takes it out of the address once it has
+    let page = crate::shell::page();
+    assert!(page.contains("function tabFromLink() {") && page.contains(r#"window.addEventListener("hashchange", tabFromLink);"#));
 }
 
 #[cfg(test)]
