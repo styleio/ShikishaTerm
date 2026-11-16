@@ -377,6 +377,36 @@ fn a_tab_with_mail_and_nothing_to_do_is_told_once() {
     assert!(w.o.tick(&w.scene).is_empty(), "told once");
 }
 
+/// Told of its mail and never coming for it, a tab is told again after a
+/// while -- the line may have been lost on a busy screen, or with an AI's
+/// memory of the turn it arrived in -- and after a few times is left alone
+#[test]
+fn a_tab_that_does_not_come_for_its_mail_is_told_again_a_few_times() {
+    let mut w = World::new();
+    w.o.mail_tab(&uid("codex"), "claude", "The reply of <@claude>", "Done.");
+    let told = vec![Effect::Type { tab: uid("codex"), lead: None, text: text::mail_line(1) }];
+    let age = |w: &mut World, ms: i64| w.o.store().unwrap().age_tellings(ms);
+    assert_eq!(w.o.tick(&w.scene), told);
+    w.o.typed(&uid("codex"), true);
+    assert!(w.o.tick(&w.scene).is_empty(), "told twice in a row");
+    // Not yet a while
+    age(&mut w, db::TOLD_AGAIN_MS - 60_000);
+    assert!(w.o.tick(&w.scene).is_empty(), "told again too soon");
+    // A while: again, and the same goes for the time after
+    for again in 2..=db::TOLD_TIMES {
+        age(&mut w, db::TOLD_AGAIN_MS);
+        assert_eq!(w.o.tick(&w.scene), told, "not told a {again}th time");
+        w.o.typed(&uid("codex"), true);
+        assert!(w.o.tick(&w.scene).is_empty());
+    }
+    // ...and then no more, however long it sits
+    age(&mut w, db::TOLD_AGAIN_MS * 100);
+    assert!(w.o.tick(&w.scene).is_empty(), "a tab that will not read its mail is told for ever");
+    // New mail is its own: told of at once, with what is still unread beside it not counted again
+    w.o.mail_tab(&uid("codex"), "claude", "Another", "More.");
+    assert_eq!(w.o.tick(&w.scene), told, "new mail in a box that was given up on is not told of");
+}
+
 /// A tab somebody is typing into is not typed into by a job: a line about
 /// mail put into a prompt half written would be sent along with their words.
 /// It waits until their hands are off, and is said then

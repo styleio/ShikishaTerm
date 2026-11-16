@@ -141,6 +141,11 @@ once it reaches its first tagged release.
   another device goes on pressing OK until both ends are this version.
 
 ### Fixed
+- **A tab that did not pick up its mail is told again.** A tab was told
+  once that mail from another tab had arrived; when an AI lost that line
+  (a busy screen, its memory of the turn cut down) the mail sat unread
+  for good -- a report nobody collected, a reply nobody read. Unread mail
+  is now pointed out again after fifteen minutes, three times in all.
 - **Work handed to a new Codex tab is no longer typed into Codex's
   "Update available" question.** A tab the app opens for another AI
   (`open_ai_tab`) is typed into as soon as it is up, and when Codex opened

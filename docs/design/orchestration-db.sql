@@ -1,5 +1,5 @@
 -- The record of work handed between AI tabs (orchestration.db), as the
--- steps in crates/core/src/orch/migrations/ leave it at version 3.
+-- steps in crates/core/src/orch/migrations/ leave it at version 4.
 --
 -- Written by a test; do not edit. Change the tables by adding a step (see
 -- orchestration-db.md), then write this again:
@@ -90,7 +90,7 @@ CREATE TABLE mail (
   -- the box's tab has been told it is there
   is_told INTEGER NOT NULL DEFAULT 0,
   sent_at INTEGER NOT NULL
-);
+, told_at INTEGER, told_times INTEGER NOT NULL DEFAULT 0);
 
 CREATE TABLE opened_tabs (
   tab TEXT NOT NULL,

@@ -61,6 +61,7 @@ pub const STEPS: &[(i64, &str, Step)] = &[
     (1, "tables", Step::Sql(include_str!("migrations/0001_tables.sql"))),
     (2, "table baseline", Step::Code(check_baseline)),
     (3, "tab uids", Step::Sql(include_str!("migrations/0003_tab_uids.sql"))),
+    (4, "mail told again", Step::Sql(include_str!("migrations/0004_mail_told_again.sql"))),
 ];
 
 // Also permits a fresh record interrupted after step 1 to resume. A file
@@ -272,6 +273,14 @@ fn ids(v: &str) -> Vec<i64> {
 }
 
 // -- bringing a record up to date ---------------------------------------------
+
+/// How long after a tab was told of its mail it is told again, when the
+/// mail is still unread: long enough that a tab at work on something else
+/// is not nagged between two of its turns, short enough that a report a
+/// lead never collected is not found the next morning
+pub const TOLD_AGAIN_MS: i64 = 15 * 60 * 1000;
+/// How many times in all a tab is told of the same mail
+pub const TOLD_TIMES: i64 = 3;
 
 /// Run every step a record does not have yet (see [`crate::sqlite::migrate`])
 pub fn migrate(conn: &mut Connection, steps: &[(i64, &str, Step)], backup: Option<&Path>) -> Result<()> {
@@ -973,22 +982,35 @@ impl Store {
             .collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    /// Boxes with unread mail their tab has not been told about, and how much
+    /// Boxes with unread mail their tab is to be told about, and how much:
+    /// mail it has not been told of, and mail it was told of a while ago
+    /// (`TOLD_AGAIN_MS`) and has still not come for -- up to `TOLD_TIMES`
+    /// times in all, after which a tab that will not read it is left alone
     pub fn untold(&self) -> Result<Vec<(String, usize)>> {
-        let mut st = self
-            .conn
-            .prepare("SELECT box, COUNT(*) FROM mail WHERE is_read = 0 AND is_told = 0 GROUP BY box")?;
+        let mut st = self.conn.prepare(
+            "SELECT box, COUNT(*) FROM mail WHERE is_read = 0              AND (is_told = 0 OR (told_times < ?1 AND COALESCE(told_at, 0) <= ?2)) GROUP BY box",
+        )?;
         Ok(st
-            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as usize)))?
+            .query_map(params![TOLD_TIMES, now_ms() - TOLD_AGAIN_MS], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as usize)))?
             .collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    /// The box's tab has been told about everything unread in it: nothing said
-    /// so far is pointed at again
+    /// The box's tab has been told about everything unread in it, now
     pub fn told(&mut self, box_: &str) -> Result<()> {
-        self.conn
-            .execute("UPDATE mail SET is_told = 1 WHERE box = ?1 AND is_read = 0", params![box_])?;
+        self.conn.execute(
+            "UPDATE mail SET is_told = 1, told_at = ?2, told_times = told_times + 1 WHERE box = ?1 AND is_read = 0",
+            params![box_, now_ms()],
+        )?;
         Ok(())
+    }
+
+    /// Every telling as if `by_ms` earlier, for a test of when mail is
+    /// pointed out again
+    #[cfg(test)]
+    pub fn age_tellings(&mut self, by_ms: i64) {
+        self.conn
+            .execute("UPDATE mail SET told_at = told_at - ?1 WHERE told_at IS NOT NULL", params![by_ms])
+            .unwrap();
     }
 
     /// Every handover given as if `by_ms` earlier, for a test of how long one
