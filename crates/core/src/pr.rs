@@ -937,8 +937,7 @@ fn run_gh_raw(args: &[&str], input: &str) -> Result<String, GhFailed> {
         match child.try_wait().map_err(|_| GhFailed::Silent)? {
             Some(s) => break s,
             None if started.elapsed() > GH_LIMIT => {
-                let _ = child.kill();
-                let _ = child.wait();
+                crate::end_tree(&mut child);
                 return Err(GhFailed::Silent);
             }
             None => std::thread::sleep(Duration::from_millis(20)),

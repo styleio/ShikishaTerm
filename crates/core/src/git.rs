@@ -632,8 +632,7 @@ fn run_bytes_as(dir: &Path, args: &[&str], input: &[u8], limit: Duration, who: &
         match child.try_wait()? {
             Some(s) => break s,
             None if started.elapsed() > limit => {
-                let _ = child.kill();
-                let _ = child.wait();
+                crate::end_tree(&mut child);
                 bail!(crate::i18n::tp(
                     "err.git.timeout",
                     &[("cmd", &args.join(" "))]

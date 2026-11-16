@@ -127,6 +127,12 @@ impl Job {
         if let Ok(mut c) = self.child.lock()
             && let Some(child) = c.as_mut()
         {
+            // With what it started: a clone is git and the programs git
+            // runs, and those would go on writing into the folder that is
+            // about to be taken away
+            for pid in crate::started_by(child.id()) {
+                crate::end_process(pid);
+            }
             let _ = child.kill();
         }
     }

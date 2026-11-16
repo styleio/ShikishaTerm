@@ -141,6 +141,10 @@ once it reaches its first tagged release.
   another device goes on pressing OK until both ends are this version.
 
 ### Fixed
+- **Stopping a clone, or a git that took too long, stops all of it.** Only
+  git itself was ended; the programs it had started -- the one talking to
+  the server, the one unpacking -- went on, writing into a folder that
+  was then removed or holding the repository's lock for the next command.
 - **A pull request with more than a hundred checks, reviews or comments
   is read whole.** Only the first hundred of each were read: a failing
   check past the hundredth was counted as passed, and a pull request

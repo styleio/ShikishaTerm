@@ -256,6 +256,106 @@ pub fn stays_behind() -> bool {
     *AT.get_or_init(|| std::env::args().skip(1).any(|a| a == BEHIND))
 }
 
+/// End a program this one started, and everything that program started.
+///
+/// `Child::kill` ends the one process. A git that is given up on has helpers
+/// of its own by then -- the program that speaks to the server
+/// (`git-remote-https`, `ssh`), a credential helper waiting for an answer, a
+/// clone's `index-pack` -- and those went on alone: a clone "stopped" kept
+/// downloading into a folder that was then taken away under it, and a fetch
+/// that timed out held the repository's lock for the next one to trip on.
+///
+/// The helpers are found by who started them, at the moment of ending, and
+/// ended first -- deepest first, so none is left to be adopted by a parent
+/// that is about to go -- then the program itself
+pub fn end_tree(child: &mut std::process::Child) {
+    for pid in started_by(child.id()) {
+        end_process(pid);
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// Every process started, at any remove, by the process `root`: deepest
+/// first. Read from the system's table as it is now
+pub(crate) fn started_by(root: u32) -> Vec<u32> {
+    let table = repo::process_table(None, sysinfo::ProcessRefreshKind::nothing());
+    let mut found: Vec<u32> = Vec::new();
+    let mut from = vec![root];
+    while let Some(parent) = from.pop() {
+        for (pid, p) in table.processes() {
+            let pid = pid.as_u32();
+            if p.parent().is_some_and(|pp| pp.as_u32() == parent) && pid != root && !found.contains(&pid) {
+                found.push(pid);
+                from.push(pid);
+            }
+        }
+    }
+    found.reverse();
+    found
+}
+
+#[cfg(unix)]
+pub(crate) fn end_process(pid: u32) {
+    // SAFETY: a signal to a process id read from the table a moment ago
+    unsafe {
+        libc::kill(pid as libc::pid_t, libc::SIGKILL);
+    }
+}
+
+#[cfg(windows)]
+pub(crate) fn end_process(pid: u32) {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess};
+    // SAFETY: opened only to end it, and closed below
+    unsafe {
+        let p = OpenProcess(PROCESS_TERMINATE, 0, pid);
+        if !p.is_null() {
+            TerminateProcess(p, 1);
+            CloseHandle(p);
+        }
+    }
+}
+
+/// A program given up on takes what it started with it
+#[cfg(test)]
+#[test]
+fn a_program_given_up_on_takes_what_it_started_with_it() {
+    // A shell that starts something long and waits for it: the shape of a
+    // git with a helper
+    #[cfg(windows)]
+    let mut cmd = {
+        let mut c = std::process::Command::new("cmd.exe");
+        c.args(["/d", "/c", "ping -n 60 127.0.0.1 >nul"]);
+        c
+    };
+    #[cfg(unix)]
+    let mut cmd = {
+        let mut c = std::process::Command::new("sh");
+        c.args(["-c", "sleep 60 & wait"]);
+        c
+    };
+    let mut child = detach_console(&mut cmd).stdout(std::process::Stdio::null()).spawn().unwrap();
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut helpers = Vec::new();
+    while helpers.is_empty() {
+        assert!(std::time::Instant::now() < until, "the helper did not start");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        helpers = started_by(child.id());
+    }
+    let runs = |pid: u32| {
+        let table = repo::process_table(Some(&[pid]), sysinfo::ProcessRefreshKind::nothing());
+        table.process(sysinfo::Pid::from_u32(pid)).is_some()
+    };
+    assert!(helpers.iter().all(|p| runs(*p)));
+    end_tree(&mut child);
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while helpers.iter().any(|p| runs(*p)) {
+        assert!(std::time::Instant::now() < until, "what the program started outlived it: {helpers:?}");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
 /// Keeps a child process from popping up a window.
 ///
 /// Console apps like cmd.exe show a black window if launched quietly.
