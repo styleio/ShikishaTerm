@@ -141,6 +141,12 @@ once it reaches its first tagged release.
   another device goes on pressing OK until both ends are this version.
 
 ### Fixed
+- **The server gets its browser back after the browser dies.** When the
+  server's Chromium crashed or was killed for the memory it used, every
+  page opened afterwards failed until the server was restarted; a new one
+  is now started for the next page. And a Chromium left running by a
+  server that was killed no longer keeps the next start from opening
+  pages: it is found and ended first.
 - **A WSL distribution installed while the app runs is recognised.** The
   list of distributions was read once at start, so a tab in a new one did
   not follow its folder until the app was restarted; and on machines

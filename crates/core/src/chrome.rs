@@ -335,6 +335,12 @@ impl Chrome {
     pub fn start_in(profile: std::path::PathBuf, temporary: bool) -> anyhow::Result<Self> {
         let exe = ready()?;
         std::fs::create_dir_all(&profile)?;
+        // A browser left behind on this profile by a run that was killed
+        // would keep the profile to itself, and this one would never say it
+        // had started
+        if !temporary {
+            reclaim(&profile);
+        }
 
         let mut cmd = std::process::Command::new(&exe);
         cmd.arg("--headless=new")
@@ -401,6 +407,12 @@ impl Chrome {
             }
         };
         Ok(Self { child, profile, temporary, cdp, port })
+    }
+
+    /// Whether the browser is still there to be spoken to. It can go on its
+    /// own: killed for the memory it took, crashed, stopped by somebody
+    pub fn alive(&self) -> bool {
+        self.cdp.alive.load(Ordering::Relaxed)
     }
 
     /// Where a DevTools screen for the page `target` is opened, in this same
@@ -543,6 +555,74 @@ fn as_root() -> bool {
 fn as_root() -> bool {
     false
 }
+
+/// End a browser that an earlier run left on this profile.
+///
+/// A run that is killed outright (out of memory, `kill -9`, the machine's
+/// own doing) never gets to close its browser, and the browser goes on
+/// without it. The next browser started on the same profile finds the
+/// profile held and hands its work to the one holding it -- which nobody is
+/// connected to -- so the start waits its whole time and fails, every time,
+/// until somebody finds the stray process.
+///
+/// Only one nobody owns is ended: a browser on this profile whose starter is
+/// gone (its parent is no longer a program of this name). One that another
+/// run of this program started and still holds is left to that run
+#[cfg(unix)]
+fn reclaim(profile: &std::path::Path) {
+    let named = format!("--user-data-dir={}", profile.display());
+    let ours = std::env::current_exe().ok().and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
+    let table = crate::repo::process_table(None, sysinfo::ProcessRefreshKind::nothing().with_cmd(sysinfo::UpdateKind::Always));
+    let strays: Vec<sysinfo::Pid> = table
+        .processes()
+        .iter()
+        .filter(|(_, p)| is_the_browser_on(p.cmd(), &named))
+        .filter(|(_, p)| {
+            let owner = p.parent().and_then(|pp| table.process(pp)).map(|pp| pp.name().to_string_lossy().into_owned());
+            owner.is_none() || owner != ours
+        })
+        .map(|(pid, _)| *pid)
+        .collect();
+    for pid in strays {
+        crate::append_hook_log(&format!(
+            "chrome: a browser left on {} by a run that is gone (pid {pid}) is ended, so that this one can start",
+            profile.display()
+        ));
+        // SAFETY: a signal to a process id read from the table a moment ago
+        unsafe {
+            libc::kill(pid.as_u32() as libc::pid_t, libc::SIGTERM);
+        }
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let gone = || unsafe { libc::kill(pid.as_u32() as libc::pid_t, 0) != 0 };
+        while !gone() && std::time::Instant::now() < until {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        if !gone() {
+            // SAFETY: as above
+            unsafe {
+                libc::kill(pid.as_u32() as libc::pid_t, libc::SIGKILL);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(300));
+        }
+    }
+}
+
+/// Whether a command line is that of the browser itself on a profile: it
+/// names the profile, and is not one of the helpers the browser starts
+/// (which say what kind they are and go when it does). Read as one line: a
+/// browser rewrites its own command line, and what the system hands back
+/// is sometimes the words and sometimes all of them run together
+#[cfg(any(unix, test))]
+fn is_the_browser_on(cmd: &[std::ffi::OsString], named: &str) -> bool {
+    let line = cmd.iter().map(|w| w.to_string_lossy()).collect::<Vec<_>>().join(" ");
+    let names_it = line.match_indices(named).any(|(at, _)| line[at + named.len()..].chars().next().is_none_or(|c| c == ' '));
+    names_it && !line.contains("--type=")
+}
+
+/// Windows ends a browser with the run that started it (the job it is in),
+/// so none is left to find
+#[cfg(not(unix))]
+fn reclaim(_profile: &std::path::Path) {}
 
 impl Drop for Chrome {
     fn drop(&mut self) {
@@ -1036,8 +1116,19 @@ impl Pages {
         // rather than a browser of its own: the isolation is the storage, and
         // a second process would buy nothing but a second process
         let key = if profile.private { "default".to_string() } else { folder_name(&profile.name) };
-        if let Some(c) = self.browsers.borrow().get(&key) {
-            return Ok(Rc::clone(c));
+        let kept = self.browsers.borrow().get(&key).map(Rc::clone);
+        match kept {
+            Some(c) if c.alive() => return Ok(c),
+            // It went on its own (crashed, killed for its memory). Kept, it
+            // would answer "the browser is gone" to every page opened from
+            // now until the program is started again: its pages are forgotten
+            // -- they went with it -- and another is started in its place
+            Some(dead) => {
+                crate::append_hook_log(&format!("chrome: the browser for '{key}' is gone; starting another"));
+                self.forget(&dead);
+                self.browsers.borrow_mut().remove(&key);
+            }
+            None => {}
         }
         let chrome = Rc::new(Chrome::start_in(self.root.join(&key), self.temporary)?);
         let staging = self.staging(&key);
@@ -1048,6 +1139,23 @@ impl Pages {
         self.let_downloads(&chrome, &key, None);
         self.browsers.borrow_mut().insert(key, Rc::clone(&chrome));
         Ok(chrome)
+    }
+
+    /// Forget the pages a browser had: it is gone, and they with it
+    fn forget(&self, browser: &Rc<Chrome>) {
+        let theirs: Vec<String> =
+            self.open.borrow().iter().filter(|(_, p)| Rc::ptr_eq(&p.browser, browser)).map(|(n, _)| n.clone()).collect();
+        let mut book = self.seen.lock().unwrap_or_else(|e| e.into_inner());
+        for name in theirs {
+            let Some(page) = self.open.borrow_mut().remove(&name) else { continue };
+            crate::pagedialog::gone(&name);
+            crate::pagedialog::no_longer(&page.session);
+            book.named.remove(&page.session);
+            book.targets.remove(&page.target);
+            book.cast.remove(&name);
+            book.auth.remove(&name);
+            self.refs.lock().unwrap_or_else(|e| e.into_inner()).remove(&Some(name));
+        }
     }
 
     /// Where this profile's downloads are kept while they arrive
@@ -2179,6 +2287,106 @@ mod tests {
         until("the page to be left", &|| title().contains("つぎ") || pages.href(Some(name), 5_000).is_ok_and(|u| u.ends_with("/next")));
         assert_eq!(crate::pagedialog::open_on(name), None, "leaving was held as a question");
         let _ = pages.close_child(name);
+    }
+
+    /// A browser that dies is replaced when a page is next opened, and a
+    /// browser left on a profile by a run that was killed does not keep the
+    /// next run from starting one. Against a real browser; the second half
+    /// is about what a machine does with a process nobody waits for, so it
+    /// runs where the program runs as a server
+    ///
+    ///     cargo test -p shikisha-core --lib a_browser_that_died -- --ignored --nocapture
+    #[test]
+    #[ignore = "needs a browser on this machine"]
+    fn a_browser_that_died_is_replaced_and_a_stray_one_is_ended() {
+        use shikisha_shared::{BrowserHost, BrowserProfile, Sel};
+        assert!(found().is_some(), "this machine has no browser");
+        let site = serve();
+        let store = std::env::temp_dir().join(format!("shikisha-pages-{}", crate::random_hex(8)));
+        // Profiles that last, as on a server: a throwaway one is never met twice
+        let pages = Pages::under(store.clone(), false);
+        let ready = |name: &'static str| {
+            waited(&pages, |ev| match ev {
+                shikisha_shared::Ev::Ready { from: Some(n), complete: true, .. } if n == name => Some(()),
+                _ => None,
+            })
+            .expect("the page does not report that loading finished")
+        };
+        pages.open_child("first", &site, (0, 0, 900, 700), BrowserProfile::shared_default()).expect("the page does not open");
+        ready("first");
+
+        // The browser is killed under it
+        let browser = pages.browser_for(&BrowserProfile::shared_default()).unwrap();
+        let pid = browser.child.id();
+        #[cfg(unix)]
+        // SAFETY: a signal to this test's own child
+        unsafe {
+            libc::kill(pid as libc::pid_t, libc::SIGKILL);
+        }
+        #[cfg(windows)]
+        {
+            let _ = std::process::Command::new("taskkill").args(["/PID", &pid.to_string(), "/T", "/F"]).output();
+        }
+        drop(browser);
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while pages.browsers.borrow().values().any(|c| c.alive()) {
+            assert!(std::time::Instant::now() < until, "the browser was killed and is still taken to be there");
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        // A page opened now gets a browser, not "the browser is gone"
+        pages.open_child("second", &site, (0, 0, 900, 700), BrowserProfile::shared_default()).expect("no page opens after the browser died");
+        ready("second");
+        assert_eq!(pages.text(Some("second"), &Sel::Css("#here".into()), 10_000).unwrap().as_deref(), Some("ここにいる"));
+        assert!(pages.text(Some("first"), &Sel::Css("#here".into()), 2_000).is_err(), "a page of the dead browser is still answered for");
+
+        // A browser nobody owns, on a profile: started by a shell that has
+        // gone, the way one outlives a run that was killed
+        #[cfg(unix)]
+        {
+            let profile = store.join("stray");
+            std::fs::create_dir_all(&profile).unwrap();
+            let exe = found().unwrap();
+            let line = format!(
+                "'{}' --headless=new --remote-debugging-port=0 --user-data-dir='{}' --no-first-run --no-sandbox about:blank >/dev/null 2>&1 &",
+                exe.display(),
+                profile.display()
+            );
+            std::process::Command::new("sh").arg("-c").arg(&line).status().unwrap();
+            let named = format!("--user-data-dir={}", profile.display());
+            let strays = || {
+                let table = crate::repo::process_table(None, sysinfo::ProcessRefreshKind::nothing().with_cmd(sysinfo::UpdateKind::Always));
+                table.processes().values().filter(|p| is_the_browser_on(p.cmd(), &named)).count()
+            };
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while strays() == 0 {
+                assert!(std::time::Instant::now() < until, "the stray browser did not start");
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            // Let it take the profile
+            std::thread::sleep(std::time::Duration::from_millis(1500));
+            let started = std::time::Instant::now();
+            let chrome = Chrome::start_in(profile.clone(), false).expect("a stray browser on the profile keeps this one from starting");
+            assert!(started.elapsed() < std::time::Duration::from_secs(15), "it started only after waiting out the stray: {:?}", started.elapsed());
+            assert_eq!(strays(), 1, "the stray is still there beside the new one");
+            drop(chrome);
+        }
+        drop(pages);
+        let _ = std::fs::remove_dir_all(&store);
+    }
+
+    /// The browser on a profile is told from its helpers and from a browser
+    /// on a profile whose name only starts the same, however the system
+    /// hands the command line back
+    #[test]
+    fn the_browser_on_a_profile_is_told_from_its_helpers_and_its_neighbours() {
+        let cmd = |words: &[&str]| words.iter().map(std::ffi::OsString::from).collect::<Vec<_>>();
+        let named = "--user-data-dir=/srv/p/work";
+        assert!(is_the_browser_on(&cmd(&["/opt/chrome", "--headless=new", named, "about:blank"]), named));
+        assert!(is_the_browser_on(&cmd(&["/opt/chrome --headless=new --user-data-dir=/srv/p/work about:blank"]), named), "run together");
+        assert!(is_the_browser_on(&cmd(&["/opt/chrome", named]), named), "last on the line");
+        assert!(!is_the_browser_on(&cmd(&["/opt/chrome --type=renderer --user-data-dir=/srv/p/work --lang=en"]), named), "a helper");
+        assert!(!is_the_browser_on(&cmd(&["/opt/chrome", "--user-data-dir=/srv/p/work2"]), named), "another profile");
+        assert!(!is_the_browser_on(&cmd(&["/opt/chrome", "--headless=new"]), named));
     }
 
     /// A profile name cannot become a different folder.
