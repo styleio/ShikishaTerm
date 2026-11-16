@@ -1640,9 +1640,19 @@ function shikisha.browser_wait(name, opts)
     shikisha.browser_ask(name, opts.ask, opts.label or shikisha.t("agent.browser.wait.label"))
   end
   while left > 0 do
-    if opts.selector and shikisha.browser_find(name, opts.selector) == "visible" then
-      if opts.ask then shikisha.browser_unask(name) end
-      return "selector"
+    if opts.selector then
+      -- Looked for with the bar still to be taken away if looking fails (the
+      -- page went, or opened an alert, confirm or prompt): a bar left up
+      -- would ask the person about something that is no longer waiting
+      local ok, found = pcall(shikisha.browser_find, name, opts.selector)
+      if not ok then
+        if opts.ask then pcall(shikisha.browser_unask, name) end
+        error(found, 0)
+      end
+      if found == "visible" then
+        if opts.ask then shikisha.browser_unask(name) end
+        return "selector"
+      end
     end
     if opts.ask and shikisha.browser_pressed(name) then
       shikisha.browser_unask(name)

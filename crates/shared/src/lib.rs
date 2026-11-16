@@ -741,8 +741,10 @@ pub enum Ev {
     PageDialogGone { from: Option<String> },
     /// The person's answer to a page's box, from the board or a phone.
     /// `page` is the page's in-window name and `id` the opening the answer
-    /// is for; `text` is what was typed into a prompt
-    DialogAnswer { page: String, id: u64, accept: bool, text: String },
+    /// is for; `text` is what was typed into a prompt -- or `None` when the
+    /// field was left as the page filled it, which is then what the page
+    /// gets (all of it, however much of it the field showed)
+    DialogAnswer { page: String, id: u64, accept: bool, text: Option<String> },
     /// The person's answer about writing an AI CLI's yes for new worktrees
     /// into that CLI's own file, from the board or a phone: yes, no, or
     /// (`None`) the question put away without one
@@ -1231,6 +1233,14 @@ pub trait BrowserHost {
     /// page opens one (`Ev::PageDialog`) answers this
     fn answer_dialog(&self, _to: Option<&str>, _accept: bool, _text: &str) -> anyhow::Result<()> {
         anyhow::bail!("this browser does not hold a page's dialogs to be answered")
+    }
+    /// Go back to pressing OK on every box a page opens, the moment it
+    /// opens (`on`), or hold them again. For a page opened for somebody who
+    /// does not know boxes are held -- an older program at the other end of
+    /// the line -- which would otherwise leave the page stopped with nobody
+    /// told. A browser that holds none has nothing to change
+    fn auto_dialogs(&self, _to: Option<&str>, _on: bool) -> anyhow::Result<()> {
+        Ok(())
     }
     /// Where the DevTools of a page can be opened from: an address of the
     /// browser's own DevTools screen, connected to that page through this
@@ -1771,7 +1781,7 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
             page: v.get("page").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             id: v.get("id").and_then(|x| x.as_u64()).unwrap_or(0),
             accept: v.get("accept").and_then(|x| x.as_bool()).unwrap_or(false),
-            text: v.get("text").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            text: v.get("text").and_then(|x| x.as_str()).map(str::to_string),
         },
         Some("trust-answer") => Ev::TrustAnswer {
             ai: v.get("ai").and_then(|x| x.as_str()).unwrap_or_default().to_string(),

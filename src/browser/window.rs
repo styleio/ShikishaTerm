@@ -601,6 +601,11 @@ pub(super) fn run_window(
                         }
                     }
                 }
+                Cmd::Dialogs { to, auto } => {
+                    if let Some(arm) = dialogs.get(&to) {
+                        arm.auto(auto);
+                    }
+                }
                 Cmd::Console { to, on } => {
                     if !on {
                         consoles.remove(&to);
@@ -676,6 +681,7 @@ pub(super) fn run_window(
                     let load_tx = ev_tx.clone();
                     let load_who = name.clone();
                     let keys_own = std::rc::Rc::clone(&own);
+                    let dialogs_own = std::rc::Rc::clone(&own);
                     let spec = Spec {
                         url: url.clone(),
                         place: Place::At(std::rc::Rc::clone(&seat)),
@@ -745,9 +751,14 @@ pub(super) fn run_window(
                         Ok(v) => {
                             // Hear its alert, confirm and prompt from the start, and let "leave this page?" through
                             let tx = ev_tx.clone();
-                            if let Some(arm) = cdp::arm_dialogs(&v.port(), &name, move |said| {
-                                let _ = tx.send(said);
-                            }) {
+                            if let Some(arm) = cdp::arm_dialogs(
+                                &v.port(),
+                                &name,
+                                move |at: &str| from_ours(&dialogs_own.borrow(), at),
+                                move |said| {
+                                    let _ = tx.send(said);
+                                },
+                            ) {
                                 dialogs.insert(Some(name.clone()), arm);
                             }
                             shikisha_core::append_hook_log(&format!(

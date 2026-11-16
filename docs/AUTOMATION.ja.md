@@ -1137,7 +1137,7 @@ AI CLI 自身のフックもここを通ります。
 | `shikisha.browser_ask(id, "文字列", "ラベル")` | ページの下にボタン付きの帯を出す。描くのはアプリで、押せるのは人だけ |
 | `shikisha.browser_pressed(id)` | 押されたか |
 | `shikisha.browser_dialog(id)` | ページが開いている `alert`・`confirm`・`prompt` を `{type, message, default}` で返す（開いていなければ `nil`）。ページは答えるまで止まり、その間、このページへの他の操作は、ダイアログの文面を含むエラーで失敗する |
-| `shikisha.browser_dialog(id, "accept", "文字列")` | ダイアログの OK を押す。`"文字列"` は prompt の入力欄に入る（省略すると、ページが入れておいた値のまま）。`shikisha.browser_dialog(id, "dismiss")` はキャンセルを押す。ページを見ている人には、同じ質問が盤面に出る。先に答えた方の答えになる。「このページを離れますか？」は聞かずに、常に離れる |
+| `shikisha.browser_dialog(id, "accept", "文字列")` | ダイアログの OK を押す。`"文字列"` は prompt の入力欄に入る（省略すると、ページが入れておいた値のまま）。`shikisha.browser_dialog(id, "dismiss")` はキャンセルを押す。そのページのタブが前面にあるとき、人には同じ質問が盤面に出る（前面にないタブには「確認待ち」の印が付く）。先に答えた方の答えになる。「このページを離れますか？」は聞かずに、常に離れる |
 | `shikisha.browser_unask(id)` | 帯を消す |
 | `shikisha.browser_wait(id, {ask=…, selector=…, timeout_ms=…})` | 早い者勝ちで待つ。`"selector"` / `"button"` / `"timeout"` を返す |
 | `shikisha.browser_devtools(id)` | ページの DevTools を、ページの 1 つとして開く。その名前と、いま開いたかどうかを返す（開いていれば何もしない）。`split_pane("right")` で画面を分け、`show(名前)` でそこに出す（開いたばかりのページがタブになるのは次の周回からなので、`show` はその後で）。ページのタブの「隣に DevTools を開く」も同じことをする。DevTools を入れたまま書き残された分割は、アプリを起動し直すと、DevTools を開き直して戻る。AI には既定で閉じている（クッキーを含め、ページが持つものをすべて読み書きできるため） |

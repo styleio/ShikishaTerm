@@ -993,6 +993,71 @@ mod hooks {
             fn permission_handler(&self) -> Option<PermissionHandler> {
                 Some(Permissions::new())
             }
+            fn jsdialog_handler(&self) -> Option<JsdialogHandler> {
+                Some(Dialogs::new(Rc::new(std::cell::RefCell::new(None))))
+            }
+        }
+    }
+
+    wrap_jsdialog_handler! {
+        pub struct Dialogs {
+            /// The box that is open, kept so that it stays open
+            held: Rc<std::cell::RefCell<Option<JsdialogCallback>>>,
+        }
+
+        impl JsdialogHandler {
+            /// A page's alert, confirm or prompt. Said to be handled here, so
+            /// that Chromium draws no box of its own over the window: the box
+            /// is this program's to ask, on the board, and a script's to
+            /// answer. What it says and its answer both go by the DevTools
+            /// protocol, the same on every engine (`cdp::arm_dialogs`); all
+            /// this does is keep Chromium's own box away and the page waiting.
+            ///
+            /// The callback is kept and never called. Let go of unanswered,
+            /// Chromium takes the box as cancelled there and then -- which is
+            /// an answer nobody gave
+            fn on_jsdialog(
+                &self,
+                _browser: Option<&mut Browser>,
+                _origin_url: Option<&CefString>,
+                _dialog_type: JsdialogType,
+                _message_text: Option<&CefString>,
+                _default_prompt_text: Option<&CefString>,
+                callback: Option<&mut JsdialogCallback>,
+                _suppress_message: Option<&mut ::std::os::raw::c_int>,
+            ) -> ::std::os::raw::c_int {
+                let Some(callback) = callback else { return 0 };
+                let was = self.held.borrow_mut().replace(callback.clone());
+                drop(was);
+                1
+            }
+
+            /// "Leave this page?": yes, without a box. A page does not get to
+            /// keep anybody on it
+            fn on_before_unload_dialog(
+                &self,
+                _browser: Option<&mut Browser>,
+                _message_text: Option<&CefString>,
+                _is_reload: ::std::os::raw::c_int,
+                callback: Option<&mut JsdialogCallback>,
+            ) -> ::std::os::raw::c_int {
+                let Some(callback) = callback else { return 0 };
+                callback.cont(1, None);
+                1
+            }
+
+            /// The box is gone (answered, or the page went): what was kept
+            /// for it is let go of. Taken out before it is dropped -- letting
+            /// go of it calls back into here, and it must find nothing held
+            fn on_reset_dialog_state(&self, _browser: Option<&mut Browser>) {
+                let was = self.held.borrow_mut().take();
+                drop(was);
+            }
+
+            fn on_dialog_closed(&self, _browser: Option<&mut Browser>) {
+                let was = self.held.borrow_mut().take();
+                drop(was);
+            }
         }
     }
 

@@ -146,19 +146,48 @@ pub fn arm_basic_auth(port: &Port, user: &str, pass: &str, sites: Vec<String>) -
 /// (unsubscribes on drop).
 pub struct DialogArm {
     _heard: Vec<Heard>,
+    port: Port,
+    /// Every box answered with OK as it opens, and none reported: for a page
+    /// opened for somebody who does not know boxes are held
+    auto: std::rc::Rc<std::cell::Cell<bool>>,
 }
 
-pub fn arm_dialogs(port: &Port, page: &str, report: impl Fn(shikisha_shared::Ev) + Clone + 'static) -> Option<DialogArm> {
+impl DialogArm {
+    /// Go back to pressing OK on each box as it opens, or hold them again
+    pub fn auto(&self, on: bool) {
+        self.auto.set(on);
+        // One held until now is answered the way the rest will be
+        if on {
+            self.port.call(shikisha_core::pagedialog::ANSWER, r#"{"accept":true}"#);
+        }
+    }
+}
+
+/// `ours` says whether an address is one of the program's own pages (the
+/// settings, the guide): their boxes are the program talking, answered with
+/// OK as before -- they are drawn over the board, where the board's own
+/// question could not be seen, and nothing drives them but a person.
+pub fn arm_dialogs(
+    port: &Port,
+    page: &str,
+    ours: impl Fn(&str) -> bool + 'static,
+    report: impl Fn(shikisha_shared::Ev) + Clone + 'static,
+) -> Option<DialogArm> {
     let answer = port.clone();
-    let (name, tell) = (page.to_string(), report.clone());
+    let auto = std::rc::Rc::new(std::cell::Cell::new(false));
+    let (name, tell, pressed) = (page.to_string(), report.clone(), std::rc::Rc::clone(&auto));
     let opening = port.listen("Page.javascriptDialogOpening", move |v| {
+        if pressed.get() || ours(v.get("url").and_then(|u| u.as_str()).unwrap_or_default()) {
+            answer.call(shikisha_core::pagedialog::ANSWER, r#"{"accept":true}"#);
+            return;
+        }
         match shikisha_core::pagedialog::report_of(&name, v) {
             Some(said) => {
                 // Kept here, as it is heard, so a wait on this page ends now
                 shikisha_core::pagedialog::heard(&said);
                 tell(said);
             }
-            None => answer.call("Page.handleJavaScriptDialog", r#"{"accept":true}"#),
+            None => answer.call(shikisha_core::pagedialog::ANSWER, r#"{"accept":true}"#),
         }
     })?;
     let name = page.to_string();
@@ -169,7 +198,7 @@ pub fn arm_dialogs(port: &Port, page: &str, report: impl Fn(shikisha_shared::Ev)
     })?;
     // Enable Page so the subscription actually fires (idempotent even if screencast already enabled it)
     port.call("Page.enable", "{}");
-    Some(DialogArm { _heard: vec![opening, closed] })
+    Some(DialogArm { _heard: vec![opening, closed], port: port.clone(), auto })
 }
 
 /// Hearing a page's console. Only while this is held: dropping it lets go

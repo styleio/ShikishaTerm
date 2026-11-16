@@ -36,7 +36,18 @@ pub enum Ask {
     Eval { to: Option<String>, js: String, ms: u64 },
     /// The same, not waited for
     Run { to: Option<String>, js: String },
-    Open { name: String, url: String, rect: (i32, i32, i32, i32), profile: BrowserProfile },
+    /// `holds`: whoever asks knows that the boxes a page opens (alert,
+    /// confirm, prompt) are held to be answered, and answers them. Absent
+    /// (an older sender), the browser presses OK on each as it always did:
+    /// held for somebody who does not know, a page would stop for good
+    Open {
+        name: String,
+        url: String,
+        rect: (i32, i32, i32, i32),
+        profile: BrowserProfile,
+        #[serde(default)]
+        holds: bool,
+    },
     Bounds { name: String, rect: (i32, i32, i32, i32) },
     Close { name: String },
     Go { to: Option<String>, go: Go },
@@ -111,6 +122,8 @@ struct Inner {
     next: AtomicU64,
     refs: Mutex<HashMap<Option<String>, Vec<i64>>>,
     heard: Mutex<Vec<Ev>>,
+    /// The pages over there that have a box open, as far as was heard
+    asking: Mutex<Vec<String>>,
 }
 
 /// The browser on a connected client, as something that shows pages.
@@ -141,6 +154,7 @@ impl Far {
                 next: AtomicU64::new(1),
                 refs: Mutex::new(HashMap::new()),
                 heard: Mutex::new(Vec::new()),
+                asking: Mutex::new(Vec::new()),
             }),
         }
     }
@@ -180,6 +194,10 @@ impl Line {
     /// should hear about it now, while the reason is still obvious.
     pub fn detach(&self) {
         *self.inner.line.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        // The boxes its pages had open went with it: nobody can answer them
+        // now, and nothing will say they closed
+        let asking = std::mem::take(&mut *self.inner.asking.lock().unwrap_or_else(|e| e.into_inner()));
+        crate::pagedialog::gone_among(&asking);
         let waiting: Vec<_> = self
             .inner
             .waiting
@@ -218,6 +236,18 @@ impl Line {
                     // Kept as it is heard, on this thread: whatever waits on
                     // that page stops waiting now, not when the loop comes round
                     crate::pagedialog::heard(&ev);
+                    match &*ev {
+                        Ev::PageDialog { from: Some(page), .. } => {
+                            let mut asking = self.inner.asking.lock().unwrap_or_else(|e| e.into_inner());
+                            if !asking.contains(page) {
+                                asking.push(page.clone());
+                            }
+                        }
+                        Ev::PageDialogGone { from: Some(page) } => {
+                            self.inner.asking.lock().unwrap_or_else(|e| e.into_inner()).retain(|p| p != page);
+                        }
+                        _ => {}
+                    }
                     self.inner.heard.lock().unwrap_or_else(|e| e.into_inner()).push(*ev);
                 }
             }
@@ -257,7 +287,14 @@ impl Inner {
             self.waiting.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
             anyhow::bail!(crate::i18n::t("err.far.gone"));
         }
-        match crate::pagedialog::wait(&rx, std::time::Duration::from_millis(ms + SLACK_MS)) {
+        // What waits on a page's own script is not waited for behind a box
+        // the page has open (`pagedialog::wait`)
+        let on = match ask {
+            Ask::Cdp { to, method, .. } => crate::pagedialog::watched(to.as_deref(), method),
+            Ask::Eval { to, .. } => to.as_deref(),
+            _ => None,
+        };
+        match crate::pagedialog::wait(&rx, std::time::Duration::from_millis(ms + SLACK_MS), on) {
             Ok((true, value)) => Ok(value),
             Ok((false, why)) => Err(anyhow::anyhow!(
                 why.as_str().unwrap_or("?").to_string()
@@ -438,6 +475,8 @@ impl BrowserHost for Far {
             url: url.to_string(),
             rect,
             profile,
+            // The boxes its pages open come here to be answered
+            holds: true,
         })
     }
 
@@ -497,8 +536,13 @@ pub fn perform<B: BrowserHost + Speaks>(ask: &Ask, browser: &B) -> (bool, serde_
         Ask::Run { to, js } => browser
             .eval_in(to.as_deref(), js)
             .map(serde_json::Value::from),
-        Ask::Open { name, url, rect, profile } => {
-            done(browser.open_child(name, url, *rect, profile.clone()))
+        Ask::Open { name, url, rect, profile, holds } => {
+            let opened = browser.open_child(name, url, *rect, profile.clone());
+            // For somebody who does not know boxes are held, they are not
+            if opened.is_ok() && !*holds {
+                let _ = browser.auto_dialogs(Some(name), true);
+            }
+            done(opened)
         }
         Ask::Bounds { name, rect } => done(browser.child_bounds(name, *rect)),
         Ask::Close { name } => done(browser.close_child(name)),
@@ -926,6 +970,121 @@ mod tests {
         assert_eq!(crate::pagedialog::open_on(page), None);
     }
 
+    /// Boxes are held only for somebody who said they know they are: an
+    /// older program at the other end opens a page without saying so, and
+    /// the browser goes back to pressing OK for that page -- or the page
+    /// would stop, with nobody over there ever told
+    #[test]
+    fn a_page_opened_by_somebody_who_does_not_hold_dialogs_has_them_answered() {
+        use std::cell::RefCell;
+        struct Seen {
+            auto: RefCell<Vec<(String, bool)>>,
+        }
+        impl Speaks for Seen {
+            fn cdp(&self, _: Option<&str>, _: &str, _: serde_json::Value, _: u64) -> anyhow::Result<serde_json::Value> {
+                Ok(serde_json::Value::Null)
+            }
+            fn eval(&self, _: Option<&str>, _: &str, _: u64) -> anyhow::Result<String> {
+                Ok(String::new())
+            }
+            fn refs(&self) -> &Mutex<HashMap<Option<String>, Vec<i64>>> {
+                unreachable!()
+            }
+        }
+        impl BrowserHost for Seen {
+            fn open_child(&self, _: &str, _: &str, _: (i32, i32, i32, i32), _: BrowserProfile) -> anyhow::Result<()> {
+                Ok(())
+            }
+            fn auto_dialogs(&self, to: Option<&str>, on: bool) -> anyhow::Result<()> {
+                self.auto.borrow_mut().push((to.unwrap_or_default().to_string(), on));
+                Ok(())
+            }
+            fn go(&self, _: Option<&str>, _: Go) -> anyhow::Result<()> { unreachable!() }
+            fn focus(&self, _: Option<&str>) -> anyhow::Result<()> { unreachable!() }
+            fn ask_where(&self, _: Option<&str>) -> anyhow::Result<()> { unreachable!() }
+            fn basic_auth(&self, _: Option<&str>, _: &str, _: &str, _: &[String]) -> anyhow::Result<()> { unreachable!() }
+            fn eval_in(&self, _: Option<&str>, _: &str) -> anyhow::Result<u64> { unreachable!() }
+            fn inject(&self, _: Option<&str>, _: Input) -> anyhow::Result<()> { unreachable!() }
+            fn screencast(&self, _: Option<&str>, _: bool) -> anyhow::Result<()> { unreachable!() }
+            fn record(&self, _: Option<&str>, _: bool) -> anyhow::Result<()> { unreachable!() }
+            fn find(&self, _: Option<&str>, _: &Sel, _: u64) -> anyhow::Result<Found> { unreachable!() }
+            fn click(&self, _: Option<&str>, _: &Sel, _: u64) -> anyhow::Result<OpReport> { unreachable!() }
+            fn fill(&self, _: Option<&str>, _: &Sel, _: &str, _: u64) -> anyhow::Result<OpReport> { unreachable!() }
+            fn fill_only_on(&self, _: Option<&str>, _: &Sel, _: &str, _: &[String], _: u64) -> anyhow::Result<shikisha_shared::SecretFill> { unreachable!() }
+            fn text(&self, _: Option<&str>, _: &Sel, _: u64) -> anyhow::Result<Option<String>> { unreachable!() }
+            fn select(&self, _: Option<&str>, _: &Sel, _: &str, _: u64) -> anyhow::Result<OpReport> { unreachable!() }
+            fn scroll(&self, _: Option<&str>, _: Option<&Sel>, _: &serde_json::Value, _: u64) -> anyhow::Result<(Found, String)> { unreachable!() }
+            fn settle(&self, _: Option<&str>, _: &str, _: u64, _: u64, _: u64) -> anyhow::Result<(u64, String)> { unreachable!() }
+            fn href(&self, _: Option<&str>, _: u64) -> anyhow::Result<String> { unreachable!() }
+            fn html(&self, _: Option<&str>, _: u64) -> anyhow::Result<String> { unreachable!() }
+            fn digest(&self, _: Option<&str>, _: u64) -> anyhow::Result<String> { unreachable!() }
+            fn elements(&self, _: Option<&str>, _: u64) -> anyhow::Result<serde_json::Value> { unreachable!() }
+            fn snapshot(&self, _: Option<&str>, _: u64) -> anyhow::Result<Vec<u8>> { unreachable!() }
+            fn cookies_out(&self, _: Option<&str>, _: u64) -> anyhow::Result<serde_json::Value> { unreachable!() }
+            fn cookies_in(&self, _: Option<&str>, _: &serde_json::Value, _: u64) -> anyhow::Result<()> { unreachable!() }
+            fn storage_out(&self, _: Option<&str>, _: u64) -> anyhow::Result<serde_json::Value> { unreachable!() }
+            fn storage_in(&self, _: Option<&str>, _: &serde_json::Value, _: u64) -> anyhow::Result<()> { unreachable!() }
+            fn fetch(&self, _: Option<&str>, _: &str, _: &serde_json::Value, _: u64) -> anyhow::Result<String> { unreachable!() }
+            fn child_bounds(&self, _: &str, _: (i32, i32, i32, i32)) -> anyhow::Result<()> { unreachable!() }
+            fn close_child(&self, _: &str) -> anyhow::Result<()> { unreachable!() }
+            fn trust(&self, _: &str) -> anyhow::Result<()> { unreachable!() }
+            fn record_all_off(&self) {}
+        }
+        let browser = Seen { auto: RefCell::new(Vec::new()) };
+        // As an older program writes it: no word about holding
+        let old: Ask = serde_json::from_str(
+            r#"{"Open":{"name":"ws/old","url":"https://example.com/","rect":[0,0,10,10],"profile":{"name":"default","private":false}}}"#,
+        )
+        .or_else(|_| {
+            // (whatever a profile is written as, taken from one written now)
+            let mut v = serde_json::to_value(Ask::Open {
+                name: "ws/old".into(),
+                url: "https://example.com/".into(),
+                rect: (0, 0, 10, 10),
+                profile: BrowserProfile::shared_default(),
+                holds: true,
+            })
+            .unwrap();
+            v["Open"].as_object_mut().unwrap().remove("holds");
+            serde_json::from_value(v)
+        })
+        .expect("an Open from before boxes were held is not read");
+        assert!(matches!(old, Ask::Open { holds: false, .. }));
+        assert!(perform(&old, &browser).0);
+        assert_eq!(*browser.auto.borrow(), vec![("ws/old".to_string(), true)], "its boxes would be held for nobody");
+        // One that says it holds them is left holding
+        browser.auto.borrow_mut().clear();
+        let new = Ask::Open {
+            name: "ws/new".into(),
+            url: "https://example.com/".into(),
+            rect: (0, 0, 10, 10),
+            profile: BrowserProfile::shared_default(),
+            holds: true,
+        };
+        assert!(perform(&new, &browser).0);
+        assert!(browser.auto.borrow().is_empty(), "a page whose boxes are answered over there has them pressed here");
+
+        // A browser that goes takes its pages' boxes with it
+        let far = Far::new();
+        let line = far.line();
+        let page = "far-gone/page";
+        line.heard(
+            &serde_json::to_string(&Said::Report {
+                ev: Box::new(Ev::PageDialog {
+                    from: Some(page.into()),
+                    kind: "alert".into(),
+                    message: "x".into(),
+                    preset: String::new(),
+                    url: String::new(),
+                }),
+            })
+            .unwrap(),
+        );
+        assert!(crate::pagedialog::stops(page));
+        line.detach();
+        assert!(!crate::pagedialog::stops(page), "a box nobody can answer any more is still listed");
+    }
+
     /// A browser that answers, and can be told what to have reported.
     struct Drawn {
         stub: Arc<Stub>,
@@ -1127,6 +1286,7 @@ mod tests {
                 url: "https://example.com/".into(),
                 rect: (0, 0, 900, 700),
                 profile: BrowserProfile::new("仕事", false),
+                holds: true,
             },
         ];
         for ask in &asks {

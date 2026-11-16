@@ -165,6 +165,13 @@ pub struct TabState {
     /// this; the page itself never sees it, so it cannot press it
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ask: Option<AskState>,
+    /// The alert, confirm or prompt this page (a browser) has open, waiting
+    /// to be answered. The board asks it over the page when the tab is the
+    /// one in front, and marks the tab as waiting for the person otherwise:
+    /// a page nobody is looking at does not get to put a question in front
+    /// of them
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dialog: Option<crate::pagedialog::Dialog>,
     /// The file an editor is showing, relative to its folder. Absent for
     /// every other kind of tab, and for an editor with nothing open in it
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2564,10 +2571,7 @@ pub struct UiState {
     /// for the person: the same question on the window and on a phone
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notice_asks: Vec<crate::pagenotice::Asking>,
-    /// The alert, confirm or prompt each page of this desk has open, waiting
-    /// to be answered: the same box on the window and on a phone
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub page_dialogs: Vec<crate::pagedialog::Dialog>,
+
     /// AI CLIs that would ask again in a new worktree of a project they
     /// trust, waiting for the person to say whether the same yes may be
     /// written into the CLI's own file: the same question on the window and
@@ -2795,6 +2799,8 @@ impl TabState {
             readable: readable(t),
             // A session is not a page; nothing asks the person about it here
             ask: None,
+
+            dialog: None,
             // ...and a session is not showing a file
             file: None,
             file_stamp: None,
@@ -2944,6 +2950,8 @@ impl TabState {
             // Nothing was said here to read back
             readable: false,
             ask: None,
+
+            dialog: None,
             file: None,
             file_stamp: None,
             read_only: false,
@@ -3480,6 +3488,8 @@ mod tests {
             cost: None,
             readable: false,
             ask: None,
+
+            dialog: None,
             away: None,
             failed: None,
             hold: None,

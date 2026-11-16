@@ -751,7 +751,10 @@ impl Cdp {
             return Err(e.into());
         }
 
-        match crate::pagedialog::wait(&rx, std::time::Duration::from_millis(timeout_ms)) {
+        // A page is spoken to by its session, which is the name its box is
+        // known by here (see where the opening is heard)
+        let on = crate::pagedialog::watched(session, method);
+        match crate::pagedialog::wait(&rx, std::time::Duration::from_millis(timeout_ms), on) {
             Ok(v) => match v.get("error") {
                 Some(e) => Err(anyhow::anyhow!(crate::i18n::tp(
                     "err.chrome.said",
@@ -1092,13 +1095,16 @@ impl Pages {
                 "Page.javascriptDialogOpening" => match crate::pagedialog::report_of(&page, &ev.params) {
                     Some(said) => {
                         crate::pagedialog::heard(&said);
+                        // Whatever waits on this session gives up behind it
+                        crate::pagedialog::also(&session);
                         book.mail.push(said);
                     }
-                    None => speaker.tell(Some(&session), "Page.handleJavaScriptDialog", serde_json::json!({ "accept": true })),
+                    None => speaker.tell(Some(&session), crate::pagedialog::ANSWER, serde_json::json!({ "accept": true })),
                 },
                 "Page.javascriptDialogClosed" => {
                     let said = shikisha_shared::Ev::PageDialogGone { from: Some(page) };
                     crate::pagedialog::heard(&said);
+                    crate::pagedialog::no_longer(&session);
                     book.mail.push(said);
                 }
                 "Page.screencastFrame" => {
@@ -1895,6 +1901,9 @@ impl shikisha_shared::BrowserHost for Pages {
         if let Some(c) = page.context.as_deref() {
             page.browser.close_context(c);
         }
+        // A box it had open went with it
+        crate::pagedialog::gone(name);
+        crate::pagedialog::no_longer(&page.session);
         let mut book = self.seen.lock().unwrap_or_else(|e| e.into_inner());
         book.named.remove(&page.session);
         book.targets.remove(&page.target);
@@ -2104,12 +2113,17 @@ mod tests {
         let site = serve();
         let store = std::env::temp_dir().join(format!("shikisha-pages-{}", crate::random_hex(8)));
         let pages = Pages::under(store, true);
-        // (the name the helpers below wait on)
-        let name = "p";
+        // A name of its own: the boxes are kept by the page's name, and the
+        // tests beside this one open and close pages called `p` meanwhile
+        let name = "dialog-held";
         pages
             .open_child(name, &site, (0, 0, 900, 700), BrowserProfile::shared_default())
             .expect("the page does not open");
-        wait_ready(&pages).expect("the page does not report that loading finished");
+        waited(&pages, |ev| match ev {
+            shikisha_shared::Ev::Ready { from: Some(n), complete: true, .. } if n == name => Some(()),
+            _ => None,
+        })
+        .expect("the page does not report that loading finished");
         let title = || pages.eval(Some(name), "return document.title", 5_000).unwrap_or_default();
         let until = |what: &str, done: &dyn Fn() -> bool| {
             let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -2130,13 +2144,16 @@ mod tests {
             pages.drain().iter().any(|e| matches!(e, shikisha_shared::Ev::PageDialog { from: Some(p), .. } if p == name)),
             "the loop is not told a box opened"
         );
-        // Whatever is asked of the page now gives up at once, not at the end of its time
-        {
-            let _asking = crate::pagedialog::acting(name);
-            let started = std::time::Instant::now();
-            assert!(pages.text(Some(name), &Sel::Css("#here".into()), 20_000).is_err(), "the stopped page answered");
-            assert!(started.elapsed() < std::time::Duration::from_secs(5), "it waited out its time: {:?}", started.elapsed());
-        }
+        // Whatever is asked of the page now gives up at once, not at the end
+        // of its time -- what a script asks, and what the program asks for
+        // itself (a console being listened to, a tap being placed)
+        let started = std::time::Instant::now();
+        assert!(pages.text(Some(name), &Sel::Css("#here".into()), 20_000).is_err(), "the stopped page answered");
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "it waited out its time: {:?}", started.elapsed());
+        let started = std::time::Instant::now();
+        let _ = pages.console(Some(name), true);
+        let _ = pages.inject(Some(name), shikisha_shared::Input::Wheel { x: 10.0, y: 10.0, dx: 0.0, dy: 40.0 });
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "the program's own asks waited out their time: {:?}", started.elapsed());
         assert!(crate::pagedialog::open_on(name).is_some(), "nobody answered it, and it is gone");
         pages.answer_dialog(Some(name), false, "").expect("it cannot be answered");
         until("the box to be gone", &|| crate::pagedialog::open_on(name).is_none());

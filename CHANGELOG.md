@@ -129,15 +129,24 @@ once it reaches its first tagged release.
 - **A page's alert, confirm and prompt are no longer answered for you.**
   The app used to press OK on every box a page in a browser tab opened,
   so "Delete this?" was answered yes before anybody read it. Now the page
-  waits. A person is asked on the board (and on a phone) with the site's
-  name in the title, and OK and Cancel are the page's own. A script or an
-  AI is told that a box is open, with its words, by whatever it asked of
-  the page, and answers with the new `shikisha.browser_dialog(id,
-  "accept")` or `"dismiss"`. **A script that relied on the automatic OK
-  now stops at the box** and needs that one line. "Leave this page?" is
-  still never asked.
+  waits. The tab in front is asked about on the board (and on a phone),
+  with the site's name in the title, and OK and Cancel are the page's
+  own; a tab that is not in front is marked as waiting for you and asks
+  when you look at it. A script or an AI is told that a box is open, with
+  its words, by whatever it asked of the page, and answers with the new
+  `shikisha.browser_dialog(id, "accept")` or `"dismiss"`. **A script
+  that relied on the automatic OK now stops at the box** and needs that
+  one line. "Leave this page?" is still never asked, and the app's own
+  pages (the settings, the guide) are answered as before. A browser on
+  another device goes on pressing OK until both ends are this version.
 
 ### Fixed
+- **Stopping the server lets it finish properly.** `systemctl stop`,
+  Ctrl+C and a closed terminal used to end `shikisha-server` where it
+  stood: AIs set to go on while it is away were ended with it, a MicroVM
+  was not paused, and what was on screen was not written down for the
+  next start. It now leaves the way Quit does. Started under `nohup`, it
+  still ignores the terminal closing.
 - **Conversations on a Mac reached over SSH can be searched and read
   without the bridge.** The commands used in its place asked `stat` and
   `base64` for options only the Linux ones have, so on a Mac they found

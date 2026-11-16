@@ -415,6 +415,11 @@ impl Headless {
 
 impl Shell for Headless {
     fn mail(&mut self) -> &mut Mailbox {
+        // Told to stop from outside (`serve::told_to_end`): handed to the
+        // loop the way a window hands on being told to end
+        if crate::serve::told_to_end() {
+            self.mail.told_to_end = true;
+        }
         &mut self.mail
     }
 

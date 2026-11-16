@@ -8252,8 +8252,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 || page_covered
                 || close_ask.is_some()
                 || !crate::pagenotice::asking().is_empty()
-                // ...and the box a page here opened, asked on the board
-                || !caps.dialogs_here().is_empty();
+                // ...and the box the page in front opened, asked on the board
+                || matches!(surfaces.get(active.wrapping_sub(1)),
+                    Some(Surface::Browser { key, .. }) if caps.dialog_of(key).is_some());
             // The settings form is a screen, not a pane: it covers the content
             // area and the layout waits underneath. It asks about the whole
             // app, so seating it in one corner of the app made as little sense
@@ -9141,7 +9142,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // phone. One already answered (by a script, or on the other of the
         // two) is not answered again
         for (page, id, accept, text) in shell.mail().take_dialog_answers() {
-            if let Err(e) = caps.dialog_answered(&page, id, accept, &text) {
+            if let Err(e) = caps.dialog_answered(&page, id, accept, text.as_deref()) {
                 flash = Some(format!("{e:#}"));
             }
         }

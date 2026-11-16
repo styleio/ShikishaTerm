@@ -320,6 +320,9 @@ pub enum Cmd {
     /// Start or stop hearing a page's console. While on, every line it says
     /// comes back as `Ev::ConsoleLine`
     Console { to: Option<String>, on: bool },
+    /// Press OK on every box a page opens as it opens (`auto`), or hold
+    /// them to be answered (see `BrowserHost::auto_dialogs`)
+    Dialogs { to: Option<String>, auto: bool },
     /// A DevTools screen connected for a page (`devtools.rs`): what the page
     /// says to it goes to `out`
     DevtoolsOpen { conn: u64, to: Option<String>, out: Sender<String> },
@@ -1240,7 +1243,14 @@ impl Browser {
 
     /// Wait until a specific evaluation's result arrives
     pub fn wait_result(&self, id: u64, timeout: std::time::Duration) -> Result<String> {
-        let (ok, value) = self.wait_ev(id, timeout)?;
+        self.wait_result_on(None, id, timeout)
+    }
+
+    /// The same, for something asked of the page `on`: not waited for
+    /// behind an alert, confirm or prompt that page has open
+    /// (`shikisha_core::pagedialog::wait`)
+    fn wait_result_on(&self, on: Option<&str>, id: u64, timeout: std::time::Duration) -> Result<String> {
+        let (ok, value) = self.wait_ev(id, timeout, on)?;
         if ok {
             Ok(value)
         } else {
@@ -1253,14 +1263,14 @@ impl Browser {
 
     /// The shared wait behind `Eval` and `Cdp`: the raw (ok, payload) pair for
     /// one id, so each caller can word its own failure
-    fn wait_ev(&self, id: u64, timeout: std::time::Duration) -> Result<(bool, String)> {
+    fn wait_ev(&self, id: u64, timeout: std::time::Duration, on: Option<&str>) -> Result<(bool, String)> {
         let until = std::time::Instant::now() + timeout;
         // It may already have arrived and been set aside -- by another wait, or
         // by a drain that knew it was not its to take
         let already = self.answers.lock().unwrap_or_else(|e| e.into_inner()).ask(id);
         let got = match already {
             Some(got) => Ok(got),
-            None => self.wait_for_answer(id, until),
+            None => self.wait_for_answer(id, until, on),
         };
         self.answers.lock().unwrap_or_else(|e| e.into_inner()).done(id);
         got
@@ -1278,7 +1288,8 @@ impl Browser {
     }
 
     /// Wait for the answer to `id` itself, until `until`
-    fn wait_for_answer(&self, id: u64, until: std::time::Instant) -> Result<(bool, String)> {
+    fn wait_for_answer(&self, id: u64, until: std::time::Instant, on: Option<&str>) -> Result<(bool, String)> {
+        let started = std::time::Instant::now();
         loop {
             // Taken off the queue and set aside by whoever held it while this
             // waited for its turn at it
@@ -1288,10 +1299,10 @@ impl Browser {
             let left = until
                 .checked_duration_since(std::time::Instant::now())
                 .ok_or_else(|| anyhow!(shikisha_core::i18n::t("err.browser.no_result")))?;
-            // The page opened an alert, confirm or prompt: the answer is not
-            // coming until that is answered, so the wait ends here (whoever
-            // asked says why -- `shikisha_core::pagedialog`)
-            if shikisha_core::pagedialog::in_the_way() {
+            // The page has an alert, confirm or prompt open: what waits on
+            // its script is not coming until that is answered, so the wait
+            // ends here (whoever asked says why -- `shikisha_core::pagedialog`)
+            if shikisha_core::pagedialog::gives_up(on, started) {
                 return Err(anyhow!(shikisha_core::i18n::t("err.browser.no_result")));
             }
             // A short look at a time: the answer can be set aside by another
@@ -1345,7 +1356,8 @@ impl Browser {
             method: method.to_string(),
             params: params.to_string(),
         })?;
-        let (ok, value) = self.wait_ev(id, std::time::Duration::from_millis(timeout_ms))?;
+        let on = shikisha_core::pagedialog::watched(to, method);
+        let (ok, value) = self.wait_ev(id, std::time::Duration::from_millis(timeout_ms), on)?;
         if !ok {
             return Err(anyhow!(shikisha_core::i18n::tp(
                 "err.browser.cdp_failed",
@@ -3023,7 +3035,7 @@ impl Speaks for Browser {
 
     fn eval(&self, to: Option<&str>, js: &str, timeout_ms: u64) -> Result<String> {
         let id = self.eval_in(to, js)?;
-        self.wait_result(id, std::time::Duration::from_millis(timeout_ms))
+        self.wait_result_on(to, id, std::time::Duration::from_millis(timeout_ms))
     }
 
     fn refs(&self) -> &std::sync::Mutex<std::collections::HashMap<Option<String>, Vec<i64>>> {
@@ -3077,6 +3089,9 @@ impl BrowserHost for Browser {
     fn console(&self, to: Option<&str>, on: bool) -> Result<()> { Browser::console(self, to, on) }
     fn answer_dialog(&self, to: Option<&str>, accept: bool, text: &str) -> Result<()> {
         pageops::answer_dialog(self, to, accept, text)
+    }
+    fn auto_dialogs(&self, to: Option<&str>, on: bool) -> Result<()> {
+        self.send(Cmd::Dialogs { to: to.map(str::to_string), auto: on })
     }
     fn devtools_url(&self, to: Option<&str>) -> Result<String> { Browser::devtools_url(self, to) }
 

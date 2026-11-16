@@ -19,7 +19,7 @@ use shikisha_shared::{Found, OpReport, Sel};
 /// `to` names the page throughout: `None` is the one in front.
 /// Answer the box a page has open: OK (with a prompt's words) or Cancel
 pub fn answer_dialog(page: &impl Speaks, to: Option<&str>, accept: bool, text: &str) -> anyhow::Result<()> {
-    page.cdp(to, "Page.handleJavaScriptDialog", serde_json::json!({ "accept": accept, "promptText": text }), 10_000)
+    page.cdp(to, crate::pagedialog::ANSWER, serde_json::json!({ "accept": accept, "promptText": text }), 10_000)
         .map(|_| ())
 }
 
@@ -157,7 +157,7 @@ pub fn act_with_wait(
                 // ...unless what stopped the page is an alert, confirm or
                 // prompt it opened: asking again gets nothing until that is
                 // answered, and whoever asked is told now
-                if crate::pagedialog::in_the_way() {
+                if to.is_some_and(crate::pagedialog::stops) {
                     return Err(e);
                 }
                 last_err = Some(e);
@@ -338,7 +338,7 @@ fn secret_fill(
                     Ok(v) => v,
                     Err(e) => {
                         // (not behind a box the page opened: see `act_with_wait`)
-                        if crate::pagedialog::in_the_way() {
+                        if to.is_some_and(crate::pagedialog::stops) {
                             return Err(e);
                         }
                         last_err = Some(e);

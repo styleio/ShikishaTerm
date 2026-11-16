@@ -23,7 +23,14 @@
  *   window   the app's window, photographed while a box is held, for a look
  *            at whether the engine drew a box of its own as well
  *   phone    a phone-sized Chrome on the remote door is asked the same
- *            question, and its answer is the page's answer
+ *            question, and its answer is the page's answer; a prompt whose
+ *            field the page filled with far more than fits is accepted as
+ *            it stands, and the page gets its own words back
+ *   behind   a page that is not in front does not put its box over the
+ *            board: its tab is marked as waiting, and it is asked when the
+ *            tab is looked at
+ *   covered  another question asked over the page's takes the frame without
+ *            answering the page, and the page's comes back after it
  *
  * Needs Windows, Node and Chrome (the phone). Photographs land in target/shots.
  */
@@ -71,10 +78,12 @@ const PAGE = (title) => `<!doctype html><html><head><meta charset="utf-8"><title
 <button id="c" onclick="document.title = confirm('Delete the order?') ? 'yes' : 'no'">confirm</button>
 <button id="p" onclick="document.title = 'p:' + JSON.stringify(prompt('Your name?', 'nobody'))">prompt</button>
 <button id="stay" onclick="window.onbeforeunload = e => { e.preventDefault(); e.returnValue = 'x'; return 'x'; }; document.title = 'guarded'">guard</button>
+<button id="big" onclick="document.title = 'big:' + (prompt('Big?', 'x'.repeat(300000)) || '').length">big</button>
+<button id="later" onclick="setTimeout(() => { alert('From the back'); document.title = 'backdone'; }, 3000); document.title = 'armed'">later</button>
 <a id="next" href="/next">next</a></p></body></html>`;
 const server = http.createServer((req, res) => {
   res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-  res.end(PAGE(req.url.startsWith('/next') ? 'Next' : 'Shop'));
+  res.end(PAGE(req.url.startsWith('/next') ? 'Next' : req.url.startsWith('/back') ? 'Back' : 'Shop'));
 });
 await new Promise((r) => server.listen(0, '127.0.0.1', r));
 const site = `http://127.0.0.1:${server.address().port}/`;
@@ -99,6 +108,9 @@ fs.writeFileSync(CONFIG, JSON.stringify({
   agent_hooks: { 'Claude Code': 'off', 'Codex CLI': 'off', 'Gemini CLI': 'off' },
   desks: [{ name: 'Dialogs', id: 'dialogs', folders: [{ cwd: WORK, tabs: [
     { name: 'shop', id: 'shop', command: `browser ${site}`,
+      nav: { back: true, forward: true, reload: true, url: true, menu: true } },
+    // A second page, to be the one nobody is looking at
+    { name: 'back', id: 'back', command: `browser ${site}back`,
       nav: { back: true, forward: true, reload: true, url: true, menu: true } },
   ] }] }],
 }, null, 2));
@@ -161,15 +173,16 @@ try {
   // (the list writes it as HTML does)
   const titleNow = async () => (((await targetsOf(portOf(path.join('profiles', 'default')))).find((t) => t.id === pageTarget.id) || {}).title || '')
     .replaceAll('&quot;', '"').replaceAll('&amp;', '&');
-  const asked = () => board.run('JSON.stringify((S.page_dialogs || [])[0] || null)').then(JSON.parse);
+  const asked = () => board.run('JSON.stringify((S.tabs.find(t => t.kind === "browser") || {}).dialog || null)').then(JSON.parse);
   const boxUp = () => board.run('!document.getElementById("sask").hidden && document.getElementById("sask").classList.contains("pagesays")');
-  const noBox = () => until(() => board.run('!(S.page_dialogs || []).length && document.getElementById("sask").hidden'), 'the question gone', 8000);
+  const noBox = () => until(() => board.run('!S.tabs.some(t => t.dialog) && document.getElementById("sask").hidden'), 'the question gone', 8000);
 
   console.log('1. a person at the page');
   await press('#c');
   await until(async () => (await asked()) && (await boxUp()), 'the confirm asked on the board', 10000);
   let d = await asked();
   check(d.kind === 'confirm' && d.message === 'Delete the order?' && d.host === host, 'the board holds the confirm, with the site: ' + JSON.stringify(d));
+  check(await board.run('S.tabs.find(t => t.kind === "browser").state === "QUESTION"'), 'the tab is marked as waiting for the person');
   check((await board.run('document.querySelector("#sask .vtitle").textContent')).includes(host), 'the site that asks is in the title');
   check(await board.run('document.querySelector("#sask .vsay").textContent === "Delete the order?" && !document.querySelector("#sask .brow > .quiet").hidden'),
     'the page\'s words, and both of its answers');
@@ -288,13 +301,76 @@ try {
   await until(async () => (await titleNow()) === 'no', 'Cancel reaching the page', 8000).catch(() => {});
   await noBox();
 
-  console.log('4. leaving a page that asks to be stayed on');
+  // A field filled with more than a request from a phone may carry
+  await until(async () => !(await phoneBox()), 'the phone\x27s frame free', 8000).catch(() => {});
+  await press('#big');
+  await until(async () => { const d = await asked(); return !!d && d.kind === 'prompt' && d.cut; }, 'the big prompt held', 10000);
+  await until(() => phone.run('!document.getElementById("sask").hidden && !document.getElementById("sq").hidden && document.querySelector("#sask .vsay").textContent === "Big?"'), 'the big prompt on the phone', 10000);
+  check(await phone.run('document.getElementById("sq").value.length === 2000'), 'the field shows the beginning of what the page put there');
+  await phone.run('document.querySelector("#sask .brow > .go").click()');
+  await until(async () => (await titleNow()).startsWith('big:'), 'the big prompt answered', 8000).catch(() => {});
+  check((await titleNow()) === 'big:100000', 'accepted as it stands, the page gets its own words back (to the length kept): ' + await titleNow());
+  await noBox();
+
+  console.log('4. a question asked over the page\'s');
+  await press('#c');
+  await until(boxUp, 'the confirm', 10000);
+  const before = await asked();
+  // Any other question of the board's: it takes the frame
+  await board.run('askQuestion({title: "Another question", say: "", label: "Yes", go: () => {}, back: () => {}}); "ok"');
+  await sleep(1500);
+  check((await asked()) && (await asked()).id === before.id && (await titleNow()) === 'big:100000', 'covered by another question, the page\'s is not answered');
+  check(await board.run('document.querySelector("#sask .vtitle").textContent === "Another question"'), 'the other question has the frame');
+  await board.run('closeAsk()');
+  await until(boxUp, 'the page\'s question back', 8000).catch(() => {});
+  check(await boxUp(), 'and it comes back once the frame is free');
+  await board.run('document.querySelector("#sask .brow > .go").click()');
+  await until(async () => (await titleNow()) === 'yes', 'OK reaching the page', 8000).catch(() => {});
+  check((await titleNow()) === 'yes', 'answered then, the answer is the page\'s: ' + await titleNow());
+  await noBox();
+
+  console.log('5. a page that is not in front');
+  const backTab = await board.run('S.tabs.find(t => (t.id || t.name) === "back").index');
+  await board.run(`send({kind:"select", tab:${backTab}})`);
+  await until(() => board.run(`S.active === ${backTab} && !!S.nav`), 'the second page in front');
+  let backTarget;
+  await until(async () => (backTarget = (await targetsOf(portOf(path.join('profiles', 'default')))).find((t) => t.type === 'page' && t.url.startsWith(site + 'back'))),
+    'the second page\'s debugging port', 30000);
+  const back = await connect(backTarget, 'back');
+  await until(() => back.run('document.readyState === "complete" && innerWidth > 100 && document.visibilityState === "visible"'), 'the second page shown');
+  await sleep(500);
+  const backTitle = async () => ((await targetsOf(portOf(path.join('profiles', 'default')))).find((t) => t.id === backTarget.id) || {}).title;
+  const at = JSON.parse(await back.run('(() => { const r = document.querySelector("#later").getBoundingClientRect(); return JSON.stringify([r.left + r.width / 2, r.top + r.height / 2]); })()'));
+  for (const type of ['mousePressed', 'mouseReleased']) {
+    back.send('Input.dispatchMouseEvent', { type, x: at[0], y: at[1], button: 'left', clickCount: 1 }).catch(() => {});
+  }
+  await until(async () => (await backTitle()) === 'armed', 'the second page armed', 8000);
+  await board.run(`send({kind:"select", tab:${tab}})`);
+  await until(() => board.run(`S.active === ${tab}`), 'the first page in front again');
+  await until(() => board.run('!!S.tabs.find(t => (t.id || t.name) === "back").dialog'), 'the second page\'s alert heard', 15000);
+  await sleep(1000);
+  check(await board.run('document.getElementById("sask").hidden'), 'a page that is not in front puts nothing over the board');
+  check(await board.run('S.tabs.find(t => (t.id || t.name) === "back").state === "QUESTION" && S.tabs.find(t => (t.id || t.name) === "shop").state !== "QUESTION"'),
+    'its tab is marked as waiting for the person, and only its tab');
+  await board.shot('4-behind');
+  await board.run(`send({kind:"select", tab:${backTab}})`);
+  await until(boxUp, 'the alert asked once its tab is looked at', 8000).catch(() => {});
+  check(await boxUp() && await board.run('document.querySelector("#sask .vsay").textContent === "From the back"'), 'looked at, it is asked');
+  await board.run('document.querySelector("#sask .brow > .go").click()');
+  await until(async () => (await backTitle()) === 'backdone', 'the alert acknowledged', 8000).catch(() => {});
+  check((await backTitle()) === 'backdone', 'and answered: ' + await backTitle());
+  await noBox();
+  await board.run(`send({kind:"select", tab:${tab}})`);
+  await until(() => board.run(`S.active === ${tab}`), 'the first page in front again');
+  await sleep(500);
+
+  console.log('6. leaving a page that asks to be stayed on');
   await press('#stay');
   await until(async () => (await titleNow()) === 'guarded', 'the guard set', 8000);
   await press('#next');
   await until(async () => (await titleNow()) === 'Next', 'the next page', 10000).catch(() => {});
   check((await titleNow()) === 'Next', 'the page is left without a question: ' + await titleNow());
-  check(await board.run('!(S.page_dialogs || []).length'), 'and nothing was asked on the board');
+  check(await board.run('!S.tabs.some(t => t.dialog)'), 'and nothing was asked on the board');
 } catch (e) {
   failures += 1;
   console.error('  FAIL ' + e.message);

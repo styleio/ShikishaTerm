@@ -644,7 +644,6 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
         folder_manage: ui.folder_manage.clone(),
         key_changes: ui.key_changes.clone(),
         notice_asks: ui.notice_asks.clone(),
-        page_dialogs: ui.page_dialogs.clone(),
         trust_asks: ui.trust_asks.clone(),
         board_finds: ui.board_finds,
         sound_trouble: ui.sound_trouble.clone(),
@@ -718,6 +717,13 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
                     // What a script is asking the person about this page, if
                     // anything. The board draws the bar under the page from it
                     t.ask = ui.asks.iter().find(|(k, _)| k == key).map(|(_, a)| a.clone());
+                    // The box the page itself has open: the tab waits for the
+                    // person, and says so the way a tab does
+                    t.dialog = ui.page_dialogs.iter().find(|(k, _)| k == key).map(|(_, d)| d.clone());
+                    if t.dialog.is_some() {
+                        t.state = "QUESTION".into();
+                        t.state_label = crate::i18n::t("state.question");
+                    }
                     // What the 🎯 panel lists for it, and whether presses pick
                     t.picks = ui.picks.iter().find(|(k, _)| k == key).map(|(_, p)| p.clone());
                     // And, when the page is not drawn here at all, the device
@@ -1931,8 +1937,8 @@ pub struct Ui {
     pub key_changes: Vec<crate::ssh::KeyChange>,
     /// Sites asking whether they may show notifications, waiting to be answered
     pub notice_asks: Vec<crate::pagenotice::Asking>,
-    /// Boxes this desk's pages opened, waiting to be answered
-    pub page_dialogs: Vec<crate::pagedialog::Dialog>,
+    /// Boxes this desk's pages opened, waiting to be answered, by the page's key
+    pub page_dialogs: Vec<(String, crate::pagedialog::Dialog)>,
     /// AI CLIs waiting on the person about worktrees they would ask about
     pub trust_asks: Vec<crate::aitrust::Asking>,
     /// The browser drawing the pages has no search box of its own: every

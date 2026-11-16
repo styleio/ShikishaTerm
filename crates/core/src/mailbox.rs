@@ -228,7 +228,7 @@ pub struct Mailbox {
     pub notice_answers: Vec<(String, Option<bool>)>,
     /// The person's answers to boxes pages opened: (page, which opening,
     /// OK or Cancel, what was typed into a prompt). See `crate::pagedialog`
-    pub dialog_answers: Vec<(String, u64, bool, String)>,
+    pub dialog_answers: Vec<(String, u64, bool, Option<String>)>,
     /// The person's answers about writing an AI CLI's yes for new worktrees:
     /// (the CLI, the question's id, yes / no / put away)
     pub trust_answers: Vec<(String, u64, Option<bool>)>,
@@ -652,7 +652,7 @@ impl Mailbox {
     pub fn take_notice_answers(&mut self) -> Vec<(String, Option<bool>)> {
         std::mem::take(&mut self.notice_answers)
     }
-    pub fn take_dialog_answers(&mut self) -> Vec<(String, u64, bool, String)> {
+    pub fn take_dialog_answers(&mut self) -> Vec<(String, u64, bool, Option<String>)> {
         std::mem::take(&mut self.dialog_answers)
     }
     pub fn take_trust_answers(&mut self) -> Vec<(String, u64, Option<bool>)> {

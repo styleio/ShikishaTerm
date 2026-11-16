@@ -884,6 +884,32 @@ impl Capabilities {
                 &[("name", name)]
             )));
         }
+        let key = Self::key(desk, name);
+        // What went wrong behind a box the page has open is said as that:
+        // the wait gave up there (`pagedialog::wait`), and "no result" would
+        // send whoever asked looking for the wrong thing
+        match self.with_as_is(name, f) {
+            Err(e) => match crate::pagedialog::open_on(&key) {
+                Some(open) => Err(anyhow::anyhow!(open.cut_in(name))),
+                None => Err(e),
+            },
+            done => done,
+        }
+    }
+
+    /// The page asked, and what it says handed back as it is
+    fn with_as_is<T>(
+        &self,
+        name: &str,
+        f: impl FnOnce(&dyn shikisha_shared::BrowserHost, Option<&str>) -> Result<T>,
+    ) -> Result<T> {
+        let desk = self.desk.get();
+        if !self.hosted.borrow().iter().any(|(w, x)| *w == desk && x == name) {
+            return Err(anyhow::anyhow!(crate::i18n::tp(
+                "err.caps.browser_not_open",
+                &[("name", name)]
+            )));
+        }
         let host = self
             .host
             .borrow()
@@ -905,15 +931,7 @@ impl Capabilities {
         f: impl FnOnce(&dyn shikisha_shared::BrowserHost, Option<&str>) -> Result<T>,
     ) -> Result<T> {
         self.no_dialog(name)?;
-        let key = Self::key(self.desk.get(), name);
-        let _acting = crate::pagedialog::acting(&key);
-        match self.with(name, f) {
-            Err(e) => match crate::pagedialog::open_on(&key) {
-                Some(open) => Err(anyhow::anyhow!(open.cut_in(name))),
-                None => Err(e),
-            },
-            done => done,
-        }
+        self.with(name, f)
     }
 
     /// Refuse while the page has a box open
@@ -945,24 +963,33 @@ impl Capabilities {
             anyhow::bail!(crate::i18n::tp("err.browser.no_dialog", &[("name", name)]));
         };
         let words = if accept { text.unwrap_or(&open.preset) } else { "" };
-        self.with(name, |b, to| b.answer_dialog(to, accept, words))?;
+        self.with_as_is(name, |b, to| b.answer_dialog(to, accept, words))?;
         crate::pagedialog::taken(&key, Some(open.id));
         Ok(Some(open))
     }
 
-    /// The boxes open on the pages of the desk in view, oldest first
-    pub fn dialogs_here(&self) -> Vec<crate::pagedialog::Dialog> {
-        crate::pagedialog::all().into_iter().filter(|d| self.name_of_child(&d.page).is_some()).collect()
+    /// The boxes open on the pages of the desk in view, by the page's name
+    /// there, oldest first
+    pub fn dialogs_here(&self) -> Vec<(String, crate::pagedialog::Dialog)> {
+        crate::pagedialog::all().into_iter().filter_map(|d| Some((self.name_of_child(&d.page)?, d))).collect()
+    }
+
+    /// The box open on one page of the desk in view
+    pub fn dialog_of(&self, name: &str) -> Option<crate::pagedialog::Dialog> {
+        crate::pagedialog::open_on(&Self::key(self.desk.get(), name))
     }
 
     /// A person answered a page's box, on the board or a phone. `page` is
     /// the page's in-window name and `id` the opening that was shown: one
     /// that is gone since (a script answered it, the page left) is not
-    /// answered, and the box open now is not answered in its place
-    pub fn dialog_answered(&self, page: &str, id: u64, accept: bool, text: &str) -> Result<()> {
-        if !crate::pagedialog::open_on(page).is_some_and(|d| d.id == id) {
+    /// answered, and the box open now is not answered in its place. `text`
+    /// is what was typed into a prompt; none is the field left as the page
+    /// filled it, and the page gets that back whole
+    pub fn dialog_answered(&self, page: &str, id: u64, accept: bool, text: Option<&str>) -> Result<()> {
+        let Some(open) = crate::pagedialog::open_on(page).filter(|d| d.id == id) else {
             return Ok(());
-        }
+        };
+        let text = text.unwrap_or(&open.preset);
         let host = self
             .host
             .borrow()
@@ -1805,6 +1832,9 @@ impl Capabilities {
     pub fn browser_close(&self, name: &str) -> Result<()> {
         let desk = self.desk.get();
         let key = Self::key(desk, name);
+        // A box it had open goes with it -- before the browser is told, so
+        // one that cannot be told (it went away) leaves no question behind
+        crate::pagedialog::gone(&key);
         if let Some(h) = self.host.borrow().as_ref() {
             h.close_child(&key)?;
         }
@@ -1814,8 +1844,6 @@ impl Capabilities {
         self.picks.borrow_mut().remove(&key);
         // A question about its site's notifications waits for it no more
         crate::pagenotice::page_gone(&key);
-        // ...and a box it had open went with it
-        crate::pagedialog::gone(&key);
         self.consoles.borrow_mut().remove(&key);
         self.nav.borrow_mut().remove(&key);
         self.declared.borrow_mut().remove(&key);

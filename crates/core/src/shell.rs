@@ -16430,43 +16430,65 @@ function drawNoticeAsks() {
   });
 }
 
-// The alert, confirm or prompt a page in a browser tab opened. The page is
-// stopped until it is answered, so it is asked here, in this program's own
-// frame, with the site that asks named in the title and the tab under it: a
-// page decides the words, never whose they look like. OK and Cancel are the
-// page's own two answers; an alert has the one, and putting it away is the
-// same as pressing it. A script or an AI may answer first
-// (`shikisha.browser_dialog`), and then the question goes. The same question
-// on the window and on a phone; answered on either, it goes from both.
-// Another question up first is left alone and this one waits for it
+// The alert, confirm or prompt the page in front opened. The page is stopped
+// until it is answered, so it is asked here, in this program's own frame,
+// with the site that asks named in the title: a page decides the words, never
+// whose they look like. OK and Cancel are the page's own two answers; an
+// alert has the one, and putting it away is the same as pressing it. A script
+// or an AI may answer first (`shikisha.browser_dialog`), and then the
+// question goes. The same question on the window and on a phone; answered on
+// either, it goes from both.
+//
+// Only the tab in front is asked about. A page nobody is looking at does not
+// get to put a question in front of them (one that asks again and again would
+// take the board for itself): its tab is marked as waiting for the person,
+// like an AI with a question, and it is asked when the tab is looked at.
+//
+// Another question up first is left alone and this one waits for it; one
+// asked over this one takes the frame, and this one comes back after it --
+// being covered is not an answer
 let pageDialogAsking = 0;
 function drawPageDialogs() {
-  const waiting = (S && S.page_dialogs) || [];
-  if (pageDialogAsking && !waiting.some(d => d.id === pageDialogAsking)) { pageDialogAsking = 0; closeAsk(true); }
-  if (pageDialogAsking) return;
-  const d = waiting[0];
-  if (!d || !document.getElementById("sask").hidden) return;
+  const box = document.getElementById("sask");
+  const front = S && S.tabs ? S.tabs.find(t => t.index === S.active) : null;
+  const d = front && front.kind === "browser" && front.dialog ? front.dialog : null;
+  // Whether the question on the frame is still this one: the frame is one,
+  // and whatever asks next writes over it
+  const up = !!pageDialogAsking && !box.hidden && box.dataset.pagedialog === String(pageDialogAsking);
+  if (pageDialogAsking && (!d || d.id !== pageDialogAsking)) {
+    // Answered somewhere else, or its tab is not the one in front any more
+    if (up) closeAsk(true);
+    pageDialogAsking = 0;
+  } else if (pageDialogAsking && !up) {
+    // Covered by another question: asked again once the frame is free
+    pageDialogAsking = 0;
+  }
+  if (pageDialogAsking || !d || !box.hidden) return;
   pageDialogAsking = d.id;
-  const tab = d.page.slice(d.page.indexOf("/") + 1);
-  const shown = ((S && S.tabs) || []).find(t => t.kind === "browser" && t.id === tab);
   const answer = (accept, text) => {
     pageDialogAsking = 0;
-    send({kind:"dialog-answer", page:d.page, id:d.id, accept, text: text || ""});
+    send({kind:"dialog-answer", page:d.page, id:d.id, accept, text});
   };
   const alone = d.kind === "alert";
   askQuestion({
     title: d.host ? (T["tui.pagedialog.title"] || "").replaceAll("{site}", d.host) : (T["tui.pagedialog.title.page"] || ""),
     say: d.message,
-    // Which tab, when it is not the one being looked at
-    what: shown && shown.index !== S.active ? shown.name : "",
-    field: d.kind === "prompt" ? d.preset : null,
+    field: d.kind === "prompt" ? d.shown : null,
     label: T["tui.pagedialog.ok"] || "",
     pageSays: true,
     alone,
-    // As typed, spaces and all: the words are the page's to judge
-    go: () => answer(true, d.kind === "prompt" ? document.getElementById("sq").value : ""),
-    back: () => answer(alone, ""),
+    go: () => {
+      // As typed, spaces and all: the words are the page's to judge. Left
+      // as the page filled it, the page gets its own words back -- all of
+      // them, when the field holds only the beginning of something long
+      const typed = d.kind === "prompt" ? document.getElementById("sq").value : null;
+      answer(true, typed === d.shown ? null : typed);
+    },
+    // Put away by the person: Cancel (an alert's one answer is OK). Taken
+    // over by another question, it is not answered at all
+    back: () => { if (!sAskReplacing) answer(alone, null); },
   });
+  box.dataset.pagedialog = String(d.id);
 }
 
 // An AI CLI that trusts a project but asks again in every new worktree of it:
@@ -29461,7 +29483,7 @@ function showDiff(msg) {
 // ── The question, for the things that cannot be undone ─────────────────────
 // `back` is told when the question is put away without its button: the close
 // mark, Esc, a press outside, Cancel
-let sAskGo = null, sAskBack = null;
+let sAskGo = null, sAskBack = null, sAskReplacing = false;
 // `never` is the words of a "don't show this again" box. Its answer is handed
 // to `go` after the field's
 //
@@ -29491,6 +29513,9 @@ function askQuestion({title, say, what, mark, sure, rows, field, label, danger, 
   // A web page's own words: kept in the lines the page wrote them in, and
   // scrolled when there are more than fit, so the buttons stay on the screen
   box.classList.toggle("pagesays", !!pageSays);
+  // Whose question this is, when it is a page's, is written after it is
+  // asked; any other question is nobody's in that sense
+  delete box.dataset.pagedialog;
   const refused = () => {
     const why = check ? check() : "";
     if (!why) return false;
@@ -29564,7 +29589,14 @@ function askQuestion({title, say, what, mark, sure, rows, field, label, danger, 
   paint();
   // A question asked over an open one replaces it, and the one replaced was
   // not answered
-  if (sAskBack) { const was = sAskBack; sAskBack = null; was(); }
+  if (sAskBack) {
+    const was = sAskBack;
+    sAskBack = null;
+    // Told that it was covered rather than put away, for the one question
+    // (a web page's) to which the two are not the same
+    sAskReplacing = true;
+    try { was(); } finally { sAskReplacing = false; }
+  }
   sAskBack = back || null;
   sAskGo = () => {
     // Pressed before the name is in: nothing is done, the reason is written
@@ -32632,6 +32664,145 @@ tabFolder = "";
         match ran {
             Ok(done) => assert!(done.status.success(), "{}", String::from_utf8_lossy(&done.stderr)),
             Err(e) => eprintln!("node is missing, so the editor was not driven ({e}). It runs in CI"),
+        }
+    }
+
+    /// A page's alert, confirm or prompt on the board: asked only for the
+    /// tab in front, not answered by being covered, back when the frame is
+    /// free, and answered once. The page's own function, driven against a
+    /// stand-in for the question frame that keeps the frame's two promises
+    /// (a question asked over another tells the other it was covered; any
+    /// question clears whose the frame is) -- which are pinned in the page
+    /// itself below.
+    #[test]
+    fn a_pages_dialog_is_asked_for_the_tab_in_front_and_survives_being_covered() {
+        const DRIVE: &str = r##"
+const fs = require("fs");
+const page = fs.readFileSync(process.argv[2], "utf8");
+function piece(start) {
+  const at = page.indexOf(start);
+  if (at < 0) throw new Error("not in the page: " + start);
+  let depth = 0, i = page.indexOf("{", at);
+  for (; i < page.length; i++) {
+    if (page[i] === "{") depth++;
+    else if (page[i] === "}" && --depth === 0) break;
+  }
+  return page.slice(at, i + 1) + ";\n";
+}
+const src = piece("function drawPageDialogs() {");
+let pageDialogAsking = 0, sAskReplacing = false, S = null;
+const T = {"tui.pagedialog.title": "A message from {site}", "tui.pagedialog.title.page": "A message from this page", "tui.pagedialog.ok": "OK"};
+const box = {hidden: true, dataset: {}};
+const field = {value: ""};
+const document = {getElementById: id => id === "sq" ? field : box};
+const sent = [];
+const send = o => sent.push(o);
+// The frame: one question at a time
+let now = null;
+function askQuestion(q) {
+  box.hidden = false;
+  delete box.dataset.pagedialog;
+  field.value = q.field || "";
+  if (now && now.back) { const was = now; now = null; sAskReplacing = true; try { was.back(); } finally { sAskReplacing = false; } }
+  now = q;
+}
+function closeAsk(quiet) {
+  box.hidden = true;
+  const was = now; now = null;
+  if (was && was.back && !quiet) was.back();
+}
+const press = () => { const q = now; now = null; box.hidden = true; q.go(); };
+eval(src);
+const say = (ok, what) => { if (!ok) { console.error("FAILED: " + what + "\n  sent: " + JSON.stringify(sent)); process.exit(1); } };
+const dlg = (id, kind, more) => Object.assign({id, page: "0/shop", kind, message: "Delete it?", shown: "", cut: false, host: "shop.example.com"}, more || {});
+const state = (active, dialogs) => ({active, tabs: [
+  {index: 1, kind: "browser", id: "shop", name: "shop", dialog: dialogs.shop || undefined},
+  {index: 2, kind: "browser", id: "back", name: "back", dialog: dialogs.back || undefined},
+  {index: 3, kind: "terminal", id: "sh", name: "sh"},
+]});
+
+// 1. The tab in front is asked about, with the site in the title
+S = state(1, {shop: dlg(5, "confirm")});
+drawPageDialogs();
+say(!box.hidden && now.title === "A message from shop.example.com" && now.say === "Delete it?" && !now.alone, "the page in front is not asked about");
+drawPageDialogs();
+say(sent.length === 0, "drawing again answered something");
+
+// 2. Another question asked over it takes the frame and answers nothing
+askQuestion({title: "Close the tab?", back: () => {}});
+say(sent.length === 0, "being covered answered the page's box");
+drawPageDialogs();
+say(now.title === "Close the tab?", "the other question was pushed off the frame");
+// ...and when that one is put away, the page's comes back
+closeAsk();
+drawPageDialogs();
+say(!box.hidden && now.say === "Delete it?", "the page's question did not come back");
+
+// 3. Put away by the person, a confirm is cancelled -- once
+closeAsk();
+say(sent.length === 1 && sent[0].accept === false && sent[0].id === 5 && sent[0].page === "0/shop", "putting a confirm away is not its Cancel");
+drawPageDialogs();   // the state still says it is open, for a moment
+closeAsk(true); pageDialogAsking = 0; sent.length = 0;
+
+// 4. A tab that is not in front is not asked about; looked at, it is
+S = state(1, {back: dlg(6, "alert", {page: "0/back", message: "From the back"})});
+drawPageDialogs();
+say(box.hidden && sent.length === 0, "a page nobody is looking at put a question over the board");
+S = state(2, {back: dlg(6, "alert", {page: "0/back", message: "From the back"})});
+drawPageDialogs();
+say(!box.hidden && now.alone && now.say === "From the back", "the tab looked at is not asked about");
+// Looking away takes the question down without answering it
+S = state(1, {back: dlg(6, "alert", {page: "0/back", message: "From the back"})});
+drawPageDialogs();
+say(box.hidden && sent.length === 0, "looking away answered the box, or left it up");
+S = state(2, {back: dlg(6, "alert", {page: "0/back", message: "From the back"})});
+drawPageDialogs();
+// An alert put away is acknowledged
+closeAsk();
+say(sent.length === 1 && sent[0].accept === true && sent[0].id === 6, "putting an alert away does not acknowledge it");
+sent.length = 0; pageDialogAsking = 0;
+
+// 5. Answered somewhere else (a script, the phone), the question goes without an answer from here
+S = state(1, {shop: dlg(7, "confirm")});
+drawPageDialogs();
+S = state(1, {});
+drawPageDialogs();
+say(box.hidden && sent.length === 0, "a box answered elsewhere was answered again, or stayed up");
+
+// 6. A prompt left as the page filled it sends no words (the page gets its own back, whole);
+//    typed in, it sends what was typed, spaces and all
+S = state(1, {shop: dlg(8, "prompt", {shown: "x".repeat(2000), cut: true})});
+drawPageDialogs();
+say(field.value.length === 2000, "the field does not start with what the page put there");
+press();
+say(sent.length === 1 && sent[0].accept === true && sent[0].text === null, "a prompt left alone sent the beginning of the page's words as if typed");
+sent.length = 0; pageDialogAsking = 0;
+S = state(1, {shop: dlg(9, "prompt", {shown: "nobody"})});
+drawPageDialogs();
+field.value = " Ada ";
+press();
+say(sent.length === 1 && sent[0].text === " Ada ", "what was typed was changed on the way");
+"##;
+        let page = super::page();
+        // The frame's two promises the stand-in keeps
+        assert!(page.contains("delete box.dataset.pagedialog;"), "any question no longer clears whose the frame is");
+        assert!(
+            page.contains("sAskReplacing = true;") && page.contains("try { was(); } finally { sAskReplacing = false; }"),
+            "a question covered by another is no longer told so"
+        );
+        let dir = std::env::temp_dir();
+        let (pagefile, drive) = (
+            dir.join(format!("shikisha-dlg-page-{}.html", std::process::id())),
+            dir.join(format!("shikisha-dlg-drive-{}.js", std::process::id())),
+        );
+        std::fs::write(&pagefile, page).expect("could not write the page out");
+        std::fs::write(&drive, DRIVE).expect("could not write the script out");
+        let ran = std::process::Command::new("node").arg(&drive).arg(&pagefile).output();
+        let _ = std::fs::remove_file(&pagefile);
+        let _ = std::fs::remove_file(&drive);
+        match ran {
+            Ok(done) => assert!(done.status.success(), "{}", String::from_utf8_lossy(&done.stderr)),
+            Err(e) => eprintln!("node is missing, so the question was not driven ({e}). It runs in CI"),
         }
     }
 
