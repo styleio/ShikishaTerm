@@ -2088,6 +2088,82 @@ mod tests {
         println!("version: {product}");
     }
 
+    /// A page here that opens a confirm or a prompt is held, whatever is
+    /// asked of it meanwhile gives up at once, and the answer it is given is
+    /// the one it gets. Against a real browser, since what is being checked
+    /// is what the browser does with a box nobody answers for it
+    ///
+    ///     cargo test -p shikisha-core --lib a_box_a_page_here -- --ignored --nocapture
+    #[test]
+    #[ignore = "needs a browser on this machine"]
+    fn a_box_a_page_here_opens_is_held_and_answered() {
+        use crate::pageops::Speaks as _;
+        use shikisha_shared::{BrowserHost, BrowserProfile, Sel};
+
+        assert!(found().is_some(), "this machine has no browser");
+        let site = serve();
+        let store = std::env::temp_dir().join(format!("shikisha-pages-{}", crate::random_hex(8)));
+        let pages = Pages::under(store, true);
+        // (the name the helpers below wait on)
+        let name = "p";
+        pages
+            .open_child(name, &site, (0, 0, 900, 700), BrowserProfile::shared_default())
+            .expect("the page does not open");
+        wait_ready(&pages).expect("the page does not report that loading finished");
+        let title = || pages.eval(Some(name), "return document.title", 5_000).unwrap_or_default();
+        let until = |what: &str, done: &dyn Fn() -> bool| {
+            let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while !done() {
+                assert!(std::time::Instant::now() < end, "timed out waiting for {what}");
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        };
+
+        // Asked a moment later, so the evaluation that arranges it comes back
+        pages
+            .eval(Some(name), "setTimeout(() => { document.title = confirm('Delete it?') ? 'yes' : 'no'; }, 0); return 1", 5_000)
+            .expect("the page cannot be told to ask");
+        until("the confirm to be heard", &|| crate::pagedialog::open_on(name).is_some());
+        let open = crate::pagedialog::open_on(name).unwrap();
+        assert_eq!((open.kind.as_str(), open.message.as_str()), ("confirm", "Delete it?"));
+        assert!(
+            pages.drain().iter().any(|e| matches!(e, shikisha_shared::Ev::PageDialog { from: Some(p), .. } if p == name)),
+            "the loop is not told a box opened"
+        );
+        // Whatever is asked of the page now gives up at once, not at the end of its time
+        {
+            let _asking = crate::pagedialog::acting(name);
+            let started = std::time::Instant::now();
+            assert!(pages.text(Some(name), &Sel::Css("#here".into()), 20_000).is_err(), "the stopped page answered");
+            assert!(started.elapsed() < std::time::Duration::from_secs(5), "it waited out its time: {:?}", started.elapsed());
+        }
+        assert!(crate::pagedialog::open_on(name).is_some(), "nobody answered it, and it is gone");
+        pages.answer_dialog(Some(name), false, "").expect("it cannot be answered");
+        until("the box to be gone", &|| crate::pagedialog::open_on(name).is_none());
+        assert_eq!(title(), "\"no\"", "Cancel did not reach the page as Cancel");
+
+        // A prompt takes the words it is given
+        pages
+            .eval(Some(name), "setTimeout(() => { document.title = 'p:' + prompt('Your name?', 'nobody'); }, 0); return 1", 5_000)
+            .unwrap();
+        until("the prompt to be heard", &|| crate::pagedialog::open_on(name).is_some());
+        assert_eq!(crate::pagedialog::open_on(name).unwrap().preset, "nobody");
+        pages.answer_dialog(Some(name), true, "Ada").unwrap();
+        until("the prompt to be gone", &|| crate::pagedialog::open_on(name).is_none());
+        assert_eq!(title(), "\"p:Ada\"");
+
+        // "Leave this page?" is answered with yes, and kept by nobody
+        pages
+            .eval(Some(name), "window.onbeforeunload = e => { e.preventDefault(); e.returnValue = 'x'; return 'x'; }; return 1", 5_000)
+            .unwrap();
+        // A page only gets to ask once somebody has touched it
+        pages.click(Some(name), &Sel::Css("#go".into()), 10_000).unwrap();
+        let _ = pages.eval(Some(name), "setTimeout(() => { location.href = '/next'; }, 0); return 1", 5_000);
+        until("the page to be left", &|| title().contains("つぎ") || pages.href(Some(name), 5_000).is_ok_and(|u| u.ends_with("/next")));
+        assert_eq!(crate::pagedialog::open_on(name), None, "leaving was held as a question");
+        let _ = pages.close_child(name);
+    }
+
     /// A profile name cannot become a different folder.
     #[test]
     fn a_profile_name_is_only_ever_one_folder() {
