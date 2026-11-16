@@ -141,6 +141,11 @@ once it reaches its first tagged release.
   another device goes on pressing OK until both ends are this version.
 
 ### Fixed
+- **A pull request with more than a hundred checks, reviews or comments
+  is read whole.** Only the first hundred of each were read: a failing
+  check past the hundredth was counted as passed, and a pull request
+  reviewed many times showed the decision it had long ago. Commit
+  statuses were cut at thirty.
 - **A tab that did not pick up its mail is told again.** A tab was told
   once that mail from another tab had arrived; when an AI lost that line
   (a busy screen, its memory of the turn cut down) the mail sat unread

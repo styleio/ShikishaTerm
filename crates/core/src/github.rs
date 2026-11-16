@@ -522,19 +522,18 @@ impl Hub {
         Ok(out)
     }
 
+    /// Every item of a list GitHub hands over a hundred at a time, up to
+    /// `pages` of them. `under`: the name the list is under, where the
+    /// answer is an object around it (a commit's check runs)
+    fn all(&self, path: &str, under: Option<&str>, pages: usize) -> Result<Vec<Value>> {
+        let sep = if path.contains('?') { '&' } else { '?' };
+        every_page(pages, under, |page| self.call("GET", &format!("{path}{sep}per_page={PER_PAGE}&page={page}"), None))
+    }
+
     fn comments(&self, repo: &Repo, number: u64) -> Result<Value> {
-        let v = self.call(
-            "GET",
-            &format!(
-                "repos/{}/issues/{number}/comments?per_page=100",
-                repo.slug()
-            ),
-            None,
-        )?;
+        let v = self.all(&format!("repos/{}/issues/{number}/comments", repo.slug()), None, 10)?;
         Ok(Value::Array(
-            v.as_array()
-                .into_iter()
-                .flatten()
+            v.iter()
                 .map(|c| {
                     json!({
                         "id": c.get("id"),
@@ -550,14 +549,7 @@ impl Hub {
     }
 
     fn events(&self, repo: &Repo, number: u64) -> Result<Value> {
-        let v = self.call(
-            "GET",
-            &format!(
-                "repos/{}/issues/{number}/timeline?per_page=100",
-                repo.slug()
-            ),
-            None,
-        )?;
+        let v = Value::Array(self.all(&format!("repos/{}/issues/{number}/timeline", repo.slug()), None, 5)?);
         const KEPT: [&str; 7] = [
             "assigned",
             "unassigned",
@@ -665,13 +657,12 @@ impl Hub {
 
     /// Each reviewer's latest word: changes asked for outweighs an approval
     fn review_decision(&self, repo: &Repo, number: u64) -> Result<String> {
-        let v = self.call(
-            "GET",
-            &format!("repos/{}/pulls/{number}/reviews?per_page=100", repo.slug()),
-            None,
-        )?;
+        // All of them: they come oldest first, and it is each reviewer's
+        // latest word that counts -- cut at the first hundred, a pull
+        // request reviewed many times read as it stood long ago
+        let v = self.all(&format!("repos/{}/pulls/{number}/reviews", repo.slug()), None, 10)?;
         let mut latest: Vec<(String, String)> = Vec::new();
-        for r in v.as_array().into_iter().flatten() {
+        for r in &v {
             let (Some(who), Some(state)) = (
                 r.pointer("/user/login").and_then(|u| u.as_str()),
                 r.get("state").and_then(|s| s.as_str()),
@@ -693,29 +684,13 @@ impl Hub {
 
     /// How the checks on a commit stand, counted
     fn checks(&self, repo: &Repo, sha: &str) -> Result<Value> {
-        let runs = self.call(
-            "GET",
-            &format!(
-                "repos/{}/commits/{sha}/check-runs?per_page=100",
-                repo.slug()
-            ),
-            None,
-        )?;
-        let status = self
-            .call(
-                "GET",
-                &format!("repos/{}/commits/{sha}/status", repo.slug()),
-                None,
-            )
-            .unwrap_or(Value::Null);
+        // Every one of them: a count of the first page says "all passed" of
+        // a commit whose failing check is the hundred-and-first
+        let runs = self.all(&format!("repos/{}/commits/{sha}/check-runs", repo.slug()), Some("check_runs"), 10)?;
+        let statuses = self.all(&format!("repos/{}/commits/{sha}/status", repo.slug()), Some("statuses"), 10).unwrap_or_default();
         let mut items: Vec<Value> = Vec::new();
         let (mut failed, mut pending, mut passed) = (0, 0, 0);
-        for r in runs
-            .get("check_runs")
-            .and_then(|c| c.as_array())
-            .into_iter()
-            .flatten()
-        {
+        for r in &runs {
             let done = r.get("status").and_then(|s| s.as_str()) == Some("completed");
             let conclusion = r
                 .get("conclusion")
@@ -735,12 +710,7 @@ impl Hub {
             };
             items.push(json!({"name": r.get("name"), "verdict": verdict, "url": r.get("html_url"), "job": job}));
         }
-        for s in status
-            .get("statuses")
-            .and_then(|c| c.as_array())
-            .into_iter()
-            .flatten()
-        {
+        for s in &statuses {
             let verdict = status_verdict(s.get("state").and_then(|x| x.as_str()).unwrap_or_default());
             match verdict {
                 "failed" => failed += 1,
@@ -2444,6 +2414,62 @@ fn without_colour(line: &str) -> String {
         }
     }
     out
+}
+
+/// How many items GitHub is asked for a page: the most it gives
+const PER_PAGE: usize = 100;
+
+/// Every item of a list handed over a page at a time: page after page until
+/// one comes back less than full, or `pages` have been read. `page` fetches
+/// one (numbered from 1); `under` names the list inside an answer that is an
+/// object around it
+fn every_page(pages: usize, under: Option<&str>, mut page: impl FnMut(usize) -> Result<Value>) -> Result<Vec<Value>> {
+    let mut out = Vec::new();
+    for n in 1..=pages {
+        let v = page(n)?;
+        let got = match under {
+            Some(key) => v.get(key),
+            None => Some(&v),
+        }
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+        let full = got.len() >= PER_PAGE;
+        out.extend(got);
+        if !full {
+            break;
+        }
+    }
+    Ok(out)
+}
+
+/// A list longer than a page is read to its end, and one that never ends is
+/// stopped at the pages allowed
+#[cfg(test)]
+#[test]
+fn a_list_longer_than_a_page_is_read_to_its_end() {
+    let of = |n: usize, from: usize| Value::Array((0..n).map(|i| json!(from + i)).collect());
+    // 250 items: two full pages and a part
+    let mut asked = Vec::new();
+    let all = every_page(10, None, |p| {
+        asked.push(p);
+        Ok(match p { 1 => of(100, 0), 2 => of(100, 100), _ => of(50, 200) })
+    })
+    .unwrap();
+    assert_eq!((all.len(), asked.as_slice()), (250, &[1, 2, 3][..]));
+    assert_eq!(all[249], json!(249));
+    // Exactly a page: the next is asked for, and is empty
+    let mut asked = 0;
+    let all = every_page(10, None, |p| { asked += 1; Ok(if p == 1 { of(100, 0) } else { of(0, 0) }) }).unwrap();
+    assert_eq!((all.len(), asked), (100, 2));
+    // Inside an object, as check runs come
+    let all = every_page(10, Some("check_runs"), |p| Ok(json!({"total_count": 130, "check_runs": if p == 1 { of(100, 0) } else { of(30, 100) }}))).unwrap();
+    assert_eq!(all.len(), 130);
+    // Never more pages than allowed, and a page that fails fails the lot
+    let mut asked = 0;
+    assert_eq!(every_page(3, None, |_| { asked += 1; Ok(of(100, 0)) }).unwrap().len(), 300);
+    assert_eq!(asked, 3);
+    assert!(every_page(3, None, |p| if p == 2 { anyhow::bail!("refused") } else { Ok(of(100, 0)) }).is_err());
 }
 
 /// What one check run says, from whether it has finished and how. GitHub's
