@@ -4983,6 +4983,19 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 let screen =
                                     tabs[idx - 1].parser.lock().unwrap_or_else(|e| e.into_inner()).screen().contents();
                                 eng.fire("on_question", &ctx, Some(&screen));
+                                // "Tell me when it stops to ask", for a tab
+                                // that asked for it: the AI is waiting on a
+                                // person who may be nowhere near. Once per
+                                // question -- a screen redrawn in the middle
+                                // of one comes back here
+                                let t = &mut tabs[idx - 1];
+                                let lately = t.ask_told_ms.is_some_and(|at| now_ms.saturating_sub(at) < ASK_TOLD_AGAIN_MS);
+                                if let (true, false, Some(dest)) = (t.notify_ask, lately, t.notify_on_done.clone()) {
+                                    t.ask_told_ms = Some(now_ms);
+                                    let msg = i18n::tp("msg.notify.on_ask", &[("name", &t.title)]);
+                                    let status = notifier.send_about(&dest, &msg, Some(idx));
+                                    append_hook_log(&format!("notify_ask tab{idx} \"{dest}\": {status}"));
+                                }
                             }
                             TabState::Exited => eng.fire("on_exit", &ctx, None),
                             _ => {}
@@ -19982,6 +19995,12 @@ pub fn browser_ctx(index: usize, key: &str) -> TabCtx {
         reply: None,
     }
 }
+/// How long after a tab's person was told its AI is asking before they are
+/// told again. A question on screen is redrawn, and read as a new one each
+/// time; half a minute is longer than any redraw and shorter than the gap
+/// between two questions anybody would want to hear of separately
+const ASK_TOLD_AGAIN_MS: u64 = 30_000;
+
 /// Grace period holding off auto-submit right after manual input (avoids keystroke cross-talk)
 pub const MANUAL_GUARD_MS: u64 = 5000;
 /// A person hands one named tab a line: the composer's Send and the phone's

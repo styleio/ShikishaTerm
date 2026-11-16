@@ -51,6 +51,7 @@
     "hook": {
       "file": "{home}/.claude/settings.json",
       "format": "args",
+      "needs": "2.1.139",
       "events": [
         "SessionStart"
       ],

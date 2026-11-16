@@ -3351,6 +3351,12 @@ pub struct TabConfig {
     /// question of trust.
     #[serde(default)]
     pub notify_reply: bool,
+    /// Also notify when this tab's AI stops to ask something (an approval, a
+    /// choice) and waits for a person. A setting of its own beside the one
+    /// for a finished answer: the two are different moments, and somebody
+    /// who wants to hear of one has not said they want to hear of the other
+    #[serde(default)]
+    pub notify_ask: bool,
     /// Automation dedicated to this tab (matched with the highest priority).
     /// A directory means per-event files; a .lua file means function definitions
     #[serde(default)]

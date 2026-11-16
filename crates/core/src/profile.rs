@@ -449,6 +449,14 @@ pub struct HookSpec {
     /// person agreed to. Absent: it runs whatever the file says
     #[serde(default)]
     pub trust: Option<HookTrust>,
+    /// The oldest version of the CLI the entry may be written for
+    /// (`"2.1.139"`), where an older one is harmed by it rather than merely
+    /// not helped: one that does not know the way the entry is written, or
+    /// that throws its whole settings file away over an event it has no
+    /// name for. Asked of the CLI itself (`--version`) before writing.
+    /// Absent: written for any version
+    #[serde(default)]
+    pub needs: Option<String>,
 }
 
 /// How a CLI that holds new hooks back until they are approved has one

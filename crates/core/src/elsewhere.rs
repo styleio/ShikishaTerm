@@ -58,12 +58,18 @@ impl Elsewhere {
     }
 
     /// Which machine this is, for keeping things apart by machine: a server by
-    /// its address, a MicroVM by the machine itself -- every worktree there is
-    /// one of its own under the same entry, and a worktree made again under
-    /// the same name is another machine
+    /// who signs in to it and the way it is reached, a MicroVM by the machine
+    /// itself -- every worktree there is one of its own under the same entry,
+    /// and a worktree made again under the same name is another machine.
+    ///
+    /// A server is not its address alone. Two entries for one address under
+    /// two accounts are two homes, two bridges and two sets of terminals:
+    /// kept under the address, the second account was handed the first
+    /// one's bridge, and its AI ran as whoever that was -- which may be the
+    /// account with more rights
     pub fn machine_key(&self) -> String {
         match self {
-            Self::Ssh(spec) => spec.address(),
+            Self::Ssh(spec) => spec.route(),
             Self::Cloud(host) => format!("{}#{}", host.name, host.instance.as_deref().unwrap_or_default()),
         }
     }

@@ -3661,6 +3661,11 @@ pub struct Tab {
     pub notify_on_done: Option<String>,
     /// Whether that notification carries a reply link (config's notify_reply)
     pub notify_reply: bool,
+    /// Whether the same destination is told when the AI stops to ask
+    /// (config's notify_ask), and when it was last told so: a screen that
+    /// flickers in and out of a question is one question
+    pub notify_ask: bool,
+    pub ask_told_ms: Option<u64>,
     /// It finished, or asked something, while the person was looking at
     /// another tab, and nobody has looked at it since (see the loop's tick)
     pub unread: bool,
@@ -4815,6 +4820,8 @@ impl Tab {
             auto_restart: false,
             notify_on_done: None,
             notify_reply: false,
+            notify_ask: false,
+            ask_told_ms: None,
             unread: false,
             needs_restart: false,
             depth: 0,
@@ -5192,6 +5199,7 @@ impl Tab {
         fresh.serial = self.serial;
         fresh.notify_on_done = self.notify_on_done.clone();
         fresh.notify_reply = self.notify_reply;
+        fresh.notify_ask = self.notify_ask;
         fresh.previous = self.previous.clone();
         fresh.clear_said();
         // Since it was recreated, any pending config changes are now in effect

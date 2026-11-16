@@ -73,6 +73,102 @@ pub struct Entry {
     pub arg: String,
 }
 
+/// The version a CLI says it is, and the one its profile says the hook
+/// needs, when the first is older than the second. `None` when the profile
+/// asks for none, or the CLI did not say (not installed, not answering):
+/// what cannot be known is not held against it
+#[cfg_attr(test, allow(dead_code))]
+fn too_old_for(name: &str) -> Option<(String, String)> {
+    let needs = crate::profile::all().into_iter().find(|p| p.name == name)?.resume.as_ref()?.hook.as_ref()?.needs.clone()?;
+    let command = crate::profile::files().into_iter().find(|p| p.name == name)?.command_match.first()?.trim().to_string();
+    let has = version_said_by(&command)?;
+    (version_of(&has)? < version_of(&needs)?).then_some((has, needs))
+}
+
+/// The numbers of a version (`2.1.139`), to be compared in order
+fn version_of(text: &str) -> Option<Vec<u32>> {
+    let numbers: Vec<u32> = text.trim().split('.').map(|n| n.parse().ok()).collect::<Option<_>>()?;
+    (numbers.len() >= 2).then_some(numbers)
+}
+
+/// The first version written in what a CLI prints for `--version`
+fn version_in(said: &str) -> Option<String> {
+    said.split(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .map(|w| w.trim_matches('.'))
+        .find(|w| version_of(w).is_some())
+        .map(str::to_string)
+}
+
+/// What a CLI on this machine says its version is. Asked once for each
+/// command while the app runs, and waited for only a few seconds
+#[cfg_attr(test, allow(dead_code))]
+fn version_said_by(command: &str) -> Option<String> {
+    static SAID: std::sync::Mutex<Option<std::collections::HashMap<String, Option<String>>>> = std::sync::Mutex::new(None);
+    if let Some(known) = SAID.lock().ok().and_then(|s| s.as_ref().and_then(|m| m.get(command).cloned())) {
+        return known;
+    }
+    let asked = (|| {
+        crate::tab::resolve_command(command)?;
+        let argv = crate::tab::launch_argv(&[command.to_string(), "--version".into()]);
+        let mut run = std::process::Command::new(&argv[0]);
+        run.args(&argv[1..]).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
+        for name in crate::tab::STARTER_ENV {
+            run.env_remove(name);
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut child = crate::detach_console(&mut run).spawn().ok()?;
+        let out = child.stdout.take()?;
+        std::thread::spawn(move || {
+            use std::io::Read as _;
+            let mut said = String::new();
+            let _ = out.take(4096).read_to_string(&mut said);
+            let _ = tx.send(said);
+        });
+        let said = rx.recv_timeout(std::time::Duration::from_secs(8)).ok();
+        let _ = child.kill();
+        let _ = child.wait();
+        version_in(&said?)
+    })();
+    if let Ok(mut s) = SAID.lock() {
+        s.get_or_insert_with(Default::default).insert(command.to_string(), asked.clone());
+    }
+    asked
+}
+
+/// Whether this program was started as a hook by something that dropped the
+/// words after its name -- and so must do nothing at all.
+///
+/// A CLI that knows how its settings spell a hook runs this program with
+/// `--hook …`. One that reads the same settings and does not (another
+/// maker's CLI that takes over Claude Code's file, an older version) runs
+/// the program alone, at every prompt, permission and end of turn; and this
+/// program started alone is the whole app. What gives such a start away is
+/// what it is handed: a hook is given its event on its input, as one piece
+/// of JSON that names the event. Nothing else starts the app that way.
+///
+/// Not asked when the input is a terminal (a person at a prompt), and
+/// waited for only a moment when it is something else that says nothing
+pub fn started_as_a_hook_with_no_words() -> bool {
+    use std::io::{IsTerminal as _, Read as _};
+    if std::io::stdin().is_terminal() {
+        return false;
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut said = Vec::new();
+        let _ = std::io::stdin().lock().take(1 << 20).read_to_end(&mut said);
+        let _ = tx.send(said);
+    });
+    let Ok(said) = rx.recv_timeout(std::time::Duration::from_millis(300)) else { return false };
+    serde_json::from_slice::<serde_json::Value>(&said).is_ok_and(|v| is_a_hooks_event(&v))
+}
+
+/// Whether a piece of JSON is what a CLI hands a hook: an object that names
+/// its event
+fn is_a_hooks_event(v: &serde_json::Value) -> bool {
+    ["hook_event_name", "hookEventName"].iter().any(|k| v.get(*k).is_some_and(|e| e.is_string()))
+}
+
 /// One CLI that can be asked to report on itself.
 #[derive(Debug, Clone)]
 pub struct Target {
@@ -930,6 +1026,17 @@ fn edit(t: &Target, want: bool, program: &Path) -> Result<()> {
             "err.hook.path_has_space",
             &[("name", &t.name), ("path", &program.display().to_string())]
         ));
+    }
+    // ...and not into the file of a CLI too old for it. An entry is no help
+    // to a version that reads it wrong, and some read it very wrong: the
+    // program named with its words dropped (so the whole app starts at
+    // every event), or the entire settings file discarded over one event
+    // name the version does not know
+    #[cfg(not(test))]
+    if want
+        && let Some((has, needs)) = too_old_for(&t.name)
+    {
+        anyhow::bail!(crate::i18n::tp("err.hook.cli_too_old", &[("name", &t.name), ("has", &has), ("needs", &needs)]));
     }
     let existing = std::fs::read_to_string(&t.file).ok();
     let mut doc: serde_json::Value = match existing.as_deref() {
@@ -2616,6 +2723,28 @@ mod tests {
             &serde_json::json!({"session_id": "s", "agent_id": "a1", "background_tasks": [{"id": "z", "type": "shell", "status": "running"}]}),
         );
         assert_eq!(helpers.running, None);
+    }
+
+    /// A version is read out of whatever a CLI prints around it, and
+    /// compared by its numbers, not by its letters
+    #[test]
+    fn a_cli_too_old_for_the_hook_is_told_apart_by_its_numbers() {
+        assert_eq!(version_in("2.1.325 (Claude Code)").as_deref(), Some("2.1.325"));
+        assert_eq!(version_in("codex-cli 0.167.0").as_deref(), Some("0.167.0"));
+        assert_eq!(version_in("no numbers here"), None);
+        assert!(version_of("2.1.99") < version_of("2.1.139"), "compared as words");
+        assert!(version_of("2.2.0") > version_of("2.1.139"));
+        assert_eq!(version_of("2"), None);
+    }
+
+    /// Only what a CLI hands a hook is taken for one: anything else on the
+    /// input of a start with no words is somebody starting the app
+    #[test]
+    fn a_hooks_event_is_known_by_naming_itself() {
+        assert!(is_a_hooks_event(&serde_json::json!({"hook_event_name": "Stop", "session_id": "s"})));
+        assert!(!is_a_hooks_event(&serde_json::json!({"session_id": "s"})));
+        assert!(!is_a_hooks_event(&serde_json::json!(["hook_event_name"])));
+        assert!(!is_a_hooks_event(&serde_json::json!({"hook_event_name": 3})));
     }
 
     /// A conversation begun afresh has nothing beside it; one taken up again

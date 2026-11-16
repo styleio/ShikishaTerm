@@ -232,6 +232,9 @@ pub fn apply_ws_config(
                     ft.cfg.notify_on_done.clone(),
                     &opts,
                 );
+                // ...and what goes with it, which is as live as it is
+                t.notify_reply = ft.cfg.notify_reply;
+                t.notify_ask = ft.cfg.notify_ask;
                 // Changes to command, encoding, or line count require a rebuild
                 if t.signature() != tab::signature_of(&argv, &opts) {
                     t.stage_restart_config(argv.clone(), opts);
@@ -268,6 +271,7 @@ pub fn apply_ws_config(
                         t.id = ft.cfg.id.clone();
                         t.notify_on_done = ft.cfg.notify_on_done.clone();
                         t.notify_reply = ft.cfg.notify_reply;
+                        t.notify_ask = ft.cfg.notify_ask;
                         // What this tab was having, whether or not it was carried:
                         // the key that means "carry the conversation over" reaches
                         // for it, and it is what the app goes on remembering for a
@@ -500,6 +504,7 @@ pub fn spawn_desk(
                 tab.depth = ft.depth;
                 tab.notify_on_done = ft.cfg.notify_on_done.clone();
                 tab.notify_reply = ft.cfg.notify_reply;
+                tab.notify_ask = ft.cfg.notify_ask;
                 tabs.push(tab);
             }
             Err(e) => {

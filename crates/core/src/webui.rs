@@ -17254,6 +17254,14 @@ function tabPane(desk, t) {
                              : T["settings.tab.notify.reply.needs_dest"];
         }
         replyBox.append(label);
+        // The other moment worth hearing of: the AI stopped to ask, and is
+        // waiting. Its own tick, off until somebody ticks it
+        if (!dest) delete t.notify_ask;
+        const ask = check(t, "notify_ask", T["settings.tab.notify.ask"]);
+        ask.querySelector("input").disabled = !dest;
+        ask.style.opacity = dest ? "" : ".5";
+        if (!dest) ask.title = T["settings.tab.notify.reply.needs_dest"];
+        replyBox.append(ask);
         if (here) {
           warn.classList.remove("warn");
           warn.textContent = T["settings.tab.notify.reply.here"];
@@ -17286,7 +17294,7 @@ function tabPane(desk, t) {
           drawNotify(); refreshSave();
           return;
         }
-        if (!v) { delete t.notify_on_done; delete t.notify_reply; }
+        if (!v) { delete t.notify_on_done; delete t.notify_reply; delete t.notify_ask; }
         drawReply(); refreshSave();
       });
       replyBox.addEventListener("change", () => { drawReply(); refreshSave(); });
@@ -18587,7 +18595,7 @@ function readFolders(desk, w) {
 // answers the app keeps per tab -- is the line's own and goes back as it came
 const TAB_KEYS_SHOWN = new Set(["name", "id", "uid", "command", "profile", "automation", "lua",
   "git_account", "ai_account", "browser_profile", "private", "user_agent", ...WORDS_KEYS, "locked", "auto_restart",
-  "encoding", "scrollback", "log", "notify_on_done", "notify_reply", "nav", "server", "ask",
+  "encoding", "scrollback", "log", "notify_on_done", "notify_reply", "notify_ask", "nav", "server", "ask",
   "restore_conversation", "children"]);
 
 function flatten(tabs, depth, group, out) {
@@ -18603,7 +18611,7 @@ function flatten(tabs, depth, group, out) {
                choose_model: t.choose_model || "", words_model: t.words_model || "",
                locked: !!t.locked, auto_restart: !!t.auto_restart,
                encoding: t.encoding || "", scrollback: t.scrollback ?? "", log: !!t.log,
-               notify_on_done: t.notify_on_done || "", notify_reply: !!t.notify_reply,
+               notify_on_done: t.notify_on_done || "", notify_reply: !!t.notify_reply, notify_ask: !!t.notify_ask,
                nav: t.nav || null, ask: t.ask || null,
                // Absent means yes; only a no is carried
                ...(t.restore_conversation === false ? {restore_conversation: false} : {}),
@@ -18639,6 +18647,7 @@ function nest(flat) {
     if (f.log) node.log = true;
     if (f.notify_on_done) node.notify_on_done = f.notify_on_done;
     if (f.notify_on_done && f.notify_reply) node.notify_reply = true;
+    if (f.notify_on_done && f.notify_ask) node.notify_ask = true;
     // Don't write it if none are enabled. Leaving a block of all-false values just hurts readability
     if (f.nav && Object.values(f.nav).some(Boolean)) {
       node.nav = {};

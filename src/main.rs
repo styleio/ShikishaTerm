@@ -303,6 +303,14 @@ fn boot() -> Result<()> {
         return cast_test(&url);
     }
 
+    // Started with no words at all and a hook's event on its input: a CLI
+    // read the hook this app wrote into its settings and ran the program
+    // without what follows it. That is not somebody opening the app, and
+    // nothing is opened
+    if std::env::args().len() == 1 && shikisha_core::agenthook::started_as_a_hook_with_no_words() {
+        return Ok(());
+    }
+
     // One program per layout (see instance.rs). Started again over the same
     // folders -- a second click on the shortcut while the first is put away in
     // the notification area -- this one asks the first to show its window and

@@ -16213,7 +16213,20 @@ function drawStrip() {
 // whether the AI is at work, and the keyboard and the phone close tabs too --
 // so this only says which row, and what that row was when it was pressed
 function closeTab(t) {
-  send({kind:"closetab", tab:t.index, key:t.key || "", sure:false});
+  const go = () => send({kind:"closetab", tab:t.index, key:t.key || "", sure:false});
+  // An editor tab with typing in it that was never saved: closing it throws
+  // the typing away, and nothing else would say so -- the app knows only
+  // that the tab is not busy. Asked here, with the files named
+  const unsaved = t.kind === "editor" ? edUnsaved(t) : [];
+  if (!unsaved.length) { go(); return; }
+  askQuestion({
+    title: T["tui.edit.close.title"] || "",
+    say: T["tui.edit.close.say"] || "",
+    what: unsaved.join("\n"),
+    label: T["tui.edit.close.go"] || "",
+    danger: true,
+    go,
+  });
 }
 
 // The tabs closed on this desk, newest first, to open one again. Where one
@@ -18898,6 +18911,41 @@ let edUi = null, edAce = null, edAceAsked = false;
 const edDrafts = new Map();
 // Which editor tab and which file: two editor tabs can each have a draft of one file
 const edDraftKey = path => JSON.stringify([ED.key, path]);
+// The files of one editor tab that hold typing nobody saved: the drafts put
+// aside for it, and the file on screen
+function edUnsaved(t) {
+  const tab = t.id || t.name;
+  const files = [];
+  for (const k of edDrafts.keys()) {
+    try { const [of, path] = JSON.parse(k); if (of === tab) files.push(path); } catch (e) {}
+  }
+  if (ED.key === tab && ED.path && ED.dirty && !files.includes(ED.path)) files.push(ED.path);
+  return files;
+}
+// Drafts outlive this page loading itself again (a new version of the app, a
+// phone that put the page away and came back): written down as the page
+// goes, read back as it comes, and from then on they are drafts like any
+// other -- put back when their file is opened, with the mark they were typed
+// against. Too much to write down (the browser keeps a few megabytes) is not
+// written, and nothing else is lost for it
+function edDraftsKept() {
+  try {
+    const all = Array.from(edDrafts.entries());
+    if (ED.path && ED.dirty && edAce) {
+      all.push([edDraftKey(ED.path), {text: edAce.getValue(), base: ED.text, mark: ED.mark, stamp: ED.stamp,
+        encoding: ED.encoding, exact: ED.exact, encPicked: ED.encPicked}]);
+    }
+    if (all.length) sessionStorage.setItem("shikisha_ed_drafts", JSON.stringify(all));
+    else sessionStorage.removeItem("shikisha_ed_drafts");
+  } catch (e) {}
+}
+try {
+  for (const [k, d] of JSON.parse(sessionStorage.getItem("shikisha_ed_drafts") || "[]")) {
+    if (typeof k === "string" && d && typeof d.text === "string") edDrafts.set(k, d);
+  }
+  sessionStorage.removeItem("shikisha_ed_drafts");
+} catch (e) {}
+window.addEventListener("pagehide", edDraftsKept);
 function edStash() {
   // What the visual editor has, into the text first: the draft is the text
   mdRichFlush();

@@ -151,7 +151,20 @@ pub struct Saved {
 
 impl Saved {
     fn is_tab(&self, machine: &str, cwd: &str, tab: &str) -> bool {
-        self.machine == machine && self.cwd == cwd && self.tab == tab
+        self.on(machine) && self.cwd == cwd && self.tab == tab
+    }
+
+    /// Whether it was written down for that machine.
+    ///
+    /// A server used to be written down by its address alone
+    /// (`host:port`), and is now by who signs in and the way there
+    /// (`user@host:port`, with whatever it is reached through in front).
+    /// What an earlier version wrote is still a terminal left running: it
+    /// is read as that server's, whoever signs in, and written the new way
+    /// the next time it is written
+    fn on(&self, machine: &str) -> bool {
+        self.machine == machine
+            || (!self.machine.contains('@') && machine.rsplit_once('@').is_some_and(|(_, address)| address == self.machine))
     }
 }
 
@@ -199,7 +212,7 @@ fn put(all: &mut Vec<Saved>, s: Saved) {
 
 /// Strike a terminal out, once its end is known or it is not there
 fn strike(all: &mut Vec<Saved>, machine: &str, generation: &str, term: u64) {
-    all.retain(|o| !(o.machine == machine && o.generation == generation && o.term == term));
+    all.retain(|o| !(o.on(machine) && o.generation == generation && o.term == term));
 }
 
 /// What a terminal is to do while the app is away, as the resident process
@@ -223,7 +236,7 @@ fn now_secs() -> u64 {
 /// every terminal in it, is gone with it
 pub fn forget_machine(at: &Place) {
     let machine = at.machine_key();
-    change_saved(|all| all.retain(|o| o.machine != machine));
+    change_saved(|all| all.retain(|o| !o.on(&machine)));
 }
 
 /// The terminal a tab left running on `at`, if there is one to go back to:
@@ -263,7 +276,7 @@ fn written_for(saved: &[Saved], machine: &str, cwd: &str, uid: &str, name: &str)
     saved
         .iter()
         .find(|s| s.is_tab(machine, cwd, uid))
-        .or_else(|| saved.iter().find(|s| s.machine == machine && s.cwd == cwd && is_this_tab(&s.tab, uid, name)))
+        .or_else(|| saved.iter().find(|s| s.on(machine) && s.cwd == cwd && is_this_tab(&s.tab, uid, name)))
         .cloned()
 }
 
@@ -800,7 +813,7 @@ impl FarTerm {
         let run = self.at.cloud().and_then(|h| h.instance.as_deref()).and_then(crate::e2b::run_left);
         let (machine, generation, term) = (self.at.machine_key(), self.generation(), self.term());
         change_saved(|all| {
-            if let Some(s) = all.iter_mut().find(|s| s.machine == machine && s.generation == generation && s.term == term) {
+            if let Some(s) = all.iter_mut().find(|s| s.on(&machine) && s.generation == generation && s.term == term) {
                 s.left = run;
             }
         });
@@ -842,7 +855,7 @@ impl FarTerm {
     fn stopping(&self) {
         let (machine, generation, term) = (self.at.machine_key(), self.generation(), self.term());
         change_saved(|all| {
-            if let Some(s) = all.iter_mut().find(|s| s.machine == machine && s.generation == generation && s.term == term) {
+            if let Some(s) = all.iter_mut().find(|s| s.on(&machine) && s.generation == generation && s.term == term) {
                 s.stopping = true;
             }
         });
@@ -1671,6 +1684,25 @@ mod tests {
 
     fn saved(machine: &str, cwd: &str, tab: &str, generation: &str, term: u64) -> Saved {
         Saved { machine: machine.into(), cwd: cwd.into(), tab: tab.into(), generation: generation.into(), term, since: 1, left: None, stopping: false }
+    }
+
+    /// Two accounts on one server are two machines: each has its own home,
+    /// its own bridge and its own terminals. What a version before this
+    /// wrote down by the address alone is still found, by either
+    #[test]
+    fn a_server_is_kept_apart_by_who_signs_in() {
+        let ada = saved("ada@srv.example.net:22", "/w", "u1", "g", 1);
+        assert!(ada.on("ada@srv.example.net:22"));
+        assert!(!ada.on("root@srv.example.net:22"), "another account was handed this one's terminal");
+        assert!(!ada.on("ada@other.example.net:22"));
+        let old = saved("srv.example.net:22", "/w", "u1", "g", 1);
+        assert!(old.on("ada@srv.example.net:22") && old.on("gw@jump.example.net:22>ada@srv.example.net:22"));
+        assert!(!old.on("ada@srv.example.net:2222"));
+        // Written again, it replaces what the earlier version wrote
+        let mut all = vec![old];
+        put(&mut all, saved("ada@srv.example.net:22", "/w", "u1", "g2", 2));
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].machine, "ada@srv.example.net:22");
     }
 
     /// A tab goes back to the terminal it left running by who it is; one
