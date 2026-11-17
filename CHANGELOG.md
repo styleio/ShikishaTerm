@@ -8,6 +8,8 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-11-17
+
 ### Added
 - **Reset terminal** (`Ctrl+B` then `e`, or "term_reset" in the command
   palette). A full-screen program that is killed, or loses its connection,
@@ -6076,7 +6078,8 @@ The first public release. It is pre-1.0 and evolving quickly. Highlights:
   forwarding, session logs, legacy encodings, IME input, and the mouse.
 - Interface localization (English base, Japanese complete; more welcome).
 
-[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.30.1...HEAD
+[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.31.0...HEAD
+[0.31.0]: https://github.com/styleio/ShikishaTerm/compare/v0.30.1...v0.31.0
 [0.30.1]: https://github.com/styleio/ShikishaTerm/compare/v0.30.0...v0.30.1
 [0.30.0]: https://github.com/styleio/ShikishaTerm/compare/v0.29.0...v0.30.0
 [0.29.0]: https://github.com/styleio/ShikishaTerm/compare/v0.28.1...v0.29.0
