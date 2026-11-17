@@ -686,12 +686,19 @@ pub fn cookies_out(s: &dyn Speaks, to: Option<&str>, timeout_ms: u64) -> anyhow:
 /// agent got to without switching to the tab
 pub fn snapshot(s: &dyn Speaks, to: Option<&str>, timeout_ms: u64) -> anyhow::Result<Vec<u8>> {
     use base64::Engine as _;
-    let v = s.cdp(
+    // Woken, like a click: a picture is taken of what the page draws, and a
+    // page the window has hidden draws nothing. Asked for a picture of a tab
+    // that was not in front, the browser waited for a frame that never came,
+    // and the script that asked sat out its whole deadline
+    s.wake(to, true);
+    let taken = s.cdp(
         to,
         "Page.captureScreenshot",
         serde_json::json!({ "format": "png", "captureBeyondViewport": false }),
         timeout_ms,
-    )?;
+    );
+    s.wake(to, false);
+    let v = taken?;
     let data = v
         .get("data")
         .and_then(|d| d.as_str())

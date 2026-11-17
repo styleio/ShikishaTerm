@@ -888,19 +888,65 @@ pub(super) fn run_window(
                         Ok(mut ib) => (std::mem::take(&mut ib.made), std::mem::take(&mut ib.shut)),
                         Err(_) => (Vec::new(), Vec::new()),
                     };
+                    // The seats whose front page changes: the one a phone
+                    // is shown has to be the one its taps go to
+                    let mut reseated: Vec<String> = Vec::new();
                     for (opener, name, view) in made {
+                        reseated.push(opener.clone());
                         overlays.entry(opener).or_default().push((name, view));
                     }
                     for name in shut {
                         finders.remove(&name);
                         // Dropping the page is what closes it
-                        for stack in overlays.values_mut() {
+                        for (seat, stack) in overlays.iter_mut() {
+                            if stack.iter().any(|(n, _)| n == &name) {
+                                reseated.push(seat.clone());
+                            }
                             stack.retain(|(n, _)| n != &name);
                         }
                         overlays.retain(|_, stack| !stack.is_empty());
                     }
                     if let Ok(mut ib) = adoptions.try_borrow_mut() {
                         ib.count(&overlays);
+                    }
+                    // A seat being shown to a phone is shown from the page
+                    // now in front of it. The picture was left coming from
+                    // the page that was there when the showing began: a
+                    // sign-in window opened over a tab was not seen on the
+                    // phone at all, while every tap on the picture of the
+                    // tab went to the window. (The shape a phone gave the
+                    // page it was looking at is given back to that page; the
+                    // page now in front is shown as it is)
+                    reseated.sort();
+                    reseated.dedup();
+                    for seat in reseated {
+                        let to = Some(seat);
+                        let Some(was) = casts.remove(&to) else { continue };
+                        if zooms.remove(&to).is_some() {
+                            was.port().call("Emulation.clearDeviceMetricsOverride", "{}");
+                            // Every page of the seat but the one in front
+                            let under = to.as_ref().and_then(|seat| children.get(seat)).into_iter();
+                            let stack = to.as_ref().and_then(|seat| overlays.get(seat)).map(|s| &s[..s.len().saturating_sub(1)]).unwrap_or_default();
+                            for page in under.chain(stack.iter().map(|(_, v)| v)) {
+                                page.zoom(1.0);
+                            }
+                        }
+                        cdp::stop(was);
+                        if let Some(view) = target(main_view(&shell), &children, &overlays, &to) {
+                            let tx = ev_tx.clone();
+                            let from = to.clone();
+                            let dims = cast_dims.clone();
+                            sound_pid.store(view.sound_process(), std::sync::atomic::Ordering::SeqCst);
+                            match cdp::start(&view.port(), move |data, w, h| {
+                                dims.set((w, h));
+                                let _ = tx.send(Ev::Frame { from: from.clone(), data, w: w as u32, h: h as u32 });
+                            }) {
+                                Some(cast) => {
+                                    casts.insert(to, cast);
+                                }
+                                None => shikisha_core::append_hook_log(&shikisha_core::i18n::t("err.browser.log_screencast_failed")),
+                            }
+                        }
                     }
                 }
                 Cmd::RemoveChild { name } => {
@@ -1082,6 +1128,15 @@ pub(super) fn run_window(
                                 }
                             }
                             Input::Key { named, ctrl, alt } => {
+                                // The page is made to believe it has the
+                                // keyboard, as it is before a field is filled
+                                // (`pageops::fill_ref_inner`): a page that is
+                                // not in front takes the key and does nothing
+                                // with it -- an Enter pressed by a script
+                                // after filling a field on a tab behind
+                                // another submitted nothing, and was said to
+                                // have been pressed
+                                port.call("Emulation.setFocusEmulationEnabled", r#"{"enabled":true}"#);
                                 for ev in shikisha_core::cdp::key_events(&named, ctrl, alt) {
                                     port.call("Input.dispatchKeyEvent", &ev.to_string());
                                 }

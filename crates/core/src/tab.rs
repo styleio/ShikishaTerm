@@ -1186,6 +1186,65 @@ pub fn pty_write(writer: &PtyWriter, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// The most that waits to be typed into one tab's program. A program that
+/// takes nothing of what it is typed is not going to take more
+const TYPED_MOST: u64 = 16 * 1024 * 1024;
+
+/// What is typed into a tab's program, handed to a thread of the tab's own
+/// and typed there, in order.
+///
+/// A terminal takes what is typed when its program reads, and holds only so
+/// much for a program that does not -- one that is stopped, or busy, or has
+/// just been pasted more than it reads at once. Typed straight in, the next
+/// key then waited for the program, on the thread that draws every tab and
+/// hears every key: the whole app stood still behind one tab, and a large
+/// paste into a slow program froze it for as long as the program took. Here
+/// the key is only put in line; the wait is the tab's own thread's
+struct Typed {
+    line: std::sync::mpsc::Sender<Vec<u8>>,
+    /// How many bytes wait in line, not yet typed
+    waiting: Arc<AtomicU64>,
+}
+
+impl Typed {
+    fn into(mut program: Box<dyn std::io::Write + Send>) -> Self {
+        let (line, typed) = std::sync::mpsc::channel::<Vec<u8>>();
+        let waiting = Arc::new(AtomicU64::new(0));
+        let left = Arc::clone(&waiting);
+        std::thread::spawn(move || {
+            for bytes in typed {
+                let gone = program.write_all(&bytes).and_then(|()| program.flush()).is_err();
+                left.fetch_sub(bytes.len() as u64, Ordering::SeqCst);
+                if gone {
+                    break;
+                }
+            }
+        });
+        Self { line, waiting }
+    }
+}
+
+impl std::io::Write for Typed {
+    /// Put in line. Never waits. Refused once the program has left too much
+    /// untaken, and once it is gone
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let n = bytes.len() as u64;
+        if self.waiting.fetch_add(n, Ordering::SeqCst) + n > TYPED_MOST {
+            self.waiting.fetch_sub(n, Ordering::SeqCst);
+            return Err(std::io::Error::new(std::io::ErrorKind::WouldBlock, "the program is not taking what it is typed"));
+        }
+        if self.line.send(bytes.to_vec()).is_err() {
+            self.waiting.fetch_sub(n, Ordering::SeqCst);
+            return Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "the program is gone"));
+        }
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 /// The idle process started solely so a model tab has a display to hold onto.
 /// It just sits alive quietly waiting for keystrokes (the screen content is
 /// injected by the main process)
@@ -2512,6 +2571,69 @@ mod tests {
         p.process(b"\x1b[?2026$p");
         let answers = String::from_utf8_lossy(&said.lock().unwrap()).to_string();
         assert!(answers.ends_with("\x1b[?2026;1$y"), "not told that output is being held: {answers:?}");
+    }
+
+    /// What is typed into a tab is put in line and typed in order by the
+    /// tab's own thread: a program that does not read holds up nobody who
+    /// types, and one that is slow still gets every byte in order
+    #[test]
+    fn typing_never_waits_on_the_program() {
+        use std::io::Write as _;
+        // A program that takes a little, slowly
+        struct Slow(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for Slow {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                std::thread::sleep(std::time::Duration::from_millis(2));
+                let n = bytes.len().min(3);
+                self.0.lock().unwrap().extend_from_slice(&bytes[..n]);
+                Ok(n)
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let got = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut typed = super::Typed::into(Box::new(Slow(std::sync::Arc::clone(&got))));
+        let started = std::time::Instant::now();
+        let said: Vec<u8> = (0..200u32).flat_map(|n| format!("{n},").into_bytes()).collect();
+        for piece in said.chunks(7) {
+            typed.write_all(piece).unwrap();
+        }
+        assert!(started.elapsed() < std::time::Duration::from_millis(100), "typing waited on the program: {:?}", started.elapsed());
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while got.lock().unwrap().len() < said.len() && std::time::Instant::now() < until {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(*got.lock().unwrap(), said, "what was typed did not arrive whole and in order");
+
+        // A program that takes nothing at all
+        struct Deaf(std::sync::mpsc::Receiver<()>);
+        impl std::io::Write for Deaf {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                let _ = self.0.recv();
+                Err(std::io::Error::other("gone"))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let (wake, asleep) = std::sync::mpsc::channel();
+        let mut typed = super::Typed::into(Box::new(Deaf(asleep)));
+        let started = std::time::Instant::now();
+        let much = vec![b'x'; 1024 * 1024];
+        let mut refused = false;
+        for _ in 0..32 {
+            refused = refused || typed.write_all(&much).is_err();
+        }
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "typing waited on a program that reads nothing");
+        assert!(refused, "kept without end for a program that reads nothing");
+        // It is gone: what is typed after that is refused, not kept
+        drop(wake);
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while typed.write_all(b"x").is_ok() && std::time::Instant::now() < until {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(typed.write_all(b"x").is_err(), "typed into a program that is gone");
     }
 
     /// A picture a program asked to have shown whole reaches the screen in
@@ -5093,7 +5215,8 @@ impl Tab {
                 crate::append_hook_log(&format!("could not put \"{title}\" in a job object"));
             }
 
-        let writer: PtyWriter = Arc::new(Mutex::new(master.take_writer()?));
+        // Typed on a thread of the tab's own, never on the caller's (`Typed`)
+        let writer: PtyWriter = Arc::new(Mutex::new(Box::new(Typed::into(master.take_writer()?))));
         let bell_count = Arc::new(AtomicU64::new(0));
         // Cumulative output volume. The INDEX waveform is drawn from its deltas
         // (the change in screen hash alone doesn't tell us "how much is moving")

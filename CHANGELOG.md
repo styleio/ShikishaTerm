@@ -179,6 +179,26 @@ once it reaches its first tagged release.
   checked.
 
 ### Fixed
+- **A tab whose program does not read no longer freezes the app.** What
+  is typed into a tab was written straight into its terminal by the one
+  thread that draws every tab. A terminal holds only so much for a
+  program that is not reading (it is stopped, or busy, or was just pasted
+  more than it takes at once), and then the write waited: the whole app
+  stood still, for as long as the program took. Each tab now has a thread
+  of its own that types what is in line for it, so a large paste into a
+  slow program holds up only that tab.
+- **A sign-in window opened over a tab is what the phone sees.** In the
+  window app, a window a page opens stands in front of its tab. A phone
+  watching that tab went on being shown the tab underneath, while every
+  tap on that picture went to the window in front. The phone is now shown
+  the page in front, and again the tab when the window closes.
+- **A picture of a tab that is not in front, and an Enter pressed on
+  one.** A script that asked for a picture (`browser_snapshot`) of a tab
+  behind another waited out its whole deadline: a hidden page draws
+  nothing to take a picture of. The page is now woken for the picture, as
+  it already was for a click. A key pressed by a script
+  (`browser_press`) on such a tab was taken by the page and did nothing;
+  the page is now made to act on it.
 - **Keys typed quickly on a phone arrive in the order they were typed.**
   Everything the phone's page sends to the PC was a request of its own,
   and two on their way at once arrived in whichever order the network

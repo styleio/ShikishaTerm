@@ -27,6 +27,13 @@ pub struct Cast {
     port: Port,
 }
 
+impl Cast {
+    /// The page being shown
+    pub fn port(&self) -> &Port {
+        &self.port
+    }
+}
+
 /// Start screencasting. Calls `on_frame(base64_jpeg, css_w, css_h)`
 /// every time a frame arrives.
 /// This also sends the frame ack automatically (without it, the next frame never comes)

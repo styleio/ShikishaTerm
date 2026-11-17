@@ -2423,6 +2423,10 @@ impl shikisha_shared::BrowserHost for Pages {
                 }
             }
             Input::Key { named, ctrl, alt } => {
+                // One page of a browser has the keyboard, and the rest take
+                // a key and do nothing with it: each is made to believe it
+                // has it (as before a field is filled)
+                let _ = chrome.call_page(&session, "Emulation.setFocusEmulationEnabled", serde_json::json!({ "enabled": true }));
                 for ev in crate::cdp::key_events(&named, ctrl, alt) {
                     chrome.call_page(&session, "Input.dispatchKeyEvent", ev)?;
                 }
