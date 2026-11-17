@@ -157,6 +157,21 @@ once it reaches its first tagged release.
   start and reaches only the page it was opened for.
 
 ### Fixed
+- **A lead is no longer woken every ten minutes about the same idle
+  worker.** A worker that ended its turn without reporting was raised to
+  its lead again every ten minutes for as long as it sat there, which a
+  worker that wakes by itself, or one you are talking to, does all day.
+  It is now said once. It is said again after the lead has told the
+  worker something and the worker has stopped without reporting on that.
+- **A report that arrives after its assignment was given up on reaches
+  the lead.** When a worker's tab looked gone, or the lead stopped it, and
+  the worker reported afterwards, it was answered "already reported" and
+  what it had found was dropped. The lead is now handed the report as a
+  note, once; the task stays as it was left.
+- **A job whose lead is gone is said to you.** When the tab leading a job
+  was closed, or the AI in it ended, the job stayed open and its workers
+  went on reporting to nobody, with nothing on screen saying so. After two
+  minutes you now get one notification naming the job, with what to do.
 - **A link that opens in a new tab, in the server's browser.** On the
   server version, a `target="_blank"` link or `window.open` did nothing
   that anybody could see: the new window was made where no screen shows

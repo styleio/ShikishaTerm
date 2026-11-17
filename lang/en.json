@@ -4766,6 +4766,7 @@
   "grant.worktree_remove": "Remove a working folder (git worktree) an AI made",
   "grant.worktree_list": "List the working folders (git worktrees) and who made each",
   "orch.decide.notify": "A decision is waiting for you: {question}",
+  "orch.leaderless.notify": "Job j{job} ({goal}) has nobody leading it: the tab {lead} is closed, or the AI in it has ended. Its workers go on, and their reports and questions reach no one. Stop the job on the board, or start the AI in {lead} again.",
   "grant.github_issues": "List a repository's issues",
   "grant.github_issue": "Read one issue in full",
   "grant.github_prs": "List a repository's pull requests",

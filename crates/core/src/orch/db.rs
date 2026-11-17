@@ -971,6 +971,13 @@ impl Store {
         Ok(st.query_map(params![box_], Self::mail_row)?.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    /// The last time mail of a box was handed to its reader, by the handover's
+    /// number; 0 when none has been. Handed again and not yet dealt with, it
+    /// is the same handover: the number moves only when there is new mail
+    pub fn last_handed(&self, box_: &str) -> Result<i64> {
+        Ok(self.conn.query_row("SELECT COALESCE(MAX(id), 0) FROM handovers WHERE box = ?1", params![box_], |r| r.get(0))?)
+    }
+
     /// The last mail of a job, newest first (the person's view)
     pub fn history(&self, job: i64, most: usize) -> Result<Vec<Mail>> {
         let mut st = self.conn.prepare(&format!(

@@ -316,6 +316,86 @@ fn a_worker_whose_turn_failed_is_raised_at_once_with_its_error() {
     assert!(!again["mail"].as_array().unwrap().iter().any(|m| m["kind"] == "alert"), "{again}");
 }
 
+/// A worker that stops without reporting is said to its lead once, not
+/// again by the clock -- and again once the lead has told it something and
+/// it has stopped without reporting on that
+#[test]
+fn a_worker_that_stops_without_reporting_is_raised_once_for_each_thing_it_was_told() {
+    let mut w = World::new();
+    w.ok("lead", "job_open", vec![json!("x")]);
+    w.ok("lead", "task_add", vec![json!("Review commit abc.")]);
+    w.assign("t1", "codex");
+    w.set("codex", TabState::Done);
+    // Looked at, and what the lead was told of since
+    let mut looked = |w: &mut World, idle_for: Duration| -> Vec<String> {
+        if let Some(back) = Instant::now().checked_sub(idle_for) {
+            w.o.quiet_since.insert(1, back);
+        }
+        w.o.last_watch = None;
+        w.o.tick(&w.scene);
+        let inbox = w.ok("lead", "inbox", vec![]);
+        let alerts: Vec<String> = inbox["mail"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|m| m["kind"] == "alert")
+            .map(|m| m["subject"].as_str().unwrap_or_default().to_string())
+            .collect();
+        if !inbox["handover"].is_null() {
+            w.ok("lead", "inbox", vec![json!({"dealt": inbox["handover"]})]);
+        }
+        alerts
+    };
+    assert!(looked(&mut w, Duration::from_secs(10)).is_empty(), "said before it had been left a while");
+    let first = looked(&mut w, LEFT + Duration::from_secs(1));
+    assert_eq!(first.len(), 1, "{first:?}");
+    assert!(first[0].contains("stopped without reporting"), "{first:?}");
+    // Ten minutes on, half an hour on: the same silence is not said again
+    assert!(looked(&mut w, Duration::from_secs(11 * 60)).is_empty(), "said again by the clock");
+    assert!(looked(&mut w, Duration::from_secs(31 * 60)).is_empty(), "said again by the clock");
+    // The lead tells it something; it takes that, works, and stops again
+    // with no report: a silence of its own, said once
+    w.ok("lead", "tell", vec![json!("a1"), json!("Report with shikisha report.")]);
+    assert!(looked(&mut w, Duration::from_secs(31 * 60)).is_empty(), "said again over mail the worker has not taken");
+    w.ok("codex", "inbox", vec![]);
+    let second = looked(&mut w, LEFT + Duration::from_secs(1));
+    assert_eq!(second.len(), 1, "not said after the lead told it something: {second:?}");
+    assert!(looked(&mut w, Duration::from_secs(31 * 60)).is_empty(), "said again by the clock");
+}
+
+/// A worker given up on -- its program looked gone -- that reports after all
+/// is not answered "already reported" with what it found thrown away: the
+/// lead is handed it, once, and the task stays as it was left
+#[test]
+fn a_report_that_comes_after_its_assignment_was_given_up_on_reaches_the_lead() {
+    let mut w = World::new();
+    w.ok("lead", "job_open", vec![json!("x")]);
+    w.ok("lead", "task_add", vec![json!("Review commit abc.")]);
+    w.assign("t1", "codex");
+    w.set("codex", TabState::Exited);
+    w.o.last_watch = None;
+    w.o.tick(&w.scene);
+    assert_eq!(w.o.store().unwrap().task(1).unwrap().unwrap().state, "open", "the lost task is not open again");
+    let inbox = w.ok("lead", "inbox", vec![]);
+    w.ok("lead", "inbox", vec![json!({"dealt": inbox["handover"]})]);
+
+    // It was there all along, and reports
+    w.set("codex", TabState::Done);
+    let said = w.ok("codex", "report", vec![json!("done"), json!("Read the commit."), json!("An off-by-one in the loop."), json!("nothing")]);
+    assert_eq!(said["state"], "ended before this report", "{said}");
+    assert!(said["next"][0].as_str().unwrap().contains("lead has been handed"), "{said}");
+    let inbox = w.ok("lead", "inbox", vec![]);
+    let note = inbox["mail"].as_array().unwrap().iter().find(|m| m["kind"] == "note").expect("the lead is not handed the late report").to_string();
+    assert!(note.contains("A late report on a1") && note.contains("An off-by-one in the loop."), "{note}");
+    assert_eq!(w.o.store().unwrap().task(1).unwrap().unwrap().state, "open", "a late report changed the task");
+    w.ok("lead", "inbox", vec![json!({"dealt": inbox["handover"]})]);
+
+    // Said twice, it is handed over once
+    w.ok("codex", "report", vec![json!("done"), json!("Read the commit."), json!("An off-by-one in the loop."), json!("nothing")]);
+    let again = w.ok("lead", "inbox", vec![]);
+    assert!(!again["mail"].as_array().into_iter().flatten().any(|m| m["kind"] == "note"), "{again}");
+}
+
 #[test]
 fn codex_is_handed_the_paste_alone() {
     let mut w = World::new();
@@ -584,6 +664,37 @@ fn a_worker_waiting_for_the_person_tells_the_lead_and_the_person_once() {
     w.o.last_watch = None;
     let fx = w.o.tick(&w.scene);
     assert!(!fx.iter().any(|e| matches!(e, Effect::Person { .. })), "once");
+}
+
+/// A job whose lead is gone is said to the person, once, after it has been
+/// gone a while -- and again if the lead comes back and goes once more
+#[test]
+fn a_job_whose_lead_is_gone_is_said_to_the_person_once() {
+    let mut w = World::new();
+    w.ok("lead", "job_open", vec![json!("ship it")]);
+    w.ok("lead", "task_add", vec![json!("a")]);
+    w.assign("t1", "claude");
+    let mut looked = |w: &mut World, gone_for: Option<Duration>| -> Vec<String> {
+        if let Some(back) = gone_for.and_then(|d| Instant::now().checked_sub(d)) {
+            w.o.leaderless_since.insert(1, back);
+        }
+        w.o.last_watch = None;
+        w.o.tick(&w.scene).into_iter().filter_map(|e| match e { Effect::Person { text } => Some(text), _ => None }).collect()
+    };
+    assert!(looked(&mut w, None).is_empty(), "said of a job whose lead is there");
+    // Its program ended: not said at once (a tab is started again in a moment)
+    w.set("lead", TabState::Exited);
+    assert!(looked(&mut w, None).is_empty(), "said before it had been gone a while");
+    let said = looked(&mut w, Some(LEFT + Duration::from_secs(1)));
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(said[0].contains("j1") && said[0].contains("ship it"), "{said:?}");
+    assert!(looked(&mut w, Some(Duration::from_secs(3600))).is_empty(), "said again by the clock");
+    // Back, then closed for good: a new going, said once more
+    w.set("lead", TabState::Busy);
+    assert!(looked(&mut w, None).is_empty());
+    w.scene.tabs.retain(|t| t.id != "lead");
+    assert!(looked(&mut w, None).is_empty());
+    assert_eq!(looked(&mut w, Some(LEFT + Duration::from_secs(1))).len(), 1, "a lead closed after it came back is not said");
 }
 
 #[test]

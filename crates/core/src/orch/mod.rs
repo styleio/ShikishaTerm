@@ -260,6 +260,9 @@ pub struct Orchestra {
     stopping: Vec<Stopping>,
     /// Since when each worker has sat with its turn over and no report
     quiet_since: HashMap<i64, Instant>,
+    /// Since when each open job has had no lead: its tab closed, or the
+    /// program in it ended
+    leaderless_since: HashMap<i64, Instant>,
     last_watch: Option<Instant>,
     /// What each tab was last written down as being called, by uid
     names: HashMap<String, String>,
@@ -462,6 +465,7 @@ impl Orchestra {
             ask_waits: Vec::new(),
             stopping: Vec::new(),
             quiet_since: HashMap::new(),
+            leaderless_since: HashMap::new(),
             last_watch: None,
             names: HashMap::new(),
             telling: HashMap::new(),
@@ -1144,6 +1148,50 @@ impl Orchestra {
                 // Already reported, or never given anything
                 let last = self.store()?.last_for_tab(&me.uid).map_err(|e| e.to_string())?;
                 return match last {
+                    // Given up on before it reported -- its tab looked gone,
+                    // its program was started again, the lead stopped it --
+                    // and reporting now. "Already reported" was the answer,
+                    // and what it had found was thrown away with it. The
+                    // task has moved on (open again, or given to another),
+                    // so nothing of it is changed; the lead is handed what
+                    // was found, once, to do with as it sees fit
+                    Some(a) if a.over() && a.end_reason.is_some() => {
+                        let store = self.store()?;
+                        let why = a.end_reason.clone().unwrap_or_default();
+                        if store.raise_once(&format!("late:{}", a.id)).map_err(|e| e.to_string())? {
+                            let mut body = format!(
+                                "a{} had ended without a report ({why}), and <@{}> has reported on it since. t{} is as it was left then; this is what it says it did.\nOutcome: {}\nDid: {did}",
+                                a.id,
+                                a.tab_name,
+                                a.task,
+                                if done { "done" } else { "failed" }
+                            );
+                            if let Some(f) = &found {
+                                body.push_str(&format!("\nFound: {f}"));
+                            }
+                            if let Some(l) = &left {
+                                body.push_str(&format!("\nLeft: {l}"));
+                            }
+                            store
+                                .post(
+                                    Some(a.job),
+                                    &format!("job:{}", a.job),
+                                    &me.id,
+                                    "note",
+                                    &format!("A late report on a{} (t{})", a.id, a.task),
+                                    &body,
+                                    &json!({"assignment": format!("a{}", a.id), "task": format!("t{}", a.task), "files": strings(o.get("files"))}),
+                                )
+                                .map_err(|e| e.to_string())?;
+                            self.revision = self.revision.wrapping_add(1);
+                            crate::append_hook_log(&format!("orchestration: a{} reported after it had ended ({why}); passed to the lead as a note", a.id));
+                        }
+                        Ok(json!({
+                            "assignment": format!("a{}", a.id), "state": "ended before this report",
+                            "ended": why,
+                            "next": ["The lead has been handed what you reported, as a note. Stop here and wait at the prompt."],
+                        }))
+                    }
                     Some(a) if a.over() => Ok(json!({
                         "assignment": format!("a{}", a.id), "state": "already reported",
                         "next": ["Stop here and wait at the prompt."],
@@ -2201,9 +2249,18 @@ impl Orchestra {
                     _ if t.turn_over() && !asking.contains(&a.id) => {
                         let since = *self.quiet_since.entry(a.id).or_insert(now);
                         if now.duration_since(since) >= LEFT {
+                            // Once for each thing the lead has said to it
+                            // and it has taken: said again by the clock, a
+                            // worker that ends turn after turn without
+                            // reporting -- one that wakes by itself, one the
+                            // person is talking to -- woke its lead every
+                            // ten minutes for as long as it stood there.
+                            // What the lead tells it next is a new reason to
+                            // expect a report, and it is said again then
+                            let heard = store.last_handed(&format!("assignment:{}", a.id)).unwrap_or(0);
                             raised.push((
                                 job,
-                                format!("quiet:{}:{}", a.id, since.elapsed().as_secs() / 600),
+                                format!("quiet:{}:{heard}", a.id),
                                 format!("<@{}> stopped without reporting", a.tab_name),
                                 format!(
                                     "<@{}> has been idle for {} minutes on a{} (t{}) and has not reported. \
@@ -2257,7 +2314,33 @@ impl Orchestra {
         // Loose ends of open jobs, older than a moment
         let Ok(jobs) = store.open_jobs() else { return };
         let old = |at: i64| db::now_ms() - at >= LEFT.as_millis() as i64;
+        // What the person is told, once each: (key, words)
+        let mut told: Vec<(String, String)> = Vec::new();
+        self.leaderless_since.retain(|id, _| jobs.iter().any(|j| j.id == *id));
         for job in &jobs {
+            // A job whose lead is gone -- its tab closed, its program ended
+            // -- goes on with nobody to hear it: workers report into a box
+            // no one reads, questions wait for answers that cannot come,
+            // and nothing on screen says so. Only the person can do
+            // anything about it, so the person is told, once
+            let leaderless = scene.by_uid(&job.lead).is_none_or(|t| matches!(t.state, TabState::Exited));
+            let key = format!("leaderless:{}", job.id);
+            match leaderless {
+                true => {
+                    let since = *self.leaderless_since.entry(job.id).or_insert(now);
+                    if now.duration_since(since) >= LEFT {
+                        told.push((
+                            key,
+                            crate::i18n::tp("orch.leaderless.notify", &[("job", &job.id.to_string()), ("lead", &job.lead_name), ("goal", &job.goal)]),
+                        ));
+                    }
+                }
+                false => {
+                    if self.leaderless_since.remove(&job.id).is_some() {
+                        let _ = store.lower(&key);
+                    }
+                }
+            }
             let assignments = store.assignments(job.id).unwrap_or_default();
             for a in &assignments {
                 if a.over() && a.afterwards.is_none() && a.ended_at.is_some_and(old) && scene.by_uid(&a.tab).is_some() {
@@ -2307,6 +2390,12 @@ impl Orchestra {
                         ),
                     ));
                 }
+            }
+        }
+        for (key, text) in told {
+            if store.raise_once(&key).unwrap_or(false) {
+                crate::append_hook_log(&format!("orchestration: {key}: the person is told"));
+                effects.push(Effect::Person { text });
             }
         }
         for (job, key, subject, body) in raised {

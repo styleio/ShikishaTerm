@@ -4729,6 +4729,7 @@
   "grant.worktree_remove": "AI が作った作業フォルダ（git worktree）を削除する",
   "grant.worktree_list": "作業フォルダ（git worktree）の一覧と、それぞれの作り手を見る",
   "orch.decide.notify": "判断を待っています: {question}",
+  "orch.leaderless.notify": "ジョブ j{job}（{goal}）を指揮するタブがありません。タブ {lead} が閉じているか、タブ {lead} の AI が終了しています。ワーカーは作業を続けますが、ワーカーの報告と質問は誰にも届きません。盤面でジョブを停止するか、タブ {lead} の AI を起動し直してください。",
   "grant.github_issues": "リポジトリの Issue の一覧",
   "grant.github_issue": "Issue を1件、全部読む",
   "grant.github_prs": "リポジトリのプルリクエストの一覧",
