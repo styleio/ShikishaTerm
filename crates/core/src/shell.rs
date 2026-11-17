@@ -24532,6 +24532,21 @@ if (REMOTE) {
     if (d.handover) window.__handOver(d.handover);
     if ("surveyed" in d) window.__surveyed(d.surveyed);
   };
+  // Trying again after the line dropped. Not at one pace for ever: a PC
+  // that is off for the night would be knocked on every second and a half
+  // until morning, by every phone left on the page. Each try in a row waits
+  // twice as long as the last, up to half a minute. And a page nobody is
+  // looking at does not knock at all -- it connects the moment it is looked
+  // at again (see the visibility listener below)
+  let stateTries = 0, stateWaits = false;
+  const STATE_AGAIN_MS = 1500, STATE_AGAIN_MOST_MS = 30000;
+  const stateAgain = () => {
+    if (remoteCut || moving) return;
+    if (document.hidden) { stateWaits = true; return; }
+    const wait = Math.min(STATE_AGAIN_MOST_MS, STATE_AGAIN_MS * Math.pow(2, Math.min(stateTries, 5)));
+    stateTries++;
+    setTimeout(connectState, wait);
+  };
   const connectState = () => {
     if (remoteCut || moving) return;
     try {
@@ -24545,11 +24560,11 @@ if (REMOTE) {
       // from whoever is at the PC
       sws = new WebSocket(proto + "//" + location.host + "/ws-state?t=" + encodeURIComponent(TOKEN) +
         "&panes=1" + (beenUp ? "&again=1" : ""));
-    } catch (e) { setTimeout(connectState, 1500); return; }
+    } catch (e) { stateAgain(); return; }
     const line = sws;
-    line.onopen = () => { if (sws !== line) return; wsUp = true; beenUp = true; heard = Date.now(); connected(); edLineBack(); };
+    line.onopen = () => { if (sws !== line) return; wsUp = true; beenUp = true; stateTries = 0; heard = Date.now(); connected(); edLineBack(); };
     line.onmessage = (e) => { if (sws !== line) return; heard = Date.now(); try { applyState(JSON.parse(e.data)); } catch (x) {} };
-    line.onclose = () => { if (sws !== line) return; wsUp = false; if (!remoteCut && !moving) setTimeout(connectState, 1500); };
+    line.onclose = () => { if (sws !== line) return; wsUp = false; stateAgain(); };
     line.onerror = () => { try { line.close(); } catch (x) {} };
   };
   // The PC says something on this line every few seconds even when nothing
@@ -24568,8 +24583,13 @@ if (REMOTE) {
     connectState();
   };
   setInterval(stillThere, 2000);
-  // Coming back to the page (the phone was in a pocket) asks at once
-  document.addEventListener("visibilitychange", () => { if (!document.hidden) stillThere(); });
+  // Coming back to the page (the phone was in a pocket) asks at once, and
+  // connects at once when the line dropped while nobody was looking
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) return;
+    if (stateWaits) { stateWaits = false; stateTries = 0; connectState(); }
+    else stillThere();
+  });
   // Arrived from the old address with a code: this address's own cookies are
   // asked for first, and the page loads again holding them. A code that no
   // longer opens anything (used, or run out) leaves this phone where one with

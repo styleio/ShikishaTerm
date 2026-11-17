@@ -219,6 +219,11 @@ once it reaches its first tagged release.
   history of that session and an AI's CLI had no chance to put its
   session away. They are now sent the hangup a closing terminal sends,
   given up to 0.3 seconds, and only what is still running then is killed.
+- **A phone left on the page stops knocking on a PC that is off.** When
+  the line to the PC dropped, the page tried again every second and a
+  half for as long as it stayed open. Each try in a row now waits twice
+  as long, up to half a minute, and a page that is not on screen waits
+  until it is looked at again and then connects at once.
 - **A phone on a slow line no longer has everything it missed kept for
   it.** Pictures of a page being relayed, and the board's state, were
   queued for each phone without limit. A phone that fell behind (in a
