@@ -252,7 +252,7 @@ pub const ENV_PROGRAM: &str = "SHIKISHA_BRIDGE_PROGRAM";
 
 /// The line to one machine's bridge
 pub struct Link {
-    out: Mutex<Box<dyn Write + Send>>,
+    out: Out,
     /// The socket itself, to be closed when the line is let go: other threads
     /// hold the link, so dropping it here would close nothing
     socket: Option<std::net::TcpStream>,
@@ -280,18 +280,90 @@ pub struct Link {
     heard: Mutex<Instant>,
 }
 
+/// The most that waits to be said down one line. A line that has taken
+/// nothing for this long is not a slow line
+const OUT_MOST: usize = 64 * 1024 * 1024;
+
+/// What is said down a line, put in order and written by a thread of the
+/// line's own.
+///
+/// Written by whoever had something to say, a line that takes nothing --
+/// its far end stopped, the network holding what is sent -- held them all:
+/// the key just typed into a tab on that machine was written on the thread
+/// that draws every tab, and the whole app stood still for one machine.
+/// Here saying something is putting it in line, which never waits
+struct Out {
+    line: Mutex<Sender<Vec<u8>>>,
+    /// How many bytes wait in line, not yet written
+    waiting: Arc<std::sync::atomic::AtomicUsize>,
+    /// The line would not take what was written: nothing more is said down it
+    broken: Arc<AtomicBool>,
+}
+
+impl Out {
+    fn over(mut to: Box<dyn Write + Send>) -> Self {
+        let (line, said) = channel::<Vec<u8>>();
+        let waiting = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let broken = Arc::new(AtomicBool::new(false));
+        let (left, gone) = (Arc::clone(&waiting), Arc::clone(&broken));
+        std::thread::spawn(move || {
+            for bytes in said {
+                let failed = to.write_all(&bytes).and_then(|()| to.flush()).is_err();
+                left.fetch_sub(bytes.len(), Ordering::SeqCst);
+                if failed {
+                    gone.store(true, Ordering::SeqCst);
+                    break;
+                }
+            }
+        });
+        Self { line: Mutex::new(line), waiting, broken }
+    }
+
+    /// Put `bytes` in line. `false` when the line is broken, or has left
+    /// too much unwritten to be a line any more
+    fn put(&self, bytes: Vec<u8>) -> bool {
+        let n = bytes.len();
+        if self.broken.load(Ordering::SeqCst) || self.waiting.fetch_add(n, Ordering::SeqCst) + n > OUT_MOST {
+            if !self.broken.load(Ordering::SeqCst) {
+                self.waiting.fetch_sub(n, Ordering::SeqCst);
+            }
+            return false;
+        }
+        let sent = self.line.lock().unwrap_or_else(|e| e.into_inner()).send(bytes).is_ok();
+        if !sent {
+            self.waiting.fetch_sub(n, Ordering::SeqCst);
+        }
+        sent
+    }
+
+    /// Wait, for at most `within`, until everything in line is written:
+    /// for the last word said before a line is closed
+    fn written(&self, within: Duration) {
+        let until = Instant::now() + within;
+        while self.waiting.load(Ordering::SeqCst) > 0 && !self.broken.load(Ordering::SeqCst) && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
 impl Link {
     fn say(&self, f: &Frame) -> bool {
-        let mut o = self.out.lock().unwrap_or_else(|e| e.into_inner());
-        let ok = o.write_all(f.line().as_bytes()).is_ok() && o.flush().is_ok();
+        let ok = self.out.put(f.line().into_bytes());
         if !ok {
             self.up.store(false, Ordering::SeqCst);
         }
         ok
     }
 
+    /// Say that this app is going, and wait a moment for it to be written:
+    /// the line is closed right after, and closed first the word is lost
+    fn say_going(&self) {
+        self.say(&Frame::Bye);
+        self.out.written(Duration::from_secs(2));
+    }
+
     pub fn is_up(&self) -> bool {
-        self.up.load(Ordering::SeqCst)
+        self.up.load(Ordering::SeqCst) && !self.out.broken.load(Ordering::SeqCst)
     }
 
     /// Whether the bridge still answers: asked something it answers at
@@ -352,9 +424,7 @@ impl Link {
 
     /// Say something to `job` there. `false` when it could not be said
     pub fn to_job(&self, job: &str, m: Value) -> bool {
-        let line = Frame::Job { job: job.to_string(), m }.line();
-        let mut out = self.out.lock().unwrap_or_else(|e| e.into_inner());
-        out.write_all(line.as_bytes()).is_ok() && out.flush().is_ok()
+        self.out.put(Frame::Job { job: job.to_string(), m }.line().into_bytes())
     }
 
     /// Read what comes down the line, until it ends. One thread per link
@@ -606,7 +676,7 @@ pub(crate) fn link_over(
     home: String,
 ) -> Result<Arc<Link>> {
     let link = Arc::new(Link {
-        out: Mutex::new(out),
+        out: Out::over(out),
         socket,
         closer,
         waiting: Mutex::default(),
@@ -696,7 +766,7 @@ pub(crate) fn link_by_key(key: &str) -> Option<Arc<Link>> {
 /// Let go of the line kept under `key`, saying this app is going
 pub(crate) fn let_go_key(key: &str) {
     if let Some(l) = links().lock().ok().and_then(|mut m| m.remove(key)) {
-        l.say(&Frame::Bye);
+        l.say_going();
         l.close();
     }
 }
@@ -719,8 +789,13 @@ impl Link {
 /// is away, rather than carried to an app that is gone
 pub fn disconnect_all() {
     let all: Vec<(String, Arc<Link>)> = links().lock().map(|mut m| m.drain().collect()).unwrap_or_default();
-    for (key, l) in all {
+    // All told first, then each given its moment: with many machines the
+    // moments are one between them
+    all.iter().for_each(|(_, l)| {
         l.say(&Frame::Bye);
+    });
+    for (key, l) in all {
+        l.out.written(Duration::from_secs(2));
         l.close();
         crate::append_hook_log(&format!("bridge: let go of {key} on the way out"));
     }
@@ -822,7 +897,7 @@ pub fn seen_missed(machine: &str, calls: Option<Vec<crate::farmissed::Missed>>) 
 /// ends, and the door exits over there
 pub fn disconnect(at: &crate::elsewhere::Elsewhere) {
     if let Some(l) = links().lock().ok().and_then(|mut m| m.remove(&at.machine_key())) {
-        l.say(&Frame::Bye);
+        l.say_going();
         // Closing the socket ends the program's input over there, and it exits
         l.close();
         crate::append_hook_log(&format!("bridge: let go of {}", at.address()));
@@ -1693,7 +1768,7 @@ mod tests {
         let (here, there) = crate::ssh::socket_pair().unwrap();
         let input = here.try_clone().unwrap();
         let link = Arc::new(Link {
-            out: Mutex::new(Box::new(here)),
+            out: Out::over(Box::new(here)),
             socket: None,
             closer: None,
             waiting: Mutex::default(),
@@ -1762,7 +1837,7 @@ mod tests {
         });
         let input = here.try_clone().unwrap();
         let link = Arc::new(Link {
-            out: Mutex::new(Box::new(here)),
+            out: Out::over(Box::new(here)),
             socket: None,
             closer: None,
             waiting: Mutex::default(),
@@ -1802,7 +1877,7 @@ mod tests {
         });
         let input = here.try_clone().unwrap();
         let link = Arc::new(Link {
-            out: Mutex::new(Box::new(here)),
+            out: Out::over(Box::new(here)),
             socket: None,
             closer: None,
             waiting: Mutex::default(),
@@ -1842,7 +1917,7 @@ mod tests {
         }
         let (let_go, held) = std::sync::mpsc::channel();
         let stuck = Arc::new(Link {
-            out: Mutex::new(Box::new(Stuck(held))),
+            out: Out::over(Box::new(Stuck(held))),
             socket: None,
             closer: None,
             waiting: Mutex::default(),
@@ -1859,6 +1934,20 @@ mod tests {
         let asked = Instant::now();
         assert!(!stuck.answers(Duration::from_millis(300)));
         assert!(asked.elapsed() < Duration::from_secs(3), "whoever asks was held by a line that takes nothing: {:?}", asked.elapsed());
+        // Nor is whoever types into a tab there: what is said is put in
+        // line, in order, and saying it never waits on the line
+        let typing = Instant::now();
+        for n in 0..200 {
+            assert!(stuck.to_job("terms", json!({ "do": "in", "b": "x".repeat(4096), "n": n })));
+        }
+        assert!(typing.elapsed() < Duration::from_secs(2), "typing was held by a line that takes nothing: {:?}", typing.elapsed());
+        // The line breaks: said, and nothing more is taken for it
         drop(let_go);
+        let until = Instant::now() + Duration::from_secs(5);
+        while stuck.is_up() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!stuck.is_up(), "a line that would not take what was written is still counted as up");
+        assert!(!stuck.to_job("terms", json!({ "do": "in" })));
     }
 }

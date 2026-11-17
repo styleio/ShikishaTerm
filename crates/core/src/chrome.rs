@@ -1444,6 +1444,8 @@ struct Seen {
     windows: Windows,
     /// When each page's process died, lately
     crashed: std::collections::HashMap<String, Vec<std::time::Instant>>,
+    /// The address each page is at
+    at: std::collections::HashMap<String, String>,
 }
 
 /// How many times in how long a page whose process died is loaded again
@@ -1811,13 +1813,21 @@ impl Pages {
                 // not over and over: a page that dies as it loads is left
                 // down, and said, rather than started again without end
                 "Inspector.targetCrashed" => {
+                    let at = book.at.get(&page).cloned();
                     let lately = book.crashed.entry(page.clone()).or_default();
                     lately.retain(|at| at.elapsed() < PAGE_DIED_WITHIN);
                     lately.push(std::time::Instant::now());
                     match lately.len() <= PAGE_DIED_MOST {
+                        // Opened at its address, as typing the address
+                        // again does -- not loaded again as it was reached:
+                        // a page reached by sending a form would send the
+                        // form a second time (an order placed twice)
                         true => {
-                            crate::append_hook_log(&format!("chrome: the process of the page '{page}' died; the page is loaded again"));
-                            speaker.tell(Some(&session), "Page.reload", serde_json::json!({}));
+                            crate::append_hook_log(&format!("chrome: the process of the page '{page}' died; the page is opened again at its address"));
+                            match at {
+                                Some(url) => speaker.tell(Some(&session), "Page.navigate", serde_json::json!({ "url": url })),
+                                None => speaker.tell(Some(&session), "Page.reload", serde_json::json!({})),
+                            }
                         }
                         false => crate::append_hook_log(&format!(
                             "chrome: the process of the page '{page}' died {} times in a minute; it is left as it is -- reload the tab to start it again",
@@ -1925,6 +1935,11 @@ impl Pages {
                 "Page.frameNavigated" => {
                     if ev.params.pointer("/frame/parentId").is_none() {
                         book.early.remove(&page);
+                        // ...and where the page is now, for opening it
+                        // again there should its process die
+                        if let Some(url) = ev.params.pointer("/frame/url").and_then(|u| u.as_str()).filter(|u| shikisha_shared::is_openable(u)) {
+                            book.at.insert(page.clone(), url.to_string());
+                        }
                     }
                 }
                 // Arming the credentials above holds every request of this
@@ -2666,8 +2681,12 @@ impl shikisha_shared::BrowserHost for Pages {
                     anyhow::bail!(crate::i18n::t("err.browser.window_gone"));
                 }
                 match book.windows.kept.remove(&window) {
-                    Some(kept) if kept.browser == key => Some((window, kept.context)),
-                    // Not this tab's browser after all: nobody's to take
+                    // This tab's browser, and the kind of storage the tab
+                    // is to have: a window an ordinary page opened is in the
+                    // ordinary storage, and is not a private tab's page,
+                    // whatever the tab was made beside
+                    Some(kept) if kept.browser == key && kept.context.is_some() == profile.private => Some((window, kept.context)),
+                    // Not this tab's after all: nobody's to take
                     Some(_) => {
                         book.windows.closing(&window);
                         chrome.speaker().tell(None, "Target.closeTarget", serde_json::json!({ "targetId": window }));
@@ -2830,6 +2849,7 @@ impl shikisha_shared::BrowserHost for Pages {
         book.cast.remove(name);
         book.auth.remove(name);
         book.crashed.remove(name);
+        book.at.remove(name);
         self.refs.lock().unwrap_or_else(|e| e.into_inner()).remove(&Some(name.to_string()));
         Ok(())
     }
@@ -4095,6 +4115,43 @@ mod tests {
         assert_eq!(pages.eval(Some(name), "return window.before || 'a new process'", 10_000).unwrap(), "\"a new process\"");
         assert!(pages.href(Some(name), 5_000).unwrap().starts_with(&site));
         pages.close_child(name).unwrap();
+
+        // A page reached by sending a form: opened again at its address,
+        // the form is not sent a second time
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let shop = format!("http://127.0.0.1:{}/", server.server_addr().to_ip().unwrap().port());
+        let sent = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        {
+            let sent = Arc::clone(&sent);
+            std::thread::spawn(move || {
+                for req in server.incoming_requests() {
+                    if *req.method() == tiny_http::Method::Post {
+                        sent.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    }
+                    let body = "<!doctype html><title>shop</title><body><form method=post action=/order><input name=n value=1></form>";
+                    let _ = req.respond(tiny_http::Response::from_string(body).with_header(tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"text/html"[..]).unwrap()));
+                }
+            });
+        }
+        let ordered = "orders";
+        pages.open_child(ordered, &shop, (0, 0, 900, 700), BrowserProfile::shared_default()).unwrap();
+        let ready = |pages: &Pages| {
+            waited(pages, |ev| match ev {
+                shikisha_shared::Ev::Ready { from: Some(n), complete: true, .. } if n == ordered => Some(()),
+                _ => None,
+            })
+        };
+        ready(&pages).expect("the shop never loaded");
+        pages.eval(Some(ordered), "document.forms[0].submit(); return 1", 5_000).unwrap();
+        ready(&pages).expect("the order's page never loaded");
+        assert!(pages.href(Some(ordered), 5_000).unwrap().ends_with("/order"));
+        assert_eq!(sent.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let (chrome, session) = pages.at(Some(ordered)).unwrap();
+        chrome.speaker().tell(Some(&session), "Page.crash", serde_json::json!({}));
+        ready(&pages).expect("the order's page was not opened again");
+        assert!(pages.href(Some(ordered), 5_000).unwrap().ends_with("/order"));
+        assert_eq!(sent.load(std::sync::atomic::Ordering::SeqCst), 1, "the form was sent a second time");
+        pages.close_child(ordered).unwrap();
     }
 
     /// The browser answers on no port of its own, and a page's DevTools

@@ -194,9 +194,11 @@ once it reaches its first tagged release.
   version.** When the process drawing a page died (out of memory, a
   fault in the page), the tab stood as it was last seen: its picture did
   not change, and everything a script asked of it waited out its
-  deadline. The page is now loaded again. One that dies three times in a
-  minute is left down, and the log says so. (In the window app the
-  browser shows its own error page, as before.)
+  deadline. The page is now opened again at its address -- not loaded
+  again the way it was reached, so a page reached by sending a form does
+  not send the form a second time. One that dies three times in a minute
+  is left down, and the log says so. (In the window app the browser shows
+  its own error page, as before.)
 - **Approving this app's hooks in Codex no longer starts Codex's
   plugins.** The approval is asked of a Codex started for a moment and
   ended again. With plugins switched on, that Codex began fetching them
@@ -279,7 +281,9 @@ once it reaches its first tagged release.
   showed a screen that no longer moved, for as long as the app ran. A
   bridge that has said nothing for 40 seconds is now asked whether it is
   there, and a connection nothing answers on within 20 seconds is let go
-  of and made again.
+  of and made again. What the app says to a server is also written by a
+  thread of that connection's own: a server that stops taking what is
+  sent no longer holds up typing in the app's other tabs.
 - **Tabs on a server come back as soon as the PC wakes.** After the PC
   slept, a tab whose connection had gone could wait up to a minute before
   the server was asked again, because the tries made while asleep had

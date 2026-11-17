@@ -163,16 +163,39 @@ pub fn origin_of(address: &str) -> String {
 }
 
 /// The host an address names, in small letters; empty when it names none
+/// -- or names one in any way but the plain one.
+///
+/// Read here to decide what a browser is then asked to do with the same
+/// address, and a browser reads more ways than one: a backslash is a slash
+/// to it, a name and password may stand before the host, letters may be
+/// written as percent signs, and spaces and line ends inside an address are
+/// taken out. An address using any of these is one this reading and the
+/// browser's could disagree on -- so it names no host here, and what was
+/// asked for it is refused. What a DevTools screen sends is always plain
 pub fn host_of(address: &str) -> String {
-    let Some((_, rest)) = address.split_once("://") else { return String::new() };
+    let Some((scheme, rest)) = address.split_once("://") else { return String::new() };
+    let plain = |c: char| c.is_ascii_graphic() && c != '\\';
+    if scheme.is_empty() || !scheme.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.')) || !address.chars().all(plain) {
+        return String::new();
+    }
     let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
-    let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
-    let host = match host.strip_prefix('[') {
+    let (host, port) = match authority.strip_prefix('[') {
         // An IPv6 address, in its brackets
-        Some(v6) => v6.split(']').next().unwrap_or_default(),
-        None => host.split(':').next().unwrap_or_default(),
+        Some(v6) => match v6.split_once(']') {
+            Some((host, after)) if host.chars().all(|c| c.is_ascii_hexdigit() || matches!(c, ':' | '.')) => (host, after),
+            _ => return String::new(),
+        },
+        None => match authority.split_once(':') {
+            Some((host, port)) => (host, &authority[authority.len() - port.len() - 1..]),
+            None => (authority, ""),
+        },
     };
-    host.trim_end_matches('.').to_ascii_lowercase()
+    let named = !host.is_empty() && host.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':'));
+    let numbered = port.is_empty() || port.strip_prefix(':').is_some_and(|p| p.chars().all(|c| c.is_ascii_digit()));
+    match named && numbered {
+        true => host.trim_end_matches('.').to_ascii_lowercase(),
+        false => String::new(),
+    }
 }
 
 /// Whether every one of `sites` is a place of a page whose frames are at
@@ -350,8 +373,28 @@ mod tests {
         assert_eq!(written("Network.setCookie", serde_json::json!({"name": "a", "value": "b"})), Some(false));
         assert_eq!(written("Network.setCookie", serde_json::json!({"name": "a", "value": "b", "domain": "notshop.example.com.evil.test"})), Some(false));
         assert_eq!(written("Network.setCookie", serde_json::json!({"name": "a", "value": "b", "domain": "ample.com"})), Some(false));
-        assert_eq!(host_of("https://user:pw@[::1]:8080/x"), "::1");
+        assert_eq!(host_of("https://[::1]:8080/x"), "::1");
+        assert_eq!(host_of("HTTPS://Shop.Example.com./x?y#z"), "shop.example.com");
         assert_eq!(host_of("about:blank"), "");
+        // An address a browser may read another way names no host here,
+        // and what is asked for it is refused: a backslash it takes for a
+        // slash, a name before the host, percent signs, spaces
+        for odd in [
+            "https://bank.example.org\\@shop.example.com/",
+            "https://user:pw@shop.example.com/",
+            "https://shop.example.com@bank.example.org/",
+            "https://shop.example%2ecom/",
+            "https://shop.example.com /",
+            "https://shop.example.com\t/",
+            "https://shop.example.com:80a/",
+            "https://[::1/",
+            "https:///shop.example.com/",
+            "://shop.example.com/",
+        ] {
+            assert_eq!(host_of(odd), "", "{odd:?}");
+            assert_eq!(origin_of(odd), "", "{odd:?}");
+            assert_eq!(written("Network.setCookie", serde_json::json!({"name": "sid", "value": "x", "url": odd})), Some(false), "{odd:?}");
+        }
     }
 
     /// A screen follows its own page and its frames, and reaches no other

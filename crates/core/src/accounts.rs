@@ -365,19 +365,179 @@ fn codex_trust(usual: &Path, dir: &Path, id: &str) {
     }
 }
 
-/// The folder a line of Codex's settings opens a table for, when the line
-/// is `[projects.<folder>]` as Codex writes it (the folder in quotes of
-/// either kind, or bare), with the folder as written between the brackets
-fn codex_project(line: &str) -> Option<(String, &str)> {
-    let written = line.trim().strip_prefix("[projects.")?.strip_suffix(']')?.trim();
-    let folder = match written.as_bytes() {
-        [b'\'', .., b'\''] if written.len() >= 2 && !written[1..written.len() - 1].contains('\'') => written[1..written.len() - 1].to_string(),
-        // The escapes a quoted folder is written with are JSON's
-        [b'"', .., b'"'] if written.len() >= 2 => serde_json::from_str::<String>(written).ok()?,
-        _ if !written.is_empty() && written.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') => written.to_string(),
+/// One part of a key in Codex's settings (TOML), at the front of `text`:
+/// what it names, how it is written, and what follows it. A bare word, or
+/// one in quotes of either kind
+fn toml_key(text: &str) -> Option<(String, &str, &str)> {
+    let text = text.trim_start();
+    let end = match text.as_bytes().first()? {
+        b'\'' => 1 + text[1..].find('\'')? + 1,
+        b'"' => {
+            let mut escaped = false;
+            1 + text[1..].char_indices().find_map(|(i, c)| match (escaped, c) {
+                (false, '"') => Some(i),
+                (false, '\\') => {
+                    escaped = true;
+                    None
+                }
+                _ => {
+                    escaped = false;
+                    None
+                }
+            })? + 1
+        }
+        _ => text.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-')).unwrap_or(text.len()),
+    };
+    let written = &text[..end];
+    let names = match written.as_bytes().first()? {
+        b'\'' => written[1..end - 1].to_string(),
+        // The escapes a quoted key is written with are JSON's (one that is
+        // not is a key this does not read)
+        b'"' => serde_json::from_str::<String>(written).ok()?,
+        _ if end > 0 => written.to_string(),
         _ => return None,
     };
-    Some((folder, written))
+    Some((names, written, &text[end..]))
+}
+
+/// The keys of a dotted name at the front of `text` (`a."b c".d`), each as
+/// it names and as it is written, and what follows the last
+fn toml_keys(mut text: &str) -> Option<(Vec<(String, String)>, &str)> {
+    let mut keys = Vec::new();
+    loop {
+        let (names, written, rest) = toml_key(text)?;
+        keys.push((names, written.to_string()));
+        match rest.trim_start().strip_prefix('.') {
+            Some(more) => text = more,
+            None => return Some((keys, rest.trim_start())),
+        }
+    }
+}
+
+/// Whether nothing but a comment follows
+fn toml_ends(rest: &str) -> bool {
+    let rest = rest.trim_start();
+    rest.is_empty() || rest.starts_with('#')
+}
+
+/// Read through (the rest of) a value on one line: how deep in brackets it
+/// ends, and what closes the text it ends inside of, when it ends inside a
+/// text that runs over lines. `None` for a line that is not TOML
+fn toml_value(mut rest: &str, mut depth: usize) -> Option<(usize, Option<&'static str>)> {
+    loop {
+        let at = rest.find(['"', '\'', '[', ']', '{', '}', '#']);
+        let Some(at) = at else { return Some((depth, None)) };
+        let (c, after) = (rest.as_bytes()[at], &rest[at + 1..]);
+        rest = match c {
+            b'#' => return Some((depth, None)),
+            b'[' | b'{' => {
+                depth += 1;
+                after
+            }
+            b']' | b'}' => {
+                depth = depth.checked_sub(1)?;
+                after
+            }
+            b'"' if after.starts_with("\"\"") => match toml_closes(&after[2..], "\"\"\"") {
+                Some(more) => more,
+                None => return Some((depth, Some("\"\"\""))),
+            },
+            b'\'' if after.starts_with("''") => match toml_closes(&after[2..], "'''") {
+                Some(more) => more,
+                None => return Some((depth, Some("'''"))),
+            },
+            // One line's text: to its closing quote
+            _ => toml_key(&rest[at..])?.2,
+        };
+    }
+}
+
+/// What follows the end of a text that runs over lines, when it ends on
+/// this line (`end` is what closes it)
+fn toml_closes<'a>(line: &'a str, end: &str) -> Option<&'a str> {
+    let mut from = 0;
+    loop {
+        let at = from + line[from..].find(end)?;
+        // In the kind with escapes, a quote behind an odd run of
+        // backslashes is not the end
+        let escaped = end == "\"\"\"" && line[..at].bytes().rev().take_while(|b| *b == b'\\').count() % 2 == 1;
+        if !escaped {
+            // Up to two more of the same quote belong to the text itself
+            let quote = &end[..1];
+            let mut after = &line[at + end.len()..];
+            for _ in 0..2 {
+                after = after.strip_prefix(quote).unwrap_or(after);
+            }
+            return Some(after);
+        }
+        from = at + 1;
+    }
+}
+
+/// The folders a Codex settings file opens a table for (`[projects.<folder>]`),
+/// each as it names the folder, as it is written, and whether it is trusted.
+///
+/// Read as the settings are read, not as lines that look like them: a text
+/// that runs over several lines may hold a line that looks like a table,
+/// and a table may be written with spaces a look for the usual spelling
+/// misses. `None` when the file speaks of folders some other way (a table
+/// of them all, a key with dots in it) or is not settings this reads
+fn codex_projects(text: &str) -> Option<Vec<(String, String, bool)>> {
+    let mut found: Vec<(String, String, bool)> = Vec::new();
+    // Which of them the lines being read belong to, and whether a table
+    // has begun at all
+    let (mut within, mut begun): (Option<usize>, bool) = (None, false);
+    // Inside a text that runs over lines (what closes it), or brackets
+    let (mut text_until, mut depth): (Option<&'static str>, usize) = (None, 0);
+    for line in text.lines() {
+        let rest = match text_until {
+            Some(end) => match toml_closes(line, end) {
+                Some(after) => Some(after),
+                None => continue,
+            },
+            None if depth > 0 => Some(line),
+            None => None,
+        };
+        if let Some(rest) = rest {
+            (depth, text_until) = toml_value(rest, depth)?;
+            continue;
+        }
+        let line = line.trim_start();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some(inside) = line.strip_prefix("[[") {
+            let (keys, rest) = toml_keys(inside)?;
+            if !toml_ends(rest.strip_prefix("]]")?) || keys[0].0 == "projects" {
+                return None;
+            }
+            (within, begun) = (None, true);
+        } else if let Some(inside) = line.strip_prefix('[') {
+            let (keys, rest) = toml_keys(inside)?;
+            if !toml_ends(rest.strip_prefix(']')?) {
+                return None;
+            }
+            (within, begun) = (None, true);
+            if keys[0].0 == "projects" {
+                let [_, (folder, written)] = keys.as_slice() else { return None };
+                found.push((folder.clone(), written.clone(), false));
+                within = Some(found.len() - 1);
+            }
+        } else {
+            let (keys, rest) = toml_keys(line)?;
+            let value = rest.strip_prefix('=')?.trim_start();
+            if !begun && keys[0].0 == "projects" {
+                return None;
+            }
+            if let (Some(at), [(key, _)]) = (within, keys.as_slice())
+                && key == "trust_level"
+            {
+                found[at].2 = ["\"trusted\"", "'trusted'"].iter().any(|said| value.strip_prefix(said).is_some_and(toml_ends));
+            }
+            (depth, text_until) = toml_value(value, 0)?;
+        }
+    }
+    (text_until.is_none() && depth == 0).then_some(found)
 }
 
 /// `ours` (an account's Codex settings) with the folders `theirs` (the usual
@@ -386,30 +546,7 @@ fn codex_project(line: &str) -> Option<(String, &str)> {
 /// does not read: a table added beside one written another way would be the
 /// same table twice, which Codex refuses to start on
 fn codex_trust_carried(theirs: &str, ours: &str) -> Option<(String, usize)> {
-    // Every folder a file opens a table for, as written, and whether it is
-    // trusted. None when the file speaks of folders some other way
-    fn folders(text: &str) -> Option<Vec<(String, String, bool)>> {
-        let mut found: Vec<(String, String, bool)> = Vec::new();
-        let mut within = false;
-        for line in text.lines().map(str::trim) {
-            if line.starts_with('[') {
-                within = false;
-                if line.starts_with("[projects") || line.starts_with("[[projects") {
-                    let (folder, written) = codex_project(line)?;
-                    found.push((folder, written.to_string(), false));
-                    within = true;
-                }
-            } else if line.starts_with("projects") && line["projects".len()..].trim_start().starts_with(['=', '.']) {
-                return None;
-            } else if within
-                && line.replace(' ', "") == "trust_level=\"trusted\""
-                && let Some(last) = found.last_mut()
-            {
-                last.2 = true;
-            }
-        }
-        Some(found)
-    }
+    let folders = codex_projects;
     let same = |a: &str, b: &str| match cfg!(windows) {
         true => a.eq_ignore_ascii_case(b),
         false => a == b,
@@ -826,6 +963,35 @@ mod tests {
         for other in ["[projects]\n\"d:/x\" = { trust_level = \"trusted\" }\n", "projects.'d:\\x'.trust_level = \"trusted\"\n", "projects = {}\n", "[projects.'a'.b]\nx = 1\n"] {
             assert_eq!(codex_trust_carried(usual, other), None, "added beside {other:?}");
             assert_eq!(codex_trust_carried(other, account), None, "read from {other:?}");
+        }
+        // A text that runs over lines and holds something that looks like a
+        // table is a text: nothing is read out of it, and what follows it is
+        let quoted = "developer_instructions = \"\"\"\n[projects.\"/tmp/untrusted\"]\ntrust_level = \"trusted\"\n\"\"\"\n\n[projects.'/real']\ntrust_level = \"trusted\"\n";
+        let (with, carried) = codex_trust_carried(quoted, "").expect("the table after the text was not read");
+        assert_eq!(carried, 1, "{with}");
+        assert!(with.contains("[projects.'/real']") && !with.contains("untrusted"), "a table was read out of a text: {with}");
+        let literal = "notes = '''\n[projects.'/tmp/untrusted']\ntrust_level = \"trusted\"\n'''\n";
+        assert_eq!(codex_trust_carried(literal, ""), None, "a table was read out of a text");
+        // ...and the same inside the account's own file hides nothing real
+        let (with, _) = codex_trust_carried("[projects.'/real']\ntrust_level = \"trusted\"\n", "x = \"\"\"\n[projects.'/real']\n\"\"\"\n").unwrap();
+        assert_eq!(with.matches("[projects.'/real']").count(), 2, "{with}");
+        // A table written with spaces is the same table: left as it is
+        for spaced in ["[ projects.\"/work\" ]\ntrust_level = \"untrusted\"\n", "[projects . '/work']  # mine\ntrust_level = 'untrusted'\n", "  [projects.\"/work\"]\n"] {
+            assert_eq!(codex_trust_carried("[projects.\"/work\"]\ntrust_level = \"trusted\"\n", spaced), None, "a second table was written beside {spaced:?}");
+        }
+        // Trusted, however it is spaced or quoted; and nothing else is
+        for said in ["trust_level='trusted'", "  trust_level   =   \"trusted\"   # yes"] {
+            assert!(codex_trust_carried(&format!("[projects.'/w']\n{said}\n"), "").is_some(), "{said}");
+        }
+        for said in ["trust_level = \"trusted-not\"", "trust_level = [\"trusted\"]", "x.trust_level = \"trusted\"", "# trust_level = \"trusted\""] {
+            assert_eq!(codex_trust_carried(&format!("[projects.'/w']\n{said}\n"), ""), None, "{said}");
+        }
+        // A value that runs over lines in brackets is read through
+        let listed = "[projects.'/w']\nallow = [\n  \"[projects.'/x']\",\n  \"b\",\n]\ntrust_level = \"trusted\"\n";
+        assert_eq!(codex_trust_carried(listed, "").map(|(_, n)| n), Some(1));
+        // Settings that are not settings are not added to
+        for broken in ["[projects.'/w'\n", "x = \"unclosed\n", "x = [1, 2\n", "= 3\n"] {
+            assert_eq!(codex_trust_carried(usual, broken), None, "added to {broken:?}");
         }
         // An account with no settings yet gets the trusted folders alone
         let (with, carried) = codex_trust_carried(usual, "").unwrap();

@@ -169,12 +169,16 @@ test('what a phone sends reaches the PC in the order it was sent', async () => {
       if (said.k === 'lost') { options.signal.addEventListener('abort', () => reject(new Error('aborted'))); return; }
       // Answered, and the answer itself never arrives whole
       if (said.k === 'cut') {
-        resolve({ok: true, json: () => new Promise((_, no) => options.signal.addEventListener('abort', () => no(new Error('aborted'))))});
+        resolve({ok: true, text: () => new Promise((_, no) => options.signal.addEventListener('abort', () => no(new Error('aborted'))))});
         return;
       }
-      // Answered with nothing to read in it, as an older PC does
-      if (said.k === 'bare') { resolve({ok: true, json: () => Promise.reject(new Error('not JSON'))}); return; }
-      setTimeout(() => { arrived.push(said.k); resolve({ok: true, json: async () => ({ok: true})}); }, waits[said.k]);
+      // Answered with nothing in it, as an older PC does
+      if (said.k === 'bare') { resolve({ok: true, text: async () => ''}); return; }
+      // Answered "no", and the line dropped in the middle of the answer
+      if (said.k === 'dropped') { resolve({ok: true, text: () => Promise.reject(new TypeError('network error'))}); return; }
+      if (said.k === 'half') { resolve({ok: true, text: async () => '{"ok":fal'}); return; }
+      if (said.k === 'no') { resolve({ok: true, text: async () => '{"ok":false}'}); return; }
+      setTimeout(() => { arrived.push(said.k); resolve({ok: true, text: async () => '{"ok":true}'}); }, waits[said.k]);
     }),
   });
   vm.runInContext(source.slice(from, to) + ';globalThis.overTheWire = overTheWire;', context);
@@ -197,4 +201,8 @@ test('what a phone sends reaches the PC in the order it was sent', async () => {
   timers.filter(t => t.ms === 15000).pop().fn();
   assert.deepEqual({...(await cut)}, {ok: false, heard: false});
   assert.deepEqual({...(await context.overTheWire({k: 'bare'}))}, {ok: true, heard: true});
+  assert.deepEqual({...(await context.overTheWire({k: 'no'}))}, {ok: false, heard: true});
+  // ...and one cut off on its way is not known to be a yes either
+  assert.deepEqual({...(await context.overTheWire({k: 'dropped'}))}, {ok: false, heard: false});
+  assert.deepEqual({...(await context.overTheWire({k: 'half'}))}, {ok: false, heard: false});
 });

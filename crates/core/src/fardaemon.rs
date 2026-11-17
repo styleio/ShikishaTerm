@@ -757,12 +757,20 @@ fn names_said(said: &str) -> Vec<String> {
     said.split('"').skip(1).step_by(2).map(str::to_string).collect()
 }
 
-/// Whether the programs of the account `me` are ended at logout, on a
-/// machine that ends them (`kills`) for `only` these accounts when any are
-/// named, and never for `except` these
+/// Whether the programs of the account `me` are ended at logout, as the
+/// login manager decides it: never for an account it is told to leave
+/// alone (`except`); for exactly the accounts it is told to end them for
+/// (`only`), when any are named, whatever its setting for everybody; and
+/// otherwise by that setting (`kills`)
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn ends_for(kills: bool, me: &str, only: &[String], except: &[String]) -> bool {
-    kills && (only.is_empty() || only.iter().any(|n| n == me)) && !except.iter().any(|n| n == me)
+    if except.iter().any(|n| n == me) {
+        return false;
+    }
+    match only.is_empty() {
+        true => kills,
+        false => only.iter().any(|n| n == me),
+    }
 }
 
 /// Where the account's own manager is reached, when it is up and stays up
@@ -2388,6 +2396,10 @@ mod tests {
         assert!(!ends_for(true, "ada", &[], &named(&["root", "ada"])), "an account left out is ended all the same");
         assert!(!ends_for(true, "ada", &named(&["bob"]), &[]), "only other accounts are ended, and this one was counted");
         assert!(ends_for(true, "ada", &named(&["bob", "ada"]), &[]));
+        // Named to be ended, it is, though nobody else's are
+        assert!(ends_for(false, "ada", &named(&["ada"]), &[]), "an account named to be ended was counted as kept");
+        assert!(!ends_for(false, "ada", &named(&["bob"]), &[]));
+        assert!(!ends_for(false, "ada", &named(&["ada"]), &named(&["ada"])), "an account left out is ended all the same");
 
         assert!(in_login_scope("0::/user.slice/user-1000.slice/session-42.scope\n"));
         assert!(in_login_scope("12:pids:/user.slice/user-1000.slice/session-c3.scope\n1:name=systemd:/user.slice/user-1000.slice/session-c3.scope\n"));

@@ -5273,11 +5273,15 @@ const overTheWire = o => {
     const done = v => { clearTimeout(late); return v; };
     return fetch("api/intent?t=" + encodeURIComponent(TOKEN),
         {method:"POST", body:JSON.stringify(o), signal: stop ? stop.signal : undefined})
-      // An answer with nothing to read in it is a yes (an older PC says no
-      // more). One given up on while it was still arriving is not: what it
-      // was going to say is not known, and a no must not be taken for a yes
-      .then(r => r.ok ? r.json().then(j => ({ok: !(j && j.ok === false), heard: true}),
-                          () => (stop && stop.signal.aborted) ? {ok: false, heard: false} : {ok: true, heard: true})
+      // An answer with nothing at all in it is a yes (an older PC says no
+      // more). One that did not arrive whole -- given up on while it was
+      // arriving, or cut off on its way -- is not: what it was going to say
+      // is not known, and a no must not be taken for a yes
+      .then(r => r.ok ? r.text().then(t => {
+                          if (!t) return {ok: true, heard: true};
+                          try { const j = JSON.parse(t); return {ok: !(j && j.ok === false), heard: true}; }
+                          catch (e) { return {ok: false, heard: false}; }
+                        }, () => ({ok: false, heard: false}))
                       : {ok: false, heard: true})
       .then(done, () => done({ok: false, heard: false}));
   };

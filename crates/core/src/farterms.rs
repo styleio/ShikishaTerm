@@ -212,8 +212,11 @@ impl Typed {
             return false;
         }
         self.said.store(false, Ordering::SeqCst);
+        // Nobody is typing it in any more (the program's end of the
+        // terminal is closed): not taken, and said so
         if self.queue.send(bytes).is_err() {
             self.waiting.fetch_sub(n, Ordering::SeqCst);
+            return false;
         }
         true
     }
@@ -1228,7 +1231,7 @@ impl Job for Terms {
                     // not take a brief with its end missing for one sent
                     match term.writer.put(unb64(&m["b"])) {
                         true => None,
-                        false => Some(json!({ "did": "full", "term": m["term"], "why": "the program is not taking what it is typed" })),
+                        false => Some(json!({ "did": "full", "term": m["term"], "why": "the program did not take what was typed" })),
                     }
                 }
                 Err(no) => Some(no),

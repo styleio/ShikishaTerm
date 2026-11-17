@@ -1325,13 +1325,53 @@ pub fn running_of(v: &serde_json::Value) -> Option<Running> {
 /// has gone over to.
 /// What such a thread reports is not the tab's: its start is not the tab
 /// taking up another conversation, and its end is not the tab's turn ending
-static SIDE_THREADS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+///
+/// Kept in a file, one a line. A hook on this PC is a program of its own,
+/// run for one event and gone: the one that hears a side thread begin is
+/// not the one that hears it end, and what the first one remembered in
+/// itself the second never knew
 /// How many side threads are remembered
 const SIDE_THREADS_MOST: usize = 256;
 
+/// The file the side threads are written in: this machine's own
+fn side_threads_file() -> PathBuf {
+    #[cfg(test)]
+    return crate::test_temp("side-threads").join("side-threads.txt");
+    #[cfg(not(test))]
+    crate::config::machine_dir().join("side-threads.txt")
+}
+
+/// The side threads heard of, oldest first
+fn side_threads() -> Vec<String> {
+    std::fs::read_to_string(side_threads_file())
+        .map(|text| text.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect())
+        .unwrap_or_default()
+}
+
 /// Whether the conversation `id` is a side thread heard of before
 fn is_side_thread(id: &str) -> bool {
-    SIDE_THREADS.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|s| s == id)
+    side_threads().iter().any(|s| s == id)
+}
+
+/// The conversation `id` is a side thread
+fn note_side_thread(id: &str) {
+    // An id is a word; anything else is not written into a list of lines
+    if id.is_empty() || id.len() > 200 || !id.chars().all(|c| c.is_ascii_graphic()) {
+        return;
+    }
+    let mut all = side_threads();
+    if all.iter().any(|s| s == id) {
+        return;
+    }
+    all.push(id.to_string());
+    let keep = all.len().saturating_sub(SIDE_THREADS_MOST);
+    let file = side_threads_file();
+    if let Some(dir) = file.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Err(e) = crate::crypto::write_atomic(&file, &(all[keep..].join("\n") + "\n")) {
+        crate::append_hook_log(&format!("a side thread could not be written down: {e:#}"));
+    }
 }
 
 /// `kind` is what the hook entry asked for: `session`, or `state:<STATE>`.
@@ -1352,13 +1392,7 @@ pub fn report_of(kind: &str, v: &serde_json::Value) -> Report {
     if let Some(id) = id.as_deref() {
         let kept_nowhere = v.get("transcript_path").is_some_and(serde_json::Value::is_null);
         if kind == "session" && kept_nowhere && v.get("source").and_then(|s| s.as_str()) == Some("fork") {
-            let mut side = SIDE_THREADS.lock().unwrap_or_else(|e| e.into_inner());
-            if !side.iter().any(|s| s == id) {
-                if side.len() >= SIDE_THREADS_MOST {
-                    side.remove(0);
-                }
-                side.push(id.to_string());
-            }
+            note_side_thread(id);
             return Report::default();
         }
         if is_side_thread(id) {
@@ -2876,6 +2910,19 @@ mod tests {
         // A conversation taken up again under an id of its own is the tab's
         let resumed = serde_json::json!({"session_id": "main-thread-2", "source": "resume"});
         assert_eq!(report_of("session", &resumed).id.as_deref(), Some("main-thread-2"));
+        // Written down where another program that hears a hook reads it:
+        // the one that hears the thread end is not the one that heard it begin
+        let written = std::fs::read_to_string(side_threads_file()).expect("the side thread was not written down");
+        assert!(written.lines().any(|l| l == "side-thread-1"), "{written:?}");
+        // An id that is no word is not written among the lines
+        note_side_thread("two\nlines");
+        assert_eq!(side_threads().len(), written.lines().count());
+        // Never more than so many
+        for n in 0..SIDE_THREADS_MOST + 3 {
+            note_side_thread(&format!("many-{n}"));
+        }
+        assert_eq!(side_threads().len(), SIDE_THREADS_MOST);
+        assert!(is_side_thread(&format!("many-{}", SIDE_THREADS_MOST + 2)) && !is_side_thread("side-thread-1"));
     }
 
     /// A conversation begun afresh has nothing beside it; one taken up again
