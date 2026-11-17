@@ -325,7 +325,7 @@ pub enum Cmd {
     Dialogs { to: Option<String>, auto: bool },
     /// A DevTools screen connected for a page (`devtools.rs`): what the page
     /// says to it goes to `out`
-    DevtoolsOpen { conn: u64, to: Option<String>, out: Sender<String> },
+    DevtoolsOpen { conn: u64, to: Option<String>, out: shikisha_core::ws::Lane },
     /// One message the screen said, for its page
     DevtoolsSay { conn: u64, text: String },
     /// The screen went away

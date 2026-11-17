@@ -22,7 +22,7 @@
 use std::io::{BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{Sender, channel};
+
 
 use shikisha_core::ws::{self, Op};
 
@@ -37,13 +37,7 @@ pub struct Bridge {
 /// Numbers the connections, so the window can tell whose answer is whose
 static NEXT: AtomicU64 = AtomicU64::new(1);
 
-/// The one origin a connection is answered from
-const SCREEN_ORIGIN: &str = "devtools://devtools";
-
-/// The most the DevTools screen may say in one message. What it sends are
-/// commands -- a node to inspect, an expression to run -- and a command larger
-/// than this is a script pasted into the console, which still fits
-const ONE_COMMAND: usize = 8 * 1024 * 1024;
+use shikisha_core::devscreen::{BEHIND, EARLY, ONE_COMMAND, ORIGIN as SCREEN_ORIGIN, STALLED};
 
 impl Bridge {
     /// Start answering on a port of the system's choosing. `tell` carries a
@@ -130,19 +124,15 @@ fn serve(stream: TcpStream, key: &str, tell: tao::event_loop::EventLoopProxy<Cmd
     let conn = NEXT.fetch_add(1, Ordering::Relaxed);
     shikisha_core::append_hook_log(&format!("[devtools] screen {conn} opened on page '{page}'"));
     // What the page says goes out on a writer of its own, so a page talking
-    // a great deal never waits on the screen typing
-    let (said_tx, said_rx) = channel::<String>();
+    // a great deal never waits on the screen typing -- and is let go of when
+    // the screen has stopped reading and too much waits on it, which ends
+    // the reading below
     let Ok(write_side) = out.try_clone() else { return };
-    std::thread::spawn(move || {
-        let mut w = ws::WsWriter::new(write_side);
-        for text in said_rx {
-            if w.send_text(&text).is_err() {
-                break;
-            }
-        }
+    let _ = write_side.set_write_timeout(Some(STALLED));
+    let said = ws::Lane::open(write_side, BEHIND, |w: TcpStream| {
+        let _ = w.shutdown(std::net::Shutdown::Both);
     });
-    let _ = tell.send_event(Cmd::DevtoolsOpen { conn, to: Some(page.clone()), out: said_tx.clone() });
-    let mut pong = ws::WsWriter::new(out);
+    let _ = tell.send_event(Cmd::DevtoolsOpen { conn, to: Some(page.clone()), out: said.clone() });
     loop {
         match ws::read_frame_upto(&mut reader, ONE_COMMAND) {
             Ok((Op::Text, body)) => {
@@ -152,15 +142,16 @@ fn serve(stream: TcpStream, key: &str, tell: tao::event_loop::EventLoopProxy<Cmd
                 }
             }
             Ok((Op::Ping, body)) => {
-                let _ = pong.send_pong(&body);
+                let _ = said.send(ws::encode(Op::Pong, &body));
             }
             Ok((Op::Close, _)) | Err(_) => break,
             Ok(_) => {}
         }
     }
     let _ = tell.send_event(Cmd::DevtoolsClose { conn });
-    drop(said_tx);
-    shikisha_core::append_hook_log(&format!("[devtools] screen {conn} closed"));
+    let why = if said.closed() { " (it had stopped reading)" } else { "" };
+    drop(said);
+    shikisha_core::append_hook_log(&format!("[devtools] screen {conn} closed{why}"));
 }
 
 /// The window's half: which session each screen speaks through, and the
@@ -218,7 +209,7 @@ impl Screens {
         conn: u64,
         to: Option<String>,
         port: crate::browser::cdp::Port,
-        out: Sender<String>,
+        out: ws::Lane,
     ) {
         let session = std::rc::Rc::new(std::cell::RefCell::new(Attach::default()));
         let waiting = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
@@ -228,7 +219,7 @@ impl Screens {
             if from.is_some() && from == mine.borrow().session.as_deref()
                 && let Some(m) = v.get("message").and_then(|x| x.as_str())
             {
-                let _ = out.send(m.to_string());
+                let _ = out.send_text(m);
             }
         });
         let wv = port.clone();
@@ -278,7 +269,14 @@ impl Screens {
         let sid = s.session.borrow().session.clone();
         match sid {
             Some(sid) => say(&s.port, &sid, &text),
-            None => s.waiting.borrow_mut().push(text),
+            None => {
+                let mut waiting = s.waiting.borrow_mut();
+                let held: usize = waiting.iter().map(String::len).sum();
+                match held + text.len() > EARLY {
+                    true => shikisha_core::append_hook_log(&format!("[devtools] screen {conn}: said too much before its page answered; a message is dropped")),
+                    false => waiting.push(text),
+                }
+            }
         }
     }
 

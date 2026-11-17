@@ -327,7 +327,7 @@ fn a_worker_that_stops_without_reporting_is_raised_once_for_each_thing_it_was_to
     w.assign("t1", "codex");
     w.set("codex", TabState::Done);
     // Looked at, and what the lead was told of since
-    let mut looked = |w: &mut World, idle_for: Duration| -> Vec<String> {
+    let looked = |w: &mut World, idle_for: Duration| -> Vec<String> {
         if let Some(back) = Instant::now().checked_sub(idle_for) {
             w.o.quiet_since.insert(1, back);
         }
@@ -674,7 +674,7 @@ fn a_job_whose_lead_is_gone_is_said_to_the_person_once() {
     w.ok("lead", "job_open", vec![json!("ship it")]);
     w.ok("lead", "task_add", vec![json!("a")]);
     w.assign("t1", "claude");
-    let mut looked = |w: &mut World, gone_for: Option<Duration>| -> Vec<String> {
+    let looked = |w: &mut World, gone_for: Option<Duration>| -> Vec<String> {
         if let Some(back) = gone_for.and_then(|d| Instant::now().checked_sub(d)) {
             w.o.leaderless_since.insert(1, back);
         }

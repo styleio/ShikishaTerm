@@ -268,6 +268,79 @@ impl<W: Write> WsWriter<W> {
     }
 }
 
+/// A way out to a socket for a thread that must never wait on it.
+///
+/// What is sent is queued and written by a thread of the lane's own, so the
+/// sender -- the thread every page's talk arrives on, a window's loop -- is
+/// never held up by a reader that is slow. And what is queued is counted: a
+/// reader that has stopped reading (a tab asleep, a line gone quiet) while
+/// the sender has a great deal to say would otherwise have all of it kept
+/// here, without end. Past `most` bytes waiting the lane closes: nothing
+/// more is taken, what waits is thrown away, and the socket is handed to
+/// `ended` to be shut
+#[derive(Clone, Debug)]
+pub struct Lane {
+    out: std::sync::mpsc::Sender<Vec<u8>>,
+    behind: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    shut: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    most: usize,
+}
+
+impl Lane {
+    /// Start writing to `w`. `ended` is given `w` back when the lane is
+    /// over: closed for being too far behind, a write failed, or every
+    /// sender gone
+    pub fn open<W: Write + Send + 'static>(mut w: W, most: usize, ended: impl FnOnce(W) + Send + 'static) -> Lane {
+        use std::sync::atomic::Ordering::Relaxed;
+        let (out, waiting) = std::sync::mpsc::channel::<Vec<u8>>();
+        let lane = Lane { out, behind: Default::default(), shut: Default::default(), most };
+        let (behind, shut) = (lane.behind.clone(), lane.shut.clone());
+        std::thread::spawn(move || {
+            for frame in waiting {
+                if shut.load(Relaxed) {
+                    break;
+                }
+                let sent = w.write_all(&frame).and_then(|()| w.flush());
+                behind.fetch_sub(frame.len(), Relaxed);
+                if sent.is_err() {
+                    break;
+                }
+            }
+            shut.store(true, Relaxed);
+            ended(w);
+        });
+        lane
+    }
+
+    /// Queue one frame. `false` when the lane is closed, this frame being
+    /// the one that closed it included
+    pub fn send(&self, frame: Vec<u8>) -> bool {
+        use std::sync::atomic::Ordering::Relaxed;
+        if self.shut.load(Relaxed) {
+            return false;
+        }
+        let len = frame.len();
+        if self.behind.fetch_add(len, Relaxed) + len > self.most {
+            self.behind.fetch_sub(len, Relaxed);
+            self.shut.store(true, Relaxed);
+            // Wakes the writer, when it is waiting for something to write
+            let _ = self.out.send(Vec::new());
+            return false;
+        }
+        self.out.send(frame).is_ok()
+    }
+
+    /// Queue a text message
+    pub fn send_text(&self, text: &str) -> bool {
+        self.send(encode(Op::Text, text.as_bytes()))
+    }
+
+    /// Whether the lane has closed
+    pub fn closed(&self) -> bool {
+        self.shut.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
 // ── the client half ─────────────────────────────────────────────────────────
 //
 // This program is a client as well as a server: it speaks the DevTools

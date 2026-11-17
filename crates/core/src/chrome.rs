@@ -1051,17 +1051,7 @@ fn read_messages(
 // from), and reaches the one page it names, through a session of its own on
 // the line this program already has.
 
-/// The one origin a connection is answered from
-const SCREEN_ORIGIN: &str = "devtools://devtools";
-
-/// The most a DevTools screen may say in one message: a command, or a script
-/// pasted into its console
-const SCREEN_COMMAND: usize = 8 * 1024 * 1024;
-
-/// How far behind a DevTools screen may fall before it is let go. A page
-/// that says a great deal to a screen that has stopped reading -- a tab
-/// asleep, a line gone slow -- would otherwise be kept here without end
-const SCREEN_BEHIND: usize = 64 * 1024 * 1024;
+use crate::devscreen::{BEHIND as SCREEN_BEHIND, ONE_COMMAND as SCREEN_COMMAND, ORIGIN as SCREEN_ORIGIN, STALLED as SCREEN_STALLED};
 
 /// Where a browser's DevTools screens connect
 struct ScreenDoor {
@@ -1069,18 +1059,12 @@ struct ScreenDoor {
     key: String,
 }
 
-/// One screen's way out, and how much is waiting on it
-struct ScreenLine {
-    out: Sender<Vec<u8>>,
-    behind: Arc<std::sync::atomic::AtomicUsize>,
-}
-
 /// The DevTools screens open on a browser's pages, as the reading thread
 /// needs them: which of what the browser says is whose
 #[derive(Default)]
 struct Screens {
     next: u64,
-    lines: std::collections::HashMap<u64, ScreenLine>,
+    lines: std::collections::HashMap<u64, crate::ws::Lane>,
     /// Whose each session is: the screen's own on its page (`true`), or one
     /// the page handed it -- a frame, a worker
     sessions: std::collections::HashMap<String, (u64, bool)>,
@@ -1091,9 +1075,9 @@ struct Screens {
 
 impl Screens {
     /// A screen's line, begun: its number, and the session it speaks through
-    fn begin(&mut self, session: &str, out: Sender<Vec<u8>>, behind: Arc<std::sync::atomic::AtomicUsize>) -> u64 {
+    fn begin(&mut self, session: &str, line: crate::ws::Lane) -> u64 {
         self.next += 1;
-        self.lines.insert(self.next, ScreenLine { out, behind });
+        self.lines.insert(self.next, line);
         self.sessions.insert(session.to_string(), (self.next, true));
         self.next
     }
@@ -1112,9 +1096,7 @@ impl Screens {
     }
 
     fn send(&mut self, screen: u64, frame: Vec<u8>) {
-        let Some(line) = self.lines.get(&screen) else { return };
-        let behind = line.behind.fetch_add(frame.len(), Ordering::Relaxed) + frame.len();
-        if behind > SCREEN_BEHIND || line.out.send(frame).is_err() {
+        if self.lines.get(&screen).is_some_and(|line| !line.send(frame)) {
             self.end(screen);
         }
     }
@@ -1255,22 +1237,14 @@ fn serve_screen(stream: std::net::TcpStream, port: u16, key: &str, cdp: &Cdp) {
         return let_go();
     }
     // What the page says goes out on a writer of its own, so a screen slow
-    // to read never holds up the thread every page's talk arrives on
-    let (said_tx, said_rx) = channel::<Vec<u8>>();
-    let behind: Arc<std::sync::atomic::AtomicUsize> = Default::default();
-    let screen = cdp.screens.lock().unwrap_or_else(|e| e.into_inner()).begin(&session, said_tx, Arc::clone(&behind));
-    std::thread::spawn(move || {
-        let mut w = write_side;
-        for frame in said_rx {
-            let sent = w.write_all(&frame).and_then(|()| w.flush());
-            behind.fetch_sub(frame.len(), Ordering::Relaxed);
-            if sent.is_err() {
-                break;
-            }
-        }
+    // to read never holds up the thread every page's talk arrives on. One
+    // that takes nothing at all for this long is gone
+    let _ = write_side.set_write_timeout(Some(SCREEN_STALLED));
+    let line = crate::ws::Lane::open(write_side, SCREEN_BEHIND, |w: std::net::TcpStream| {
         // Let go of -- too far behind, or gone -- so the reading below ends
         let _ = w.shutdown(std::net::Shutdown::Both);
     });
+    let screen = cdp.screens.lock().unwrap_or_else(|e| e.into_inner()).begin(&session, line);
     loop {
         match crate::ws::read_frame_upto(&mut reader, SCREEN_COMMAND) {
             Ok((crate::ws::Op::Text, body)) => {
@@ -3588,6 +3562,8 @@ mod tests {
     #[test]
     fn a_devtools_screen_hears_its_own_page_and_nothing_else() {
         let heard = |rx: &std::sync::mpsc::Receiver<Vec<u8>>| -> Vec<serde_json::Value> {
+            // The lane writes on a thread of its own: given a moment
+            std::thread::sleep(std::time::Duration::from_millis(100));
             rx.try_iter()
                 .map(|frame| {
                     let (op, body) = crate::ws::read_frame_upto(&mut masked(&frame).as_slice(), SCREEN_COMMAND).unwrap();
@@ -3601,9 +3577,19 @@ mod tests {
         // No screen: everything is this program's own
         assert!(screens.take(said(serde_json::json!({"id": 1, "result": {}}))).is_some());
 
-        let (tx, rx) = channel();
-        let behind: Arc<std::sync::atomic::AtomicUsize> = Default::default();
-        let one = screens.begin("S1", tx, Arc::clone(&behind));
+        // Written into a pipe of the test's own, read back frame by frame
+        let (tx, rx) = channel::<Vec<u8>>();
+        struct Into(Sender<Vec<u8>>);
+        impl Write for Into {
+            fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+                let _ = self.0.send(b.to_vec());
+                Ok(b.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let one = screens.begin("S1", crate::ws::Lane::open(Into(tx), 4096, |_| {}));
         screens.asked.insert(70, (one, serde_json::json!(3)));
 
         // Its answer comes back under the number it asked by, with no
@@ -3627,11 +3613,10 @@ mod tests {
         assert!(screens.take(serde_json::json!({"method": "Target.detachedFromTarget", "sessionId": "S1", "params": {"sessionId": "W1"}})).is_none());
         assert!(screens.take(serde_json::json!({"method": "Runtime.consoleAPICalled", "sessionId": "W1", "params": {}})).is_some());
         let _ = heard(&rx);
-        assert_eq!(behind.load(Ordering::Relaxed) > 0, true, "what waits on the screen is not counted");
 
         // Too far behind, it is let go: nothing more is kept for it
-        behind.store(SCREEN_BEHIND, Ordering::Relaxed);
-        assert!(screens.take(serde_json::json!({"method": "DOM.documentUpdated", "sessionId": "S1", "params": {}})).is_none());
+        let much = "x".repeat(8192);
+        assert!(screens.take(serde_json::json!({"method": "Runtime.consoleAPICalled", "sessionId": "S1", "params": {"text": much}})).is_none());
         assert!(screens.lines.is_empty() && screens.sessions.is_empty());
         assert!(screens.take(serde_json::json!({"method": "DOM.documentUpdated", "sessionId": "S1", "params": {}})).is_some());
     }

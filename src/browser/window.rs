@@ -108,6 +108,30 @@ pub(super) struct Adoptions {
     shut: Vec<String>,
     /// Counts the names apart
     next: u32,
+    /// How many windows stand over each pane now, as the loop last counted
+    /// them
+    standing: std::collections::HashMap<String, usize>,
+}
+
+/// How many windows the pages of one pane may have open at once, one over
+/// the other. A sign-in opens one, sometimes a second from the first; a
+/// page that opens them without end -- each a whole page, with its own
+/// process and memory -- is refused past this, as an engine refuses a
+/// window nobody pressed for
+const WINDOWS_MOST: usize = 8;
+
+impl Adoptions {
+    /// Write down how many windows stand over each pane
+    fn count<P>(&mut self, overlays: &std::collections::HashMap<String, Vec<(String, P)>>) {
+        self.standing = overlays.iter().map(|(pane, stack)| (pane.clone(), stack.len())).collect();
+    }
+
+    /// Whether the pane `opener` may have one more: counting those made and
+    /// not yet taken in
+    fn room(&self, opener: &str) -> bool {
+        let coming = self.made.iter().filter(|(pane, ..)| pane == opener).count();
+        self.standing.get(opener).copied().unwrap_or(0) + coming < WINDOWS_MOST
+    }
 }
 
 /// Take in a window a page asked for, rather than refusing it in silence.
@@ -140,6 +164,13 @@ impl Popups {
     /// middle of counting them: refusing is what happens then
     pub fn next_name(&self) -> Option<String> {
         let mut ib = self.inbox.try_borrow_mut().ok()?;
+        if !ib.room(&self.opener) {
+            shikisha_core::append_hook_log(&format!(
+                "[browser] '{}' asked for a window with {WINDOWS_MOST} already open over it; refused",
+                self.opener
+            ));
+            return None;
+        }
         ib.next += 1;
         Some(format!("{}#window{}", self.opener, ib.next))
     }
@@ -824,12 +855,18 @@ pub(super) fn run_window(
                         }
                         overlays.retain(|_, stack| !stack.is_empty());
                     }
+                    if let Ok(mut ib) = adoptions.try_borrow_mut() {
+                        ib.count(&overlays);
+                    }
                 }
                 Cmd::RemoveChild { name } => {
                     children.remove(&name);
                     child_sizes.remove(&name);
                     // Whatever it opened goes with it
                     overlays.remove(&name);
+                    if let Ok(mut ib) = adoptions.try_borrow_mut() {
+                        ib.count(&overlays);
+                    }
                     if let Some((cast, _)) = wakes.remove(&Some(name.clone())) {
                         cdp::stop(cast);
                     }
@@ -1496,4 +1533,30 @@ impl SnipWindow {
 /// A word safe to put in an address as it is.
 fn pct(s: &str) -> String {
     s.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-').collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A pane's pages may have so many windows open over it and no more,
+    /// and one that closes makes room for another
+    #[test]
+    fn a_pane_has_room_for_only_so_many_windows() {
+        let mut inbox = Adoptions::default();
+        let mut overlays: std::collections::HashMap<String, Vec<(String, u8)>> = Default::default();
+        assert!(inbox.room("shop"));
+        for n in 0..WINDOWS_MOST {
+            overlays.entry("shop".into()).or_default().push((format!("shop#window{n}"), 0));
+        }
+        inbox.count(&overlays);
+        assert!(!inbox.room("shop"), "a window more than the most was let in");
+        assert!(inbox.room("docs"), "one pane's windows were counted against another");
+        overlays.get_mut("shop").unwrap().pop();
+        inbox.count(&overlays);
+        assert!(inbox.room("shop"), "a window that closed left no room");
+        overlays.remove("shop");
+        inbox.count(&overlays);
+        assert!(inbox.room("shop"));
+    }
 }
