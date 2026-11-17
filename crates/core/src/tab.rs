@@ -3790,6 +3790,10 @@ pub struct Tab {
     /// flickers in and out of a question is one question
     pub notify_ask: bool,
     pub ask_told_ms: Option<u64>,
+    /// The turn (by the count of what was sent to this tab) whose end was
+    /// already said to that destination while the tab's desk was not in
+    /// front: said then, it is not said again when the desk comes back
+    pub done_told_for: Option<u64>,
     /// It finished, or asked something, while the person was looking at
     /// another tab, and nobody has looked at it since (see the loop's tick)
     pub unread: bool,
@@ -4946,6 +4950,7 @@ impl Tab {
             notify_reply: false,
             notify_ask: false,
             ask_told_ms: None,
+            done_told_for: None,
             unread: false,
             needs_restart: false,
             depth: 0,
@@ -5740,11 +5745,28 @@ impl Tab {
     /// back, by the next [`Tab::tick`], as a single step from the state it
     /// last heard of. So nothing a desk would have done is lost, and nothing
     /// is done twice
-    pub fn tick_away(&mut self, start: Instant) {
+    ///
+    /// One thing is not left to wait: the tab's own "tell me when it is
+    /// done" (and "...when it stops to ask"). That is a message to a person
+    /// who is somewhere else, about a tab they are not looking at -- held
+    /// until the desk is in front again, it arrives when they have already
+    /// come to look. So the change is handed back for the loop to say it
+    /// (see where this is called)
+    pub fn tick_away(&mut self, start: Instant) -> Option<(TabState, TabState)> {
         let (old, new) = self.read_state(start);
-        if old != new && self.told.is_none() {
+        if old == new {
+            return None;
+        }
+        if self.told.is_none() {
             self.told = Some(old);
         }
+        Some((old, new))
+    }
+
+    /// How many times something has been sent to this tab: which turn it
+    /// is on
+    pub fn turn(&self) -> u64 {
+        self.submits.load(Ordering::Relaxed)
     }
 
     fn read_state(&mut self, start: Instant) -> (TabState, TabState) {

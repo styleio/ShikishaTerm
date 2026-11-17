@@ -3271,6 +3271,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // A reopened tab to bring into view once it is on screen, and until when
     // to keep looking for it
     let mut reveal: Option<(String, Instant)> = None;
+    // Tabs on desks not in front whose turn ended, waiting to be seen to
+    // stay quiet before their "tell me when it is done" is sent: (the tab,
+    // when)
+    let mut away_done: Vec<(u64, u64)> = Vec::new();
     // When each page last had a tab opened for a window it asked for
     let mut page_windows_lately: std::collections::HashMap<String, Vec<Instant>> = Default::default();
     // Pages whose console said something since the panel was last told, the
@@ -4231,8 +4235,58 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // The other desks' tabs are running too, and their state is kept
             // as true as these: what their desk does about a change waits
             // for the desk to come back (see Tab::tick_away)
-            for t in desk_tabs.iter_mut().flatten() {
-                t.tick_away(start);
+            {
+                let now_ms = start.elapsed().as_millis() as u64;
+                for t in desk_tabs.iter_mut().flatten() {
+                    let Some((old, new)) = t.tick_away(start) else { continue };
+                    // The tab's own "tell me": said now, to whoever it names,
+                    // though the rest of what its desk does waits. With the
+                    // same care as on the desk in front -- only a turn
+                    // somebody asked for, and only once it has stayed quiet
+                    let serial = t.serial();
+                    if matches!(new, TabState::Busy | TabState::Exited) {
+                        away_done.retain(|&(s, _)| s != serial);
+                    }
+                    let Some(dest) = t.notify_on_done.clone() else { continue };
+                    match new {
+                        TabState::Question if t.notify_ask => {
+                            let lately = t.ask_told_ms.is_some_and(|at| {
+                                now_ms.saturating_sub(at) < ASK_TOLD_AGAIN_MS && t.last_manual_ms.is_none_or(|typed| typed <= at)
+                            });
+                            if !lately {
+                                t.ask_told_ms = Some(now_ms);
+                                let msg = i18n::tp("msg.notify.on_ask", &[("name", &t.title)]);
+                                let status = notifier.send_about(&dest, &msg, None);
+                                append_hook_log(&format!("notify_ask \"{}\" (on a desk not in front) \"{dest}\": {status}", t.title));
+                            }
+                        }
+                        _ if new.turn_ended() && old == TabState::Busy && t.was_prompted() && t.answered_since_submit() => {
+                            away_done.retain(|&(s, _)| s != serial);
+                            away_done.push((serial, now_ms + t.done_confirm_ms().unwrap_or(done_confirm_ms)));
+                        }
+                        _ => {}
+                    }
+                }
+                // The ones that stayed quiet, and whose answer is in hand.
+                // One whose desk came to the front meanwhile is that desk's
+                // to say, as it always was
+                away_done.retain(|&(s, _)| desk_tabs.iter().flatten().any(|t| t.serial() == s));
+                let (ready, waiting): (Vec<_>, Vec<_>) = away_done.iter().partition(|&&(s, at)| {
+                    now_ms >= at && !desk_tabs.iter().flatten().any(|t| t.serial() == s && t.reply_settling())
+                });
+                away_done = waiting;
+                for (serial, _) in ready {
+                    let Some(t) = desk_tabs.iter_mut().flatten().find(|t| t.serial() == serial) else { continue };
+                    let Some(dest) = t.notify_on_done.clone().filter(|_| t.state.turn_ended()) else { continue };
+                    // No link to answer by: that is made for a tab of the
+                    // desk in front. The name and the opening of the answer
+                    let msg = on_done_message(&t.title, t.last_response.as_deref().unwrap_or_default(), None);
+                    let status = notifier.send_about(&dest, &msg, None);
+                    append_hook_log(&format!("notify_on_done \"{}\" (on a desk not in front) \"{dest}\": {status}", t.title));
+                    // Said: not said again for this turn when its desk is
+                    // back in front and does everything else it does
+                    t.done_told_for = Some(t.turn());
+                }
             }
             // Keep the PC up or let it sleep, by the setting and by what the
             // AI tabs on every desk are doing
@@ -5058,7 +5112,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         eng.fire_ending(ended, &ctx);
                         // Beginner-friendly "notify me when this AI answers": a
                         // per-tab shortcut for an on_done that calls notify.
-                        if let Some(dest) = tabs[idx - 1].notify_on_done.clone() {
+                        // (unless this turn's end was said already, while
+                        // the tab's desk was not in front)
+                        let said_away = tabs[idx - 1].done_told_for.take() == Some(tabs[idx - 1].turn());
+                        if let Some(dest) = tabs[idx - 1].notify_on_done.clone().filter(|_| !said_away) {
                             // Three lines, and each one earns its place. The
                             // name, because a phone buzzing without saying
                             // which tab finished is a phone that sends you to

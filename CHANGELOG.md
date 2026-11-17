@@ -188,6 +188,13 @@ once it reaches its first tagged release.
   was closed, or the AI in it ended, the job stayed open and its workers
   went on reporting to nobody, with nothing on screen saying so. After two
   minutes you now get one notification naming the job, with what to do.
+- **"Tell me when it is done" for a tab on another desk arrives when it
+  is done.** A tab's notification (and "also when it stops to ask") was
+  held until its desk was brought to the front, so it arrived after you
+  had already gone to look. It is now sent when it happens, with the
+  tab's name and the opening of its answer. The reply link is added only
+  for tabs of the desk in front; the desk's own automation (`on_done`
+  and the rest) still runs when the desk is back in front, as before.
 - **Ctrl, Shift and Alt with the arrow keys reach the program.** Ctrl+Left
   arrived in a tab as a plain Left, so a shell did not jump a word, an
   editor did not select with Shift+arrow, and an AI CLI that switches on
