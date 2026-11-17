@@ -1330,8 +1330,8 @@ pub fn running_of(v: &serde_json::Value) -> Option<Running> {
 /// run for one event and gone: the one that hears a side thread begin is
 /// not the one that hears it end, and what the first one remembered in
 /// itself the second never knew
-/// How many side threads are remembered
-const SIDE_THREADS_MOST: usize = 256;
+/// How much of the list of side threads there is before it is put aside
+const SIDE_THREADS_MOST: u64 = 64 * 1024;
 
 /// The file the side threads are written in: this machine's own
 fn side_threads_file() -> PathBuf {
@@ -1341,11 +1341,19 @@ fn side_threads_file() -> PathBuf {
     crate::config::machine_dir().join("side-threads.txt")
 }
 
-/// The side threads heard of, oldest first
+/// The list as it was before it was last put aside (`tidy_side_threads`)
+fn side_threads_before() -> PathBuf {
+    side_threads_file().with_extension("before.txt")
+}
+
+/// The side threads heard of, oldest first: the list, and the one put
+/// aside before it
 fn side_threads() -> Vec<String> {
-    std::fs::read_to_string(side_threads_file())
-        .map(|text| text.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect())
-        .unwrap_or_default()
+    [side_threads_before(), side_threads_file()]
+        .iter()
+        .filter_map(|file| std::fs::read_to_string(file).ok())
+        .flat_map(|text| text.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect::<Vec<_>>())
+        .collect()
 }
 
 /// Whether the conversation `id` is a side thread heard of before
@@ -1377,15 +1385,22 @@ fn note_side_thread(id: &str) {
     }
 }
 
-/// Cut the list of side threads down to the newest. Done by the app as it
-/// starts, and by nothing else: a hook only ever adds a line
+/// Keep the list of side threads from growing without end. Done by the app
+/// as it starts.
+///
+/// The list is never written over: a hook of another tab -- of another
+/// copy of the app, of a terminal that outlived it -- may be adding a line
+/// at this very moment, and a list read, cut down and written back would
+/// be written back without that line. A list grown long is put aside under
+/// another name, whole, and read from there (a hook that had it open goes
+/// on adding to it there); only the one put aside before it is deleted
 pub fn tidy_side_threads() {
-    let all = side_threads();
-    if all.len() <= SIDE_THREADS_MOST {
-        return;
+    let file = side_threads_file();
+    if std::fs::metadata(&file).is_ok_and(|m| m.len() > SIDE_THREADS_MOST) {
+        let before = side_threads_before();
+        let _ = std::fs::remove_file(&before);
+        let _ = std::fs::rename(&file, &before);
     }
-    let keep = all.len() - SIDE_THREADS_MOST;
-    let _ = crate::crypto::write_atomic(&side_threads_file(), &(all[keep..].join("\n") + "\n"));
 }
 
 /// `kind` is what the hook entry asked for: `session`, or `state:<STATE>`.
@@ -2935,14 +2950,29 @@ mod tests {
         let adding: Vec<_> = (0..24).map(|n| std::thread::spawn(move || note_side_thread(&format!("at-once-{n}")))).collect();
         adding.into_iter().for_each(|t| t.join().unwrap());
         assert!((0..24).all(|n| is_side_thread(&format!("at-once-{n}"))), "a side thread written at the same moment as another was lost");
-        // Cut down to the newest when the app starts, and by nothing else
-        for n in 0..SIDE_THREADS_MOST + 3 {
-            note_side_thread(&format!("many-{n}"));
-        }
-        assert!(side_threads().len() > SIDE_THREADS_MOST && is_side_thread("side-thread-1"));
+        // A list not grown long is left where it is as the app starts
         tidy_side_threads();
-        assert_eq!(side_threads().len(), SIDE_THREADS_MOST);
-        assert!(is_side_thread(&format!("many-{}", SIDE_THREADS_MOST + 2)) && !is_side_thread("side-thread-1"));
+        assert!(!side_threads_before().exists() && is_side_thread("side-thread-1"));
+        // Grown long, it is put aside whole -- nothing in it is lost, and a
+        // line added while it was being put aside is in one or the other
+        let long = "x".repeat(180);
+        let lines = (SIDE_THREADS_MOST / 180 + 2) as usize;
+        for n in 0..lines {
+            note_side_thread(&format!("{long}-{n}"));
+        }
+        let adding = std::thread::spawn(|| (0..50).for_each(|n| note_side_thread(&format!("meanwhile-{n}"))));
+        tidy_side_threads();
+        adding.join().unwrap();
+        assert!(side_threads_before().exists(), "a list grown long was left to grow");
+        assert!(is_side_thread("side-thread-1") && is_side_thread(&format!("{long}-0")), "what was in the list was lost when it was put aside");
+        assert!((0..50).all(|n| is_side_thread(&format!("meanwhile-{n}"))), "a line added while the list was put aside was lost");
+        // ...and only the one put aside before it goes, the next time
+        for n in 0..lines {
+            note_side_thread(&format!("{long}-again-{n}"));
+        }
+        tidy_side_threads();
+        assert!(!is_side_thread("side-thread-1"), "the list put aside before was kept for ever");
+        assert!(is_side_thread(&format!("{long}-again-0")));
     }
 
     /// A conversation begun afresh has nothing beside it; one taken up again

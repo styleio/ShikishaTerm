@@ -1874,7 +1874,11 @@ impl Capabilities {
         self.declared.borrow_mut().remove(&key);
         self.opened.borrow_mut().remove(&key);
         self.page_uids.borrow_mut().remove(&key);
-        self.page_desks.borrow_mut().remove(&key);
+        // Which desk it was opened for is kept: a tab started again is
+        // closed and opened under the same name, by a road that does not
+        // say the desk again -- and forgotten here, a window of its page
+        // was let through whichever desk then stood in its place. A page
+        // opened under this name for another desk writes its own over it
         *self.shown.borrow_mut() = None;
         // Its DevTools goes with it: a DevTools is about one page, and left
         // behind it inspects nothing -- and the next "Open DevTools" on a page

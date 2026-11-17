@@ -368,6 +368,20 @@ impl Link {
         self.up.load(Ordering::SeqCst) && !self.out.broken.load(Ordering::SeqCst)
     }
 
+    /// Whether the line is up -- and, when it is not, closed: asked by the
+    /// thread that watches it. A line is found down by more roads than one
+    /// (what was written to it failed, on the thread that writes; it left
+    /// too much unwritten), and the one that finds it is not always one
+    /// that can close it: left open, whoever reads it stood waiting on a
+    /// line nothing would ever come down again
+    fn still_up(&self) -> bool {
+        let up = self.is_up();
+        if !up {
+            self.close();
+        }
+        up
+    }
+
     /// Whether the bridge still answers: asked something it answers at
     /// once, and heard from -- with anything at all -- within `within`.
     ///
@@ -721,7 +735,7 @@ pub(crate) fn link_over(
             let mut looked = Instant::now();
             loop {
                 std::thread::sleep(WATCH_EVERY);
-                if !l.is_up() {
+                if !l.still_up() {
                     break;
                 }
                 // Not judged on a round this PC did not run through (it
@@ -1976,5 +1990,43 @@ mod tests {
         full.out.waiting.store(OUT_MOST, Ordering::SeqCst);
         assert!(!full.say(&Frame::Tick));
         assert!(!full.is_up() && closed.load(Ordering::SeqCst), "a line given up on was left open");
+
+        // What was written fails after it was taken to be said: found by
+        // the thread that writes, and closed by the one that watches
+        struct Fails;
+        impl Write for Fails {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("the far end is gone"))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let closed = Arc::new(AtomicBool::new(false));
+        let shut = Arc::clone(&closed);
+        let failing = Arc::new(Link {
+            out: Out::over(Box::new(Fails)),
+            socket: None,
+            closer: Some(Box::new(move || shut.store(true, Ordering::SeqCst))),
+            waiting: Mutex::default(),
+            conns: Mutex::default(),
+            next: AtomicU64::new(0),
+            up: AtomicBool::new(true),
+            version: Mutex::new(None),
+            jobs: Mutex::new(Vec::new()),
+            job_listeners: Mutex::default(),
+            home: String::new(),
+            ends_at_logout: AtomicBool::new(false),
+            heard: Mutex::new(Instant::now()),
+        });
+        assert!(failing.still_up());
+        assert!(failing.say(&Frame::Tick), "what is put in line is taken");
+        let until = Instant::now() + Duration::from_secs(5);
+        while failing.is_up() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!failing.is_up() && !closed.load(Ordering::SeqCst));
+        assert!(!failing.still_up());
+        assert!(closed.load(Ordering::SeqCst), "a line whose writing failed was left open");
     }
 }

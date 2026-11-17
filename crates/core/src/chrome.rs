@@ -2705,12 +2705,18 @@ impl shikisha_shared::BrowserHost for Pages {
                     // closed while it waited)
                     Some(kept) => {
                         book.windows.closing(&window);
-                        chrome.speaker().tell(None, "Target.closeTarget", serde_json::json!({ "targetId": window }));
-                        if let Some(context) = kept.context
-                            && !book.targets.values().any(|(_, c)| c.as_deref() == Some(context.as_str()))
-                            && !book.windows.in_context(&context)
-                        {
-                            chrome.speaker().tell(None, "Target.disposeBrowserContext", serde_json::json!({ "browserContextId": context }));
+                        // In the browser it is in, which is not this tab's
+                        // when the tab is kept in another profile: told to
+                        // this tab's browser, it would go on standing in its own
+                        let theirs = self.browsers.borrow().get(&kept.browser).map(Rc::clone);
+                        if let Some(theirs) = theirs {
+                            theirs.speaker().tell(None, "Target.closeTarget", serde_json::json!({ "targetId": window }));
+                            if let Some(context) = kept.context
+                                && !book.targets.values().any(|(_, c)| c.as_deref() == Some(context.as_str()))
+                                && !book.windows.in_context(&context)
+                            {
+                                theirs.speaker().tell(None, "Target.disposeBrowserContext", serde_json::json!({ "browserContextId": context }));
+                            }
                         }
                         None
                     }
