@@ -179,6 +179,19 @@ once it reaches its first tagged release.
   checked.
 
 ### Fixed
+- **Looking at the git column no longer fills the repository with loose
+  objects.** To tell whether a branch has already gone into its base
+  (squash merges included), the app asks git what merging it would give.
+  Git wrote the trees it worked out into the repository each time, and
+  nothing ever referred to them: thousands a day in a repository with
+  several worktrees. They are now written to a folder of their own that
+  is thrown away. (On this PC; a repository on a server is asked as
+  before.)
+- **`shikisha` run by an AI that filters its environment says what to
+  change.** An AI's CLI set to hand its commands only part of its
+  environment (Codex with `shell_environment_policy`) takes away what
+  tells `shikisha` which tab it is in, and the command said only that it
+  was not in a tab. It now names the variables to let through.
 - **A tab whose program does not read no longer freezes the app.** What
   is typed into a tab was written straight into its terminal by the one
   thread that draws every tab. A terminal holds only so much for a

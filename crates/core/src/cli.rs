@@ -153,6 +153,10 @@ fn call(
                 err,
                 "[shikisha] Not in a SHIKISHA-TERM tab, or its API is off ({e}). Run this inside a tab of the app."
             );
+            // Inside a tab all the same, when the AI's CLI that ran this
+            // hands its commands only some of its own environment: said, so
+            // that the AI reading this can say what to change
+            let _ = writeln!(err, "{}", crate::api::FILTERED_HINT);
             return 1;
         }
     };

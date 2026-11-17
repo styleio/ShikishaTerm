@@ -166,6 +166,7 @@ pub fn far_cli(args: &[String]) -> i32 {
             return 0;
         }
         eprintln!("[shikisha] This command works in a SHIKISHA-TERM tab; this terminal was not opened by the app.");
+        eprintln!("{}", crate::api::FILTERED_HINT);
         return 1;
     };
     let sock = door_told(sock);

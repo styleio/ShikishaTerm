@@ -403,6 +403,13 @@ pub fn run_bytes(dir: &Path, args: &[&str], input: &[u8], limit: Duration) -> Re
 // that is about to ask, by whoever resolved a tab to its folder.
 
 thread_local! {
+    /// Where the git called next on this thread writes its objects, when not
+    /// into the repository itself: a folder to be thrown away, and the
+    /// repository's own objects beside it to read from ([`merged_apart`])
+    static APART: std::cell::RefCell<Option<(PathBuf, PathBuf)>> = const { std::cell::RefCell::new(None) };
+}
+
+thread_local! {
     /// The folder last noted on this thread and the machine it is on, when
     /// that machine is not this one. Read by the one runner below and by the
     /// one reader of a working file; nothing else in here knows about it
@@ -594,6 +601,9 @@ fn run_bytes_as(dir: &Path, args: &[&str], input: &[u8], limit: Duration, who: &
     let mut cmd = std::process::Command::new("git");
     cmd.arg("-C").arg(dir);
     who.apply(&mut cmd);
+    if let Some((thrown_away, real)) = APART.with(|a| a.borrow().clone()) {
+        cmd.env("GIT_OBJECT_DIRECTORY", thrown_away).env("GIT_ALTERNATE_OBJECT_DIRECTORIES", real);
+    }
     cmd.args(args)
         // Never sit waiting for a person who cannot see the prompt
         .env("GIT_TERMINAL_PROMPT", "0")
@@ -1598,8 +1608,35 @@ pub fn integrated_into(dir: &Path, branch: &str) -> Option<String> {
         return Some(base);
     }
     let tree = run(dir, &["rev-parse", "--verify", &format!("{}^{{tree}}", target.trim())]).ok()?;
-    let merged = run(dir, &["merge-tree", "--write-tree", target.trim(), head.trim()]).ok()?;
+    let merged = merged_apart(dir, target.trim(), head.trim())?;
     (merged.lines().next()? == tree.trim()).then_some(base)
+}
+
+/// What merging `head` into `target` would give, as `git merge-tree` says
+/// it, with nothing left behind in the repository.
+///
+/// The merge is only asked about, never kept -- but asking writes the trees
+/// it works out into the repository all the same, and nothing refers to them
+/// afterwards. The panel asks for every worktree, every time it looks: a
+/// repository nobody had committed to for a day had thousands of loose
+/// objects more than the day before, until git's own tidying next ran. So
+/// the trees are written into a folder of their own, with the repository's
+/// objects beside it to read from, and the folder is thrown away.
+///
+/// On this PC. A folder on another machine is asked as before
+fn merged_apart(dir: &Path, target: &str, head: &str) -> Option<String> {
+    let ask = || run(dir, &["merge-tree", "--write-tree", target, head]).ok();
+    if far_of(dir).is_some() {
+        return ask();
+    }
+    let real = run(dir, &["rev-parse", "--path-format=absolute", "--git-path", "objects"]).ok().map(|p| PathBuf::from(p.trim()));
+    let thrown_away = std::env::temp_dir().join(format!("shikisha-merge-{}", crate::random_hex(8)));
+    let (Some(real), Ok(())) = (real.filter(|p| p.is_dir()), std::fs::create_dir_all(&thrown_away)) else { return ask() };
+    APART.with(|a| *a.borrow_mut() = Some((thrown_away.clone(), real)));
+    let merged = ask();
+    APART.with(|a| *a.borrow_mut() = None);
+    let _ = std::fs::remove_dir_all(&thrown_away);
+    merged
 }
 
 /// Back onto the branch this one went into ([`integrated_into`]), with what
@@ -2606,6 +2643,36 @@ mod tests {
         run(seed, &["add", "."]).unwrap();
         run(seed, &["commit", "-qm", "far"]).unwrap();
         run(seed, &["push", "-q", "far", "main"]).unwrap();
+    }
+
+    /// A branch that went in squashed is seen to have gone in, and asking
+    /// leaves nothing behind in the repository
+    #[test]
+    fn asking_whether_a_branch_went_in_leaves_the_repository_as_it_was() {
+        let Some((seed, _far, near)) = catch_up_setup("apart") else { return };
+        // The work, on its branch...
+        std::fs::write(near.join("b.txt"), "the work\n").unwrap();
+        run(&near, &["add", "."]).unwrap();
+        run(&near, &["commit", "-qm", "the work"]).unwrap();
+        // ...and the same change on the server's main as a commit of its
+        // own (a squash merge), beside another change made there meanwhile
+        catch_up_advance(&seed, "c.txt", "something else\n");
+        std::fs::write(seed.join("b.txt"), "the work\n").unwrap();
+        run(&seed, &["add", "."]).unwrap();
+        run(&seed, &["commit", "-qm", "the work, squashed"]).unwrap();
+        run(&seed, &["push", "-q", "far", "main"]).unwrap();
+        run(&near, &["fetch", "-q"]).unwrap();
+        let objects = || run(&near, &["count-objects", "-v"]).unwrap();
+        let before = objects();
+        assert_eq!(integrated_into(&near, "work").as_deref(), Some("origin/main"), "a branch that went in squashed is not seen to have");
+        assert_eq!(objects(), before, "asking wrote into the repository");
+        // One that did not go in is still told apart
+        std::fs::write(near.join("d.txt"), "not merged\n").unwrap();
+        run(&near, &["add", "."]).unwrap();
+        run(&near, &["commit", "-qm", "more work"]).unwrap();
+        let before = objects();
+        assert_eq!(integrated_into(&near, "work"), None);
+        assert_eq!(objects(), before, "asking wrote into the repository");
     }
 
     /// A checkout that cut a branch and saw it merged goes home: onto the

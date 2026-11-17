@@ -44,6 +44,12 @@ use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
 ///
 /// A CLI in a tab finds the door and its key here, and learns which tab it is
 /// sitting in — the answer to "where am I?" that it otherwise has no way to ask
+/// What a command with no way to the app is told besides: an AI's CLI that
+/// hands the commands it runs a filtered environment takes the tab's
+/// identity away from them (Codex does when its `shell_environment_policy`
+/// is set to inherit only the core variables, or to leave some out)
+pub const FILTERED_HINT: &str = "[shikisha] If this is a tab of the app and an AI's CLI ran this command: that CLI gives its commands a filtered environment. Let it pass SHIKISHA_PIPE, SHIKISHA_TOKEN and SHIKISHA_TAB through (on a server: SHIKISHA_BRIDGE_SOCK and SHIKISHA_KEY_FILE). In Codex that is shell_environment_policy in config.toml: include them in include_only, or do not set inherit = \"core\".";
+
 pub const ENV_PIPE: &str = "SHIKISHA_PIPE";
 pub const ENV_TOKEN: &str = "SHIKISHA_TOKEN";
 const ENV_TAB: &str = "SHIKISHA_TAB";
