@@ -21,7 +21,7 @@
 //! shipping the binary, not using one. So: whatever the machine already has, and
 //! a plain refusal when it has none.
 
-use std::io::{Read as _, Write};
+use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::rc::Rc;
 use std::sync::mpsc::{Sender, channel};
@@ -314,10 +314,12 @@ pub struct Chrome {
     /// left behind is somebody's cookies sitting in a temporary folder
     temporary: bool,
     cdp: Cdp,
-    /// The port its DevTools protocol answers on, on the loopback. This
-    /// program's own line to it; a page's DevTools screen, opened in this same
-    /// browser, is pointed at it too
-    port: u16,
+    /// Where a DevTools screen for one of its pages connects, once one has
+    /// been asked for (see [`ScreenDoor`]). `None` inside: it could not be
+    /// opened
+    door: std::sync::OnceLock<Option<ScreenDoor>>,
+    /// Set when the browser is being let go, for the door to stop answering
+    closing: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Chrome {
@@ -342,14 +344,14 @@ impl Chrome {
             reclaim(&profile);
         }
 
+        // Spoken to over two pipes only this program and the browser hold,
+        // not over a port. A port on the loopback answers every program of
+        // every account on the machine, and whoever reaches it drives every
+        // page in the browser -- the signed-in ones included -- with nothing
+        // asked of them
+        let wire = Wire::new()?;
         let mut cmd = std::process::Command::new(&exe);
         cmd.arg("--headless=new")
-            .arg("--remote-debugging-port=0")
-            // The one caller with an origin let in: the browser's own DevTools
-            // screen, opened for a page by this program. A web page cannot
-            // speak from that origin, and a program on the machine could
-            // already reach this port without one
-            .arg("--remote-allow-origins=devtools://devtools")
             .arg(format!("--user-data-dir={}", profile.display()))
             .arg("--no-first-run")
             .arg("--no-default-browser-check")
@@ -380,33 +382,43 @@ impl Chrome {
             );
             cmd.arg("--no-sandbox");
         }
+        wire.give(&mut cmd);
         let mut child = crate::detach_console(&mut cmd).spawn()?;
+        // Its ends are its own now; held here as well, the pipe would never
+        // read as closed when the browser goes
+        let (to, from) = wire.ours();
+        let said = first_words(&mut child);
 
-        // The port it chose is announced on its error stream, once, before
-        // anything else. Asked for as 0 rather than picked by us: two runtimes
-        // on one machine picking the same number is a collision nobody debugs
-        let started = read_ws_endpoint(&mut child).and_then(|ws| {
-            // ws://127.0.0.1:<port>/devtools/browser/<id>
-            let port = ws
-                .split("://")
-                .nth(1)
-                .and_then(|rest| rest.split('/').next())
-                .and_then(|host| host.rsplit(':').next())
-                .and_then(|p| p.parse::<u16>().ok())
-                .unwrap_or(0);
-            Cdp::connect(&ws).map(|c| (c, port))
+        // There when it answers: nothing is announced on a pipe, so it is
+        // asked something it can always answer
+        let started = Cdp::over(to, from).and_then(|cdp| {
+            match cdp.call(None, "Browser.getVersion", serde_json::json!({}), START_MS) {
+                Ok(_) => Ok(cdp),
+                Err(_) => {
+                    // What it said about why, in its own words, rather than
+                    // "it did not answer in time" -- given a moment to arrive
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                    let said = said.lock().unwrap_or_else(|e| e.into_inner()).join("\n");
+                    Err(match (said.is_empty(), cdp.alive.load(Ordering::Relaxed)) {
+                        (false, _) => anyhow::anyhow!(crate::i18n::tp("err.chrome.refused", &[("said", &said)])),
+                        (true, false) => anyhow::anyhow!(crate::i18n::t("err.chrome.silent")),
+                        (true, true) => anyhow::anyhow!(crate::i18n::t("err.chrome.slow")),
+                    })
+                }
+            }
         });
-        let (cdp, port) = match started {
+        let cdp = match started {
             Ok(c) => c,
             Err(e) => {
                 let _ = child.kill();
+                let _ = child.wait();
                 if temporary {
                     let _ = std::fs::remove_dir_all(&profile);
                 }
                 return Err(e);
             }
         };
-        Ok(Self { child, profile, temporary, cdp, port })
+        Ok(Self { child, profile, temporary, cdp, door: Default::default(), closing: Default::default() })
     }
 
     /// Whether the browser is still there to be spoken to. It can go on its
@@ -416,15 +428,27 @@ impl Chrome {
     }
 
     /// Where a DevTools screen for the page `target` is opened, in this same
-    /// browser: its own screen, pointed at its own protocol. Nothing is opened
-    /// that was not already open -- the browser's port is this program's line
-    /// to it from the moment it started
-    pub fn devtools_screen(&self, target: &str) -> String {
-        format!("{}{target}", self.screen_prefix())
+    /// browser: its own screen, pointed at this program's door for it (see
+    /// [`ScreenDoor`]). The door is opened the first time a screen is asked
+    /// for, so a browser nobody inspects answers on no port at all
+    pub fn devtools_screen(&self, target: &str) -> anyhow::Result<String> {
+        let door = self
+            .door
+            .get_or_init(|| match ScreenDoor::open(self.cdp.clone(), Arc::clone(&self.closing)) {
+                Ok(door) => Some(door),
+                Err(e) => {
+                    crate::append_hook_log(&format!("chrome: the door for DevTools screens could not be opened: {e}"));
+                    None
+                }
+            })
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.chrome.no_devtools")))?;
+        Ok(format!("{}{target}", door.prefix()))
     }
 
-    fn screen_prefix(&self) -> String {
-        format!("devtools://devtools/bundled/devtools_app.html?ws=127.0.0.1:{}/devtools/page/", self.port)
+    /// Whether an address is a DevTools screen this browser was asked for
+    fn made_screen(&self, url: &str) -> bool {
+        self.door.get().and_then(Option::as_ref).is_some_and(|d| url.starts_with(&d.prefix()))
     }
 
     /// Say something to the browser itself, rather than to a page in it.
@@ -630,6 +654,11 @@ impl Drop for Chrome {
         // profile out; one that is killed leaves a lock file that the next
         // start of the same profile spends ten seconds deciding about
         let _ = self.call("Browser.close", serde_json::json!({}));
+        // The door stops answering: told, then woken to hear it
+        self.closing.store(true, Ordering::Relaxed);
+        if let Some(door) = self.door.get().and_then(Option::as_ref) {
+            let _ = std::net::TcpStream::connect(("127.0.0.1", door.port));
+        }
         let _ = self.child.wait_timeout(std::time::Duration::from_secs(3));
         let _ = self.child.kill();
         let _ = self.child.wait();
@@ -659,40 +688,166 @@ impl WaitFor for std::process::Child {
     }
 }
 
-/// The address it printed, or what it said instead.
-fn read_ws_endpoint(child: &mut std::process::Child) -> anyhow::Result<String> {
+/// How long a browser just started is given to answer
+const START_MS: u64 = 20_000;
+
+/// The first things a browser says on its error stream, kept so that one
+/// which refuses to start can say why in its own words. Read to the end and
+/// otherwise thrown away: a stream nobody reads fills, and the browser
+/// stops at its next word
+fn first_words(child: &mut std::process::Child) -> Arc<Mutex<Vec<String>>> {
     use std::io::BufRead as _;
-    let err = child
-        .stderr
-        .take()
-        .ok_or_else(|| anyhow::anyhow!("the browser has no error stream to read"))?;
-    let (tx, rx) = channel();
-    std::thread::spawn(move || {
-        let mut said = Vec::new();
-        for line in std::io::BufReader::new(err).lines().map_while(Result::ok) {
-            if let Some(ws) = line.trim().strip_prefix("DevTools listening on ") {
-                let _ = tx.send(Ok(ws.to_string()));
-                return;
+    let said: Arc<Mutex<Vec<String>>> = Default::default();
+    if let Some(err) = child.stderr.take() {
+        let kept = Arc::clone(&said);
+        std::thread::spawn(move || {
+            // By the piece and not by the line: what a browser says is not
+            // always text, and one bad byte must not end the reading
+            for line in std::io::BufReader::new(err).split(b'\n').map_while(Result::ok) {
+                let mut kept = kept.lock().unwrap_or_else(|e| e.into_inner());
+                if kept.len() < 20 {
+                    kept.push(String::from_utf8_lossy(&line).trim_end().to_string());
+                }
             }
-            // Kept so that a browser which refuses to start can say why in its
-            // own words, rather than as "it did not answer in time"
-            if said.len() < 20 {
-                said.push(line);
-            }
-        }
-        let _ = tx.send(Err(said.join("\n")));
-    });
-    match rx.recv_timeout(std::time::Duration::from_secs(20)) {
-        Ok(Ok(ws)) => Ok(ws),
-        Ok(Err(said)) if said.is_empty() => {
-            Err(anyhow::anyhow!(crate::i18n::t("err.chrome.silent")))
-        }
-        Ok(Err(said)) => Err(anyhow::anyhow!(crate::i18n::tp(
-            "err.chrome.refused",
-            &[("said", &said)]
-        ))),
-        Err(_) => Err(anyhow::anyhow!(crate::i18n::t("err.chrome.slow"))),
+        });
     }
+    said
+}
+
+// ── the line to the browser ───────────────────────────────────────────────
+
+/// The two pipes a browser is spoken to over: one it reads what is said to
+/// it from, one it writes what it says to. Made before it starts, since it
+/// has to start holding its ends
+struct Wire {
+    to: std::fs::File,
+    from: std::fs::File,
+    theirs: Theirs,
+}
+
+/// The browser's ends of the pipes: the one it reads, the one it writes
+#[cfg(unix)]
+struct Theirs(std::os::fd::OwnedFd, std::os::fd::OwnedFd);
+
+/// The same, as the numbers Windows knows them by
+#[cfg(windows)]
+struct Theirs(End, End);
+
+/// One end of a pipe, closed when let go of
+#[cfg(windows)]
+struct End(usize);
+
+#[cfg(windows)]
+impl Drop for End {
+    fn drop(&mut self) {
+        // SAFETY: made by `CreatePipe` below and closed nowhere else
+        unsafe {
+            windows_sys::Win32::Foundation::CloseHandle(self.0 as _);
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Wire {
+    fn new() -> std::io::Result<Wire> {
+        use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
+        let pipe = || -> std::io::Result<(OwnedFd, OwnedFd)> {
+            let mut ends = [0 as libc::c_int; 2];
+            // SAFETY: two numbers written into the array given
+            if unsafe { libc::pipe(ends.as_mut_ptr()) } != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            // SAFETY: both were just made and belong to nobody else
+            let (r, w) = unsafe { (OwnedFd::from_raw_fd(ends[0]), OwnedFd::from_raw_fd(ends[1])) };
+            // Not handed to whatever else this program starts: an end held
+            // by a stranger is a pipe that never reads as closed
+            for end in [&r, &w] {
+                // SAFETY: a flag set on a descriptor this owns
+                unsafe {
+                    libc::fcntl(end.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC);
+                }
+            }
+            Ok((r, w))
+        };
+        let (their_in, to) = pipe()?;
+        let (from, their_out) = pipe()?;
+        Ok(Wire { to: to.into(), from: from.into(), theirs: Theirs(their_in, their_out) })
+    }
+
+    /// Have the browser start holding its ends where it looks for them: the
+    /// third and fourth of its descriptors
+    fn give(&self, cmd: &mut std::process::Command) {
+        use std::os::fd::AsRawFd as _;
+        use std::os::unix::process::CommandExt as _;
+        cmd.arg("--remote-debugging-pipe");
+        let (r, w) = (self.theirs.0.as_raw_fd(), self.theirs.1.as_raw_fd());
+        // SAFETY: runs in the child between fork and exec, and calls only
+        // what may be called there
+        unsafe {
+            cmd.pre_exec(move || {
+                // Out of the way first: either may be sitting on 3 or 4
+                let (r, w) = (libc::fcntl(r, libc::F_DUPFD, 5), libc::fcntl(w, libc::F_DUPFD, 5));
+                if r < 0 || w < 0 || libc::dup2(r, 3) < 0 || libc::dup2(w, 4) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                libc::close(r);
+                libc::close(w);
+                Ok(())
+            });
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Wire {
+    fn new() -> std::io::Result<Wire> {
+        use std::os::windows::io::FromRawHandle as _;
+        use windows_sys::Win32::Foundation::{HANDLE, HANDLE_FLAG_INHERIT, SetHandleInformation};
+        // The browser's end is one it can be started holding; this side's is
+        // not handed to anything
+        let pipe = |ours_reads: bool| -> std::io::Result<(std::fs::File, End)> {
+            let allow = windows_sys::Win32::Security::SECURITY_ATTRIBUTES {
+                nLength: std::mem::size_of::<windows_sys::Win32::Security::SECURITY_ATTRIBUTES>() as u32,
+                lpSecurityDescriptor: std::ptr::null_mut(),
+                bInheritHandle: 1,
+            };
+            let (mut r, mut w): (HANDLE, HANDLE) = (std::ptr::null_mut(), std::ptr::null_mut());
+            // SAFETY: two handles written into the places given
+            if unsafe { windows_sys::Win32::System::Pipes::CreatePipe(&mut r, &mut w, &allow, 0) } == 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            let (ours, theirs) = if ours_reads { (r, w) } else { (w, r) };
+            // SAFETY: a flag cleared on a handle just made; owned by the file from here
+            unsafe {
+                SetHandleInformation(ours, HANDLE_FLAG_INHERIT, 0);
+                Ok((std::fs::File::from_raw_handle(ours as _), End(theirs as usize)))
+            }
+        };
+        let (to, their_in) = pipe(false)?;
+        let (from, their_out) = pipe(true)?;
+        Ok(Wire { to, from, theirs: Theirs(their_in, their_out) })
+    }
+
+    /// Have the browser start holding its ends, and told which they are
+    fn give(&self, cmd: &mut std::process::Command) {
+        cmd.arg("--remote-debugging-pipe").arg(format!("--remote-debugging-io-pipes={},{}", self.theirs.0.0, self.theirs.1.0));
+    }
+}
+
+impl Wire {
+    /// This side's ends, once the browser has started: what is written to
+    /// it, and what is read from it. The browser's are let go of here
+    fn ours(self) -> (std::fs::File, std::fs::File) {
+        (self.to, self.from)
+    }
+}
+
+/// One thing said to the browser: on a pipe, each ends with a zero
+fn say(out: &Mutex<Box<dyn Write + Send>>, msg: &serde_json::Value) -> std::io::Result<()> {
+    let mut bytes = msg.to_string().into_bytes();
+    bytes.push(0);
+    let mut out = out.lock().unwrap_or_else(|e| e.into_inner());
+    out.write_all(&bytes).and_then(|()| out.flush())
 }
 
 // ── the protocol ──────────────────────────────────────────────────────────
@@ -729,15 +884,14 @@ impl Speaker {
         if let Some(s) = session {
             msg["sessionId"] = serde_json::Value::String(s.to_string());
         }
-        if let Ok(mut out) = self.out.lock() {
-            let _ = out.write_all(&crate::ws::client_encode(crate::ws::Op::Text, msg.to_string().as_bytes())).and_then(|()| out.flush());
-        }
+        let _ = say(&self.out, &msg);
     }
 }
 
 type Sink = Box<dyn Fn(Event) + Send>;
 
 /// One connection, carrying every page.
+#[derive(Clone)]
 struct Cdp {
     out: Arc<Mutex<Box<dyn Write + Send>>>,
     next: Arc<AtomicU64>,
@@ -748,6 +902,9 @@ struct Cdp {
     /// Whether the far side is still there. A call made after it has gone
     /// should say so rather than wait out its timeout
     alive: Arc<std::sync::atomic::AtomicBool>,
+    /// The DevTools screens open on its pages, and what of the browser's
+    /// talk is theirs
+    screens: Arc<Mutex<Screens>>,
 }
 
 impl Cdp {
@@ -755,46 +912,22 @@ impl Cdp {
         Speaker { out: Arc::clone(&self.out), next: Arc::clone(&self.next) }
     }
 
-    fn connect(ws_url: &str) -> anyhow::Result<Self> {
-        let (host, path) = split_ws(ws_url)?;
-        let stream = std::net::TcpStream::connect(&host)?;
-        stream.set_nodelay(true)?;
-        let mut sock = stream.try_clone()?;
-
-        // The key is random and the answer is not checked. What that check
-        // proves is that the far side speaks WebSocket rather than being a
-        // cache or a proxy that echoed the request -- and there is no cache
-        // between here and a port this process started on this machine
-        let key = {
-            use base64::Engine as _;
-            let bytes = crate::random_bytes(16).unwrap_or_else(|| vec![0; 16]);
-            base64::engine::general_purpose::STANDARD.encode(bytes)
-        };
-        write!(
-            sock,
-            "GET {path} HTTP/1.1\r\n\
-             Host: {host}\r\n\
-             Upgrade: websocket\r\n\
-             Connection: Upgrade\r\n\
-             Sec-WebSocket-Key: {key}\r\n\
-             Sec-WebSocket-Version: 13\r\n\r\n"
-        )?;
-        sock.flush()?;
-        read_until_headers_end(&stream)?;
-
+    /// Over the two pipes the browser was started holding the other ends of
+    fn over(to: std::fs::File, from: std::fs::File) -> anyhow::Result<Self> {
         let waiting: Arc<Mutex<std::collections::HashMap<u64, Sender<serde_json::Value>>>> =
             Arc::new(Mutex::new(std::collections::HashMap::new()));
         let alive = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let sink: Arc<Mutex<Option<Sink>>> = Arc::new(Mutex::new(None));
+        let screens: Arc<Mutex<Screens>> = Default::default();
 
-        let reading = stream.try_clone()?;
         let post = Arc::clone(&waiting);
         let still = Arc::clone(&alive);
         let heard = Arc::clone(&sink);
+        let theirs = Arc::clone(&screens);
         std::thread::Builder::new()
             .name("shikisha-cdp".into())
             .spawn(move || {
-                read_frames(reading, post, Arc::clone(&heard));
+                read_messages(from, post, Arc::clone(&heard), theirs);
                 still.store(false, Ordering::Relaxed);
                 // The browser is gone, and nothing more will be said about
                 // its pages: whoever listens is told that once, in the
@@ -805,11 +938,12 @@ impl Cdp {
             })?;
 
         Ok(Self {
-            out: Arc::new(Mutex::new(Box::new(sock))),
+            out: Arc::new(Mutex::new(Box::new(to))),
             next: Arc::new(AtomicU64::new(1)),
             waiting,
             sink,
             alive,
+            screens,
         })
     }
 
@@ -832,12 +966,7 @@ impl Cdp {
 
         let (tx, rx) = channel();
         self.waiting.lock().unwrap().insert(id, tx);
-        let sent = {
-            let mut out = self.out.lock().unwrap();
-            out.write_all(&crate::ws::client_encode(crate::ws::Op::Text, msg.to_string().as_bytes()))
-                .and_then(|()| out.flush())
-        };
-        if let Err(e) = sent {
+        if let Err(e) = say(&self.out, &msg) {
             self.waiting.lock().unwrap().remove(&id);
             return Err(e.into());
         }
@@ -867,83 +996,298 @@ impl Cdp {
     }
 }
 
-fn split_ws(url: &str) -> anyhow::Result<(String, String)> {
-    let rest = url
-        .strip_prefix("ws://")
-        .ok_or_else(|| anyhow::anyhow!("the browser named an address this cannot open: {url}"))?;
-    let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
-    Ok((host.to_string(), format!("/{path}")))
-}
-
-fn read_until_headers_end(stream: &std::net::TcpStream) -> anyhow::Result<()> {
-    let mut s = stream.try_clone()?;
-    let mut seen = Vec::new();
-    let mut one = [0u8; 1];
-    while seen.len() < 8192 {
-        if s.read(&mut one)? == 0 {
-            anyhow::bail!("the browser closed the connection while being greeted");
-        }
-        seen.push(one[0]);
-        if seen.ends_with(b"\r\n\r\n") {
-            return Ok(());
-        }
-    }
-    anyhow::bail!("the browser's greeting never ended")
-}
-
-/// Read frames until the far side stops, handing each answer to whoever asked
-/// and everything else to the sink.
+/// Read what the browser says until it stops, handing each answer to whoever
+/// asked, what belongs to a DevTools screen to that screen, and everything
+/// else to the sink.
 ///
 /// With no sink installed, events are dropped where they arrive: a queue
 /// nobody drains is a memory leak with a schedule.
-fn read_frames(
-    stream: std::net::TcpStream,
+fn read_messages(
+    from: std::fs::File,
     waiting: Arc<Mutex<std::collections::HashMap<u64, Sender<serde_json::Value>>>>,
     sink: Arc<Mutex<Option<Sink>>>,
+    screens: Arc<Mutex<Screens>>,
 ) {
-    let mut s = std::io::BufReader::new(stream);
-    let mut whole = Vec::new();
+    use std::io::BufRead as _;
+    let mut from = std::io::BufReader::with_capacity(64 * 1024, from);
+    let mut one = Vec::new();
     loop {
-        let Some((fin, opcode, payload)) = crate::ws::read_server_frame(&mut s) else {
+        one.clear();
+        // Each thing said ends with a zero; one that does not is the pipe
+        // ending in the middle of it
+        if !matches!(from.read_until(0, &mut one), Ok(n) if n > 0) || one.pop() != Some(0) {
             return;
-        };
-        match opcode {
-            // continuation, text, binary
-            0x0..=0x2 => {
-                whole.extend_from_slice(&payload);
-                if !fin {
-                    continue;
-                }
-                let text = std::mem::take(&mut whole);
-                if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&text) {
-                    match v.get("id").and_then(|i| i.as_u64()) {
-                        Some(id) => {
-                            if let Some(tx) = waiting.lock().unwrap().remove(&id) {
-                                let _ = tx.send(v);
-                            }
-                        }
-                        None => {
-                            let held = sink.lock().unwrap_or_else(|e| e.into_inner());
-                            if let (Some(f), Some(method)) =
-                                (held.as_ref(), v.get("method").and_then(|m| m.as_str()))
-                            {
-                                f(Event {
-                                    session: v
-                                        .get("sessionId")
-                                        .and_then(|s| s.as_str())
-                                        .map(str::to_string),
-                                    method: method.to_string(),
-                                    params: v.get("params").cloned().unwrap_or_default(),
-                                });
-                            }
-                        }
-                    }
+        }
+        let Ok(v) = serde_json::from_slice::<serde_json::Value>(&one) else { continue };
+        let Some(v) = screens.lock().unwrap_or_else(|e| e.into_inner()).take(v) else { continue };
+        match v.get("id").and_then(|i| i.as_u64()) {
+            Some(id) => {
+                if let Some(tx) = waiting.lock().unwrap().remove(&id) {
+                    let _ = tx.send(v);
                 }
             }
-            0x8 => return, // close
-            _ => {}        // ping/pong: the browser does not need ours
+            None => {
+                let held = sink.lock().unwrap_or_else(|e| e.into_inner());
+                if let (Some(f), Some(method)) = (held.as_ref(), v.get("method").and_then(|m| m.as_str())) {
+                    f(Event {
+                        session: v.get("sessionId").and_then(|s| s.as_str()).map(str::to_string),
+                        method: method.to_string(),
+                        params: v.get("params").cloned().unwrap_or_default(),
+                    });
+                }
+            }
         }
     }
+}
+
+// ── a page's DevTools screen ──────────────────────────────────────────────
+//
+// The browser carries its own DevTools screen, which talks the DevTools
+// protocol over a WebSocket it is given the address of. The browser's own
+// port would be that address, and it answers anybody on the machine about
+// every page -- so the browser has none (see `Wire`), and the screen is
+// given this instead: a door on the loopback that needs a key made at each
+// start, is answered only for the screen itself (the origin it connects
+// from), and reaches the one page it names, through a session of its own on
+// the line this program already has.
+
+/// The one origin a connection is answered from
+const SCREEN_ORIGIN: &str = "devtools://devtools";
+
+/// The most a DevTools screen may say in one message: a command, or a script
+/// pasted into its console
+const SCREEN_COMMAND: usize = 8 * 1024 * 1024;
+
+/// How far behind a DevTools screen may fall before it is let go. A page
+/// that says a great deal to a screen that has stopped reading -- a tab
+/// asleep, a line gone slow -- would otherwise be kept here without end
+const SCREEN_BEHIND: usize = 64 * 1024 * 1024;
+
+/// Where a browser's DevTools screens connect
+struct ScreenDoor {
+    port: u16,
+    key: String,
+}
+
+/// One screen's way out, and how much is waiting on it
+struct ScreenLine {
+    out: Sender<Vec<u8>>,
+    behind: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+/// The DevTools screens open on a browser's pages, as the reading thread
+/// needs them: which of what the browser says is whose
+#[derive(Default)]
+struct Screens {
+    next: u64,
+    lines: std::collections::HashMap<u64, ScreenLine>,
+    /// Whose each session is: the screen's own on its page (`true`), or one
+    /// the page handed it -- a frame, a worker
+    sessions: std::collections::HashMap<String, (u64, bool)>,
+    /// What each screen is waiting to hear about: this line's number for the
+    /// question, and the screen's own
+    asked: std::collections::HashMap<u64, (u64, serde_json::Value)>,
+}
+
+impl Screens {
+    /// A screen's line, begun: its number, and the session it speaks through
+    fn begin(&mut self, session: &str, out: Sender<Vec<u8>>, behind: Arc<std::sync::atomic::AtomicUsize>) -> u64 {
+        self.next += 1;
+        self.lines.insert(self.next, ScreenLine { out, behind });
+        self.sessions.insert(session.to_string(), (self.next, true));
+        self.next
+    }
+
+    /// A screen gone: nothing more is kept for it or sent to it
+    fn end(&mut self, screen: u64) {
+        self.lines.remove(&screen);
+        self.sessions.retain(|_, (s, _)| *s != screen);
+        self.asked.retain(|_, (s, _)| *s != screen);
+    }
+
+    /// Something for a screen, on its way. One too far behind is let go
+    fn hand(&mut self, screen: u64, said: &serde_json::Value) {
+        let frame = crate::ws::encode(crate::ws::Op::Text, said.to_string().as_bytes());
+        self.send(screen, frame);
+    }
+
+    fn send(&mut self, screen: u64, frame: Vec<u8>) {
+        let Some(line) = self.lines.get(&screen) else { return };
+        let behind = line.behind.fetch_add(frame.len(), Ordering::Relaxed) + frame.len();
+        if behind > SCREEN_BEHIND || line.out.send(frame).is_err() {
+            self.end(screen);
+        }
+    }
+
+    /// Something the browser said: handed to the screen it is for, or given
+    /// back when it is for no screen
+    fn take(&mut self, mut v: serde_json::Value) -> Option<serde_json::Value> {
+        if self.lines.is_empty() {
+            return Some(v);
+        }
+        let session = v.get("sessionId").and_then(|s| s.as_str()).map(str::to_string);
+        let (screen, own) = match v.get("id").and_then(|i| i.as_u64()) {
+            // An answer: to the screen that asked, under the number it asked by
+            Some(id) => {
+                let Some((screen, theirs)) = self.asked.remove(&id) else { return Some(v) };
+                v["id"] = theirs;
+                (screen, session.as_deref().and_then(|s| self.sessions.get(s)).is_none_or(|(_, own)| *own))
+            }
+            // Something a session of a screen's says by itself
+            None => {
+                let Some(&(screen, own)) = session.as_deref().and_then(|s| self.sessions.get(s)) else { return Some(v) };
+                // The sessions the page hands the screen are the screen's too
+                let named = v.get("params").and_then(|p| p.get("sessionId")).and_then(|s| s.as_str());
+                match (v.get("method").and_then(|m| m.as_str()), named) {
+                    (Some("Target.attachedToTarget"), Some(s)) => {
+                        self.sessions.insert(s.to_string(), (screen, false));
+                    }
+                    (Some("Target.detachedFromTarget"), Some(s)) => {
+                        self.sessions.remove(s);
+                    }
+                    _ => {}
+                }
+                (screen, own)
+            }
+        };
+        // The screen believes it is connected to the page itself: what its
+        // own session says carries no session's name
+        if own && let Some(o) = v.as_object_mut() {
+            o.remove("sessionId");
+        }
+        self.hand(screen, &v);
+        None
+    }
+}
+
+impl Cdp {
+    /// Something a DevTools screen said, passed on to the browser as its
+    /// session's
+    fn from_screen(&self, screen: u64, own: &str, text: &str) {
+        let Ok(mut v) = serde_json::from_str::<serde_json::Value>(text) else { return };
+        let Some(o) = v.as_object_mut() else { return };
+        let theirs = o.get("id").cloned().unwrap_or_default();
+        let ours = self.next.fetch_add(1, Ordering::Relaxed);
+        {
+            let mut screens = self.screens.lock().unwrap_or_else(|e| e.into_inner());
+            match o.get("sessionId").and_then(|s| s.as_str()) {
+                None => {
+                    o.insert("sessionId".into(), own.into());
+                }
+                // One of its own (a frame's, a worker's), and only those: a
+                // name is not a way to another page of this browser
+                Some(s) if screens.sessions.get(s).is_some_and(|(of, _)| *of == screen) => {}
+                Some(_) => {
+                    let refused = serde_json::json!({ "id": theirs, "error": { "code": -32001, "message": "Session with given id not found." } });
+                    screens.hand(screen, &refused);
+                    return;
+                }
+            }
+            screens.asked.insert(ours, (screen, theirs));
+        }
+        o.insert("id".into(), ours.into());
+        let _ = say(&self.out, &v);
+    }
+}
+
+impl ScreenDoor {
+    /// Start answering on a port of the system's choosing, for screens on
+    /// the pages of the browser `cdp` is the line to
+    fn open(cdp: Cdp, closing: Arc<std::sync::atomic::AtomicBool>) -> std::io::Result<ScreenDoor> {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let port = listener.local_addr()?.port();
+        // 16 bytes: the key only has to outlast one run of the browser, and
+        // guessing it is a round trip to this machine per try
+        let key = crate::random_hex(16);
+        let want = key.clone();
+        std::thread::Builder::new().name("shikisha-devtools-door".into()).spawn(move || {
+            for stream in listener.incoming().flatten() {
+                if closing.load(Ordering::Relaxed) {
+                    return;
+                }
+                let (cdp, want) = (cdp.clone(), want.clone());
+                let _ = std::thread::Builder::new()
+                    .name("shikisha-devtools-line".into())
+                    .spawn(move || serve_screen(stream, port, &want, &cdp));
+            }
+        })?;
+        Ok(ScreenDoor { port, key })
+    }
+
+    /// What every screen's address begins with; the page's target follows
+    fn prefix(&self) -> String {
+        format!("devtools://devtools/bundled/devtools_app.html?ws=127.0.0.1:{}/devtools/{}/", self.port, self.key)
+    }
+}
+
+/// The page a request asked for: when the key, the origin and the address it
+/// was made to are all right, and nothing otherwise. The address as well as
+/// the key, so a name that only resolves to this machine is not a way in
+fn screen_admitted(asked: &crate::ws::Opening, port: u16, key: &str) -> Option<String> {
+    let (given, target) = asked.path.strip_prefix("/devtools/")?.split_once('/')?;
+    let here = asked.host == format!("127.0.0.1:{port}");
+    let ok = crate::crypto::token_eq(given, key) && asked.origin == SCREEN_ORIGIN && here && !asked.key.is_empty();
+    (ok && !target.is_empty() && target.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')).then(|| target.to_string())
+}
+
+fn serve_screen(stream: std::net::TcpStream, port: u16, key: &str, cdp: &Cdp) {
+    let Ok(read_side) = stream.try_clone() else { return };
+    let mut reader = std::io::BufReader::new(read_side);
+    let Some(asked) = crate::ws::read_opening(&mut reader) else { return };
+    let mut out = stream;
+    // A session of the screen's own on the page, apart from the one
+    // automation speaks through. A page that is not there is no session,
+    // and the screen is turned away like any other caller
+    let session = screen_admitted(&asked, port, key).and_then(|target| {
+        cdp.call(None, "Target.attachToTarget", serde_json::json!({ "targetId": target, "flatten": true }), CALL_MS)
+            .ok()
+            .and_then(|a| a.get("sessionId").and_then(|s| s.as_str()).map(str::to_string))
+    });
+    let Some(session) = session else {
+        let _ = out.write_all(crate::ws::TURNED_AWAY);
+        // The address carries the key, so it is not written down
+        crate::append_hook_log("chrome: a connection to the DevTools door was turned away");
+        return;
+    };
+    let let_go = || cdp.speaker().tell(None, "Target.detachFromTarget", serde_json::json!({ "sessionId": session }));
+    let Ok(write_side) = out.try_clone() else { return let_go() };
+    if out.write_all(crate::ws::welcome(&asked.key).as_bytes()).is_err() {
+        return let_go();
+    }
+    // What the page says goes out on a writer of its own, so a screen slow
+    // to read never holds up the thread every page's talk arrives on
+    let (said_tx, said_rx) = channel::<Vec<u8>>();
+    let behind: Arc<std::sync::atomic::AtomicUsize> = Default::default();
+    let screen = cdp.screens.lock().unwrap_or_else(|e| e.into_inner()).begin(&session, said_tx, Arc::clone(&behind));
+    std::thread::spawn(move || {
+        let mut w = write_side;
+        for frame in said_rx {
+            let sent = w.write_all(&frame).and_then(|()| w.flush());
+            behind.fetch_sub(frame.len(), Ordering::Relaxed);
+            if sent.is_err() {
+                break;
+            }
+        }
+        // Let go of -- too far behind, or gone -- so the reading below ends
+        let _ = w.shutdown(std::net::Shutdown::Both);
+    });
+    loop {
+        match crate::ws::read_frame_upto(&mut reader, SCREEN_COMMAND) {
+            Ok((crate::ws::Op::Text, body)) => {
+                if let Ok(text) = String::from_utf8(body) {
+                    cdp.from_screen(screen, &session, &text);
+                }
+            }
+            Ok((crate::ws::Op::Ping, body)) => {
+                let pong = crate::ws::encode(crate::ws::Op::Pong, &body);
+                cdp.screens.lock().unwrap_or_else(|e| e.into_inner()).send(screen, pong);
+            }
+            Ok((crate::ws::Op::Close, _)) | Err(_) => break,
+            Ok(_) => {}
+        }
+    }
+    cdp.screens.lock().unwrap_or_else(|e| e.into_inner()).end(screen);
+    let_go();
 }
 
 // ── the pages the runtime has open ────────────────────────────────────────
@@ -1216,6 +1560,23 @@ impl Pages {
             // The browser itself, rather than a page in it: downloads are
             // reported there, whichever page started them
             if ev.session.is_none() {
+                // A window one of the pages opened. This browser has no
+                // window to show it in: nobody would ever see it, and it
+                // would run on, unseen, for as long as the browser does. It
+                // is closed, and what it was for is opened as a tab instead
+                // (see `Page.windowOpen` below)
+                if ev.method == "Target.targetCreated"
+                    && let Some(info) = ev.params.get("targetInfo")
+                    && info.get("type").and_then(|t| t.as_str()) == Some("page")
+                    && let Some(opener) = info.get("openerId").and_then(|o| o.as_str())
+                    && let Some(target) = info.get("targetId").and_then(|t| t.as_str())
+                {
+                    let book = seen.lock().unwrap_or_else(|e| e.into_inner());
+                    if book.targets.contains_key(opener) && !book.targets.contains_key(target) {
+                        speaker.tell(None, "Target.closeTarget", serde_json::json!({ "targetId": target }));
+                    }
+                    return;
+                }
                 heard_download(&seen, &key, &staging, &ev.method, &ev.params);
                 return;
             }
@@ -1236,6 +1597,15 @@ impl Pages {
                     }
                     None => speaker.tell(Some(&session), crate::pagedialog::ANSWER, serde_json::json!({ "accept": true })),
                 },
+                // A link that opens in a new tab, or `window.open`: said to
+                // the loop, which opens the address as a tab beside this one
+                "Page.windowOpen" => {
+                    let url = ev.params.get("url").and_then(|u| u.as_str()).unwrap_or_default().to_string();
+                    let by_hand = ev.params.get("userGesture").and_then(|g| g.as_bool()).unwrap_or(false);
+                    if !url.is_empty() {
+                        book.mail.push(shikisha_shared::Ev::PageWindow { from: Some(page), url, by_hand });
+                    }
+                }
                 "Page.javascriptDialogClosed" => {
                     let said = shikisha_shared::Ev::PageDialogGone { from: Some(page) };
                     crate::pagedialog::heard(&said);
@@ -1348,6 +1718,11 @@ impl Pages {
                 _ => {}
             }
         });
+        // Told of every page there comes to be, so one a page opened by
+        // itself is heard of (and closed, above)
+        if let Err(e) = chrome.call("Target.setDiscoverTargets", serde_json::json!({ "discover": true })) {
+            crate::append_hook_log(&format!("chrome: windows the pages open will not be heard of: {e}"));
+        }
     }
 
     /// The browser and session behind a name.
@@ -1921,7 +2296,7 @@ impl shikisha_shared::BrowserHost for Pages {
     ) -> anyhow::Result<()> {
         // The web, or the DevTools screen of a page in one of this program's
         // own browsers -- no other `devtools://` address
-        let own_screen = self.browsers.borrow().values().any(|c| url.starts_with(&c.screen_prefix()));
+        let own_screen = self.browsers.borrow().values().any(|c| c.made_screen(url));
         if !shikisha_shared::is_openable(url) && !own_screen {
             anyhow::bail!(crate::i18n::tp("err.browser.bad_url", &[("url", url)]));
         }
@@ -2115,7 +2490,7 @@ impl shikisha_shared::BrowserHost for Pages {
         let page = open.get(name).ok_or_else(|| {
             anyhow::anyhow!(crate::i18n::tp("err.chrome.no_such_page", &[("name", name)]))
         })?;
-        Ok(page.browser.devtools_screen(&page.target))
+        page.browser.devtools_screen(&page.target)
     }
 
     /// There is only ever one recorder, so arming a page silences the rest.
@@ -3007,12 +3382,271 @@ mod tests {
 <a id=dl href="/report.txt">保存</a>
 "#;
 
-    /// The address a browser prints is turned into somewhere to connect
+    /// A window a page asks for is said to the loop, with whether a press
+    /// asked, and is not left running where nobody can see it
     #[test]
-    fn the_browsers_address_is_split_into_host_and_path() {
-        let (host, path) = split_ws("ws://127.0.0.1:9222/devtools/browser/abc-123").unwrap();
-        assert_eq!(host, "127.0.0.1:9222");
-        assert_eq!(path, "/devtools/browser/abc-123");
-        assert!(split_ws("http://127.0.0.1:9222/").is_err(), "it accepted an address that is not ws");
+    #[ignore = "needs a browser on this machine"]
+    fn a_window_a_page_asks_for_is_reported_and_not_left_running_unseen() {
+        use crate::pageops::Speaks as _;
+        use shikisha_shared::{BrowserHost, BrowserProfile, Sel};
+
+        assert!(found().is_some(), "this machine has no browser");
+        let site = serve();
+        let store = std::env::temp_dir().join(format!("shikisha-pages-{}", crate::random_hex(8)));
+        let pages = Pages::under(store, true);
+        let name = "opens-windows";
+        pages.open_child(name, &site, (0, 0, 900, 700), BrowserProfile::shared_default()).expect("the page does not open");
+        waited(&pages, |ev| match ev {
+            shikisha_shared::Ev::Ready { from: Some(n), complete: true, .. } if n == name => Some(()),
+            _ => None,
+        })
+        .expect("the page does not report that loading finished");
+        let chrome = pages.browsers.borrow().values().next().map(Rc::clone).unwrap();
+        // The pages the browser has, less its own screens
+        let standing = || {
+            let all = chrome.call("Target.getTargets", serde_json::json!({})).unwrap();
+            all.get("targetInfos")
+                .and_then(|t| t.as_array())
+                .map(|t| t.iter().filter(|i| i.get("type").and_then(|k| k.as_str()) == Some("page")).count())
+                .unwrap_or(0)
+        };
+        let before = standing();
+        let asked = |pages: &Pages| {
+            waited(pages, |ev| match ev {
+                shikisha_shared::Ev::PageWindow { from: Some(n), url, by_hand } if n == name => Some((url.clone(), *by_hand)),
+                _ => None,
+            })
+        };
+        let settled = |what: &str| {
+            let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while standing() != before {
+                assert!(std::time::Instant::now() < end, "{what}: the window the page opened is still running ({} pages, {before} before)", standing());
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        };
+
+        // `window.open` from a script by itself, before anything was pressed
+        // on the page: reported as that, when the browser lets it open at
+        // all, and closed either way. Asked of the page as the page's own
+        // script would -- what automation evaluates counts as a press
+        let (_, session) = pages.at(Some(name)).unwrap();
+        chrome
+            .call_page(&session, "Runtime.evaluate", serde_json::json!({ "expression": "setTimeout(() => window.open('/by-script'), 0); 1" }))
+            .unwrap();
+        if let Some((url, by_hand)) = asked(&pages) {
+            assert_eq!(url, format!("{site}by-script"));
+            assert!(!by_hand, "a script by itself is taken for a press");
+        }
+        settled("a script's window");
+
+        // A link that opens in a new tab, pressed
+        pages
+            .eval(
+                Some(name),
+                "const a = document.createElement('a'); a.id = 'blank'; a.target = '_blank'; a.href = '/elsewhere?x=1'; a.textContent = 'elsewhere'; \
+                 a.style.cssText = 'position:fixed;left:10px;top:10px;font-size:30px;z-index:99999'; document.body.appendChild(a); return 1",
+                5_000,
+            )
+            .unwrap();
+        pages.click(Some(name), &Sel::Css("#blank".into()), 10_000).unwrap();
+        let (url, by_hand) = asked(&pages).expect("a link that opens a new tab was not reported");
+        assert_eq!(url, format!("{site}elsewhere?x=1"), "not the whole address");
+        assert!(by_hand, "a press on the page is not told from a script");
+        settled("a pressed link");
+
+        // The page that asked goes on
+        assert_eq!(pages.eval(Some(name), "return 1 + 1", 5_000).unwrap(), "2");
+    }
+
+    /// The browser answers on no port of its own, and a page's DevTools
+    /// screen reaches that page -- and only through the door, with its key
+    #[test]
+    #[ignore = "needs a browser on this machine"]
+    fn a_devtools_screen_reaches_its_page_through_the_door_and_the_browser_has_no_port() {
+        use crate::pageops::Speaks as _;
+        use shikisha_shared::{BrowserHost, BrowserProfile};
+        use std::io::Read as _;
+
+        assert!(found().is_some(), "this machine has no browser");
+        let site = serve();
+        let store = std::env::temp_dir().join(format!("shikisha-pages-{}", crate::random_hex(8)));
+        let pages = Pages::under(store.clone(), true);
+        let name = "inspected";
+        pages.open_child(name, &site, (0, 0, 900, 700), BrowserProfile::shared_default()).expect("the page does not open");
+        waited(&pages, |ev| match ev {
+            shikisha_shared::Ev::Ready { from: Some(n), complete: true, .. } if n == name => Some(()),
+            _ => None,
+        })
+        .expect("the page does not report that loading finished");
+
+        // A browser that answers on a port writes the port down in its profile
+        let written = |root: &std::path::Path| {
+            std::fs::read_dir(root).into_iter().flatten().flatten().any(|d| d.path().join("DevToolsActivePort").exists())
+        };
+        assert!(!written(&store), "the browser is answering on a port of its own");
+
+        let screen = pages.devtools_url(Some(name)).expect("no DevTools screen for the page");
+        let rest = screen.strip_prefix("devtools://devtools/bundled/devtools_app.html?ws=").expect("not the browser's own screen");
+        let (host, path) = rest.split_once('/').unwrap();
+        let path = format!("/{path}");
+        assert!(!written(&store), "asking for a screen opened the browser's own port");
+
+        // One opening, and what came back first
+        let open = |path: &str, origin: Option<&str>| {
+            let mut s = std::net::TcpStream::connect(host).expect("the door is not there");
+            s.set_read_timeout(Some(std::time::Duration::from_secs(10))).unwrap();
+            let origin = origin.map(|o| format!("Origin: {o}\r\n")).unwrap_or_default();
+            write!(s, "GET {path} HTTP/1.1\r\nHost: {host}\r\n{origin}Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n").unwrap();
+            let mut head = Vec::new();
+            let mut one = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") && s.read(&mut one).is_ok_and(|n| n == 1) {
+                head.push(one[0]);
+            }
+            (s, String::from_utf8_lossy(&head).into_owned())
+        };
+        // Another program on the machine, with or without the key; a web
+        // page that learned the address; the browser's own way of asking
+        for (path, origin) in [
+            (path.as_str(), None),
+            (path.as_str(), Some("https://example.com")),
+            ("/devtools/page/x", Some(SCREEN_ORIGIN)),
+            ("/json/version", None),
+            (&format!("{}0", path.rsplit_once('/').unwrap().0), Some(SCREEN_ORIGIN)),
+        ] {
+            let (_, head) = open(path, origin);
+            assert!(head.starts_with("HTTP/1.1 403"), "{path} from {origin:?} was answered: {head}");
+        }
+
+        // The screen itself: what it asks reaches the page, and the answer
+        // comes back as if the page were all there is
+        let (mut s, head) = open(&path, Some(SCREEN_ORIGIN));
+        assert!(head.starts_with("HTTP/1.1 101"), "the screen was turned away: {head}");
+        let ask = serde_json::json!({"id": 7, "method": "Runtime.evaluate", "params": {"expression": "document.title", "returnByValue": true}});
+        s.write_all(&crate::ws::client_encode(crate::ws::Op::Text, ask.to_string().as_bytes())).unwrap();
+        let (_, _, body) = crate::ws::read_server_frame(&mut s).expect("the page did not answer the screen");
+        let answer: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(answer.get("id"), Some(&serde_json::json!(7)), "{answer}");
+        assert!(answer.get("sessionId").is_none(), "{answer}");
+        let title: String = serde_json::from_str(&pages.eval(Some(name), "return document.title", 5_000).unwrap()).unwrap();
+        assert!(!title.is_empty());
+        assert_eq!(answer.pointer("/result/result/value").and_then(|v| v.as_str()), Some(title.as_str()), "{answer}");
+        // A name is not a way to another page of this browser
+        let stray = serde_json::json!({"id": 8, "sessionId": "0123456789ABCDEF", "method": "Runtime.evaluate", "params": {"expression": "1"}});
+        s.write_all(&crate::ws::client_encode(crate::ws::Op::Text, stray.to_string().as_bytes())).unwrap();
+        let (_, _, body) = crate::ws::read_server_frame(&mut s).unwrap();
+        let answer: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(answer.get("id") == Some(&serde_json::json!(8)) && answer.get("error").is_some(), "{answer}");
+        drop(s);
+
+        // And the browser's own screen, opened as a page: it connects, and
+        // is talking to the page
+        pages.open_child("its-screen", &screen, (0, 0, 900, 700), BrowserProfile::shared_default()).expect("the screen does not open");
+        let chrome = pages.browsers.borrow().values().next().map(Rc::clone).unwrap();
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        loop {
+            let screens = chrome.cdp.screens.lock().unwrap();
+            if !screens.lines.is_empty() && screens.next >= 2 {
+                break;
+            }
+            drop(screens);
+            assert!(std::time::Instant::now() < end, "the browser's own DevTools screen never connected");
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        // Automation goes on beside it
+        assert_eq!(pages.eval(Some(name), "return 1 + 1", 5_000).unwrap(), "2");
+    }
+
+    /// The door for DevTools screens lets in the screen, with the key, at
+    /// the address it was given -- and nobody else
+    #[test]
+    fn the_devtools_door_is_opened_by_its_key_from_the_screen_alone() {
+        let asked = |path: &str, origin: &str, host: &str| crate::ws::Opening {
+            path: path.into(),
+            origin: origin.into(),
+            host: host.into(),
+            key: "dGhlIHNhbXBsZSBub25jZQ==".into(),
+        };
+        let ok = asked("/devtools/k3y/AB12CD", SCREEN_ORIGIN, "127.0.0.1:4000");
+        assert_eq!(screen_admitted(&ok, 4000, "k3y").as_deref(), Some("AB12CD"));
+        // Another program on the machine: no key, or a guess at one
+        assert_eq!(screen_admitted(&asked("/devtools/page/AB12CD", SCREEN_ORIGIN, "127.0.0.1:4000"), 4000, "k3y"), None);
+        assert_eq!(screen_admitted(&asked("/devtools/k3/AB12CD", SCREEN_ORIGIN, "127.0.0.1:4000"), 4000, "k3y"), None);
+        assert_eq!(screen_admitted(&asked("/json/list", SCREEN_ORIGIN, "127.0.0.1:4000"), 4000, "k3y"), None);
+        // A web page that learned the address: it speaks from its own origin,
+        // or from none, or through a name that only resolves to this machine
+        assert_eq!(screen_admitted(&asked("/devtools/k3y/AB12CD", "https://example.com", "127.0.0.1:4000"), 4000, "k3y"), None);
+        assert_eq!(screen_admitted(&asked("/devtools/k3y/AB12CD", "", "127.0.0.1:4000"), 4000, "k3y"), None);
+        assert_eq!(screen_admitted(&asked("/devtools/k3y/AB12CD", SCREEN_ORIGIN, "rebound.example.com:4000"), 4000, "k3y"), None);
+        // Not an opening at all, and not a page's name
+        assert_eq!(screen_admitted(&crate::ws::Opening { key: String::new(), ..ok.clone() }, 4000, "k3y"), None);
+        assert_eq!(screen_admitted(&asked("/devtools/k3y/", SCREEN_ORIGIN, "127.0.0.1:4000"), 4000, "k3y"), None);
+        assert_eq!(screen_admitted(&asked("/devtools/k3y/a/../b", SCREEN_ORIGIN, "127.0.0.1:4000"), 4000, "k3y"), None);
+    }
+
+    /// What the browser says is handed to the DevTools screen it is for, as
+    /// that screen expects to hear it, and to nobody else
+    #[test]
+    fn a_devtools_screen_hears_its_own_page_and_nothing_else() {
+        let heard = |rx: &std::sync::mpsc::Receiver<Vec<u8>>| -> Vec<serde_json::Value> {
+            rx.try_iter()
+                .map(|frame| {
+                    let (op, body) = crate::ws::read_frame_upto(&mut masked(&frame).as_slice(), SCREEN_COMMAND).unwrap();
+                    assert_eq!(op, crate::ws::Op::Text);
+                    serde_json::from_slice(&body).unwrap()
+                })
+                .collect()
+        };
+        let mut screens = Screens::default();
+        let said = |v: serde_json::Value| v;
+        // No screen: everything is this program's own
+        assert!(screens.take(said(serde_json::json!({"id": 1, "result": {}}))).is_some());
+
+        let (tx, rx) = channel();
+        let behind: Arc<std::sync::atomic::AtomicUsize> = Default::default();
+        let one = screens.begin("S1", tx, Arc::clone(&behind));
+        screens.asked.insert(70, (one, serde_json::json!(3)));
+
+        // Its answer comes back under the number it asked by, with no
+        // session's name on it; automation's answer is automation's
+        assert!(screens.take(serde_json::json!({"id": 70, "sessionId": "S1", "result": {"ok": true}})).is_none());
+        assert!(screens.take(serde_json::json!({"id": 71, "sessionId": "P", "result": {}})).is_some());
+        assert_eq!(heard(&rx), [serde_json::json!({"id": 3, "result": {"ok": true}})]);
+        assert!(screens.asked.is_empty());
+
+        // What its session says by itself, and what another page says
+        assert!(screens.take(serde_json::json!({"method": "DOM.documentUpdated", "sessionId": "S1", "params": {}})).is_none());
+        assert!(screens.take(serde_json::json!({"method": "Page.frameNavigated", "sessionId": "P", "params": {}})).is_some());
+        assert!(screens.take(serde_json::json!({"method": "Target.targetCreated", "params": {}})).is_some());
+        assert_eq!(heard(&rx), [serde_json::json!({"method": "DOM.documentUpdated", "params": {}})]);
+
+        // A frame or a worker the page hands it is its own too, and keeps
+        // its name; once taken away it is nobody's
+        assert!(screens.take(serde_json::json!({"method": "Target.attachedToTarget", "sessionId": "S1", "params": {"sessionId": "W1"}})).is_none());
+        assert!(screens.take(serde_json::json!({"method": "Runtime.consoleAPICalled", "sessionId": "W1", "params": {}})).is_none());
+        assert_eq!(heard(&rx).last(), Some(&serde_json::json!({"method": "Runtime.consoleAPICalled", "sessionId": "W1", "params": {}})));
+        assert!(screens.take(serde_json::json!({"method": "Target.detachedFromTarget", "sessionId": "S1", "params": {"sessionId": "W1"}})).is_none());
+        assert!(screens.take(serde_json::json!({"method": "Runtime.consoleAPICalled", "sessionId": "W1", "params": {}})).is_some());
+        let _ = heard(&rx);
+        assert_eq!(behind.load(Ordering::Relaxed) > 0, true, "what waits on the screen is not counted");
+
+        // Too far behind, it is let go: nothing more is kept for it
+        behind.store(SCREEN_BEHIND, Ordering::Relaxed);
+        assert!(screens.take(serde_json::json!({"method": "DOM.documentUpdated", "sessionId": "S1", "params": {}})).is_none());
+        assert!(screens.lines.is_empty() && screens.sessions.is_empty());
+        assert!(screens.take(serde_json::json!({"method": "DOM.documentUpdated", "sessionId": "S1", "params": {}})).is_some());
+    }
+
+    /// A frame as a server writes it, turned into one a server can read
+    fn masked(frame: &[u8]) -> Vec<u8> {
+        let (head, len) = match frame[1] {
+            126 => (4, u16::from_be_bytes([frame[2], frame[3]]) as usize),
+            127 => (10, u64::from_be_bytes(frame[2..10].try_into().unwrap()) as usize),
+            n => (2, n as usize),
+        };
+        let mut out = frame[..head].to_vec();
+        out[1] |= 0x80;
+        out.extend_from_slice(&[0, 0, 0, 0]);
+        out.extend_from_slice(&frame[head..head + len]);
+        out
     }
 }

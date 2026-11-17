@@ -369,7 +369,11 @@ and the terminal run over there.
   and leaving it empty keeps Auto on;
 - **AI** — what runs in the new folder. The default is Settings > AI agents > Assistant AI,
 - **More** — one folder per AI, where it goes, things git does not carry (`.env`,
-  `node_modules`) to bring along, and the exact `git worktree add` line.
+  `node_modules`) to bring along, and the exact `git worktree add` line. When the
+  branch grows from a branch on the server (`origin/main`), a `git fetch` of that
+  one branch is shown above it and runs first, so the new branch starts from what
+  the server has now. Without a network the fetch is skipped and the branch grows
+  from the base as it stands on the machine.
 
 The places AI tools keep for themselves inside a project (Claude Code's
 `.claude/worktrees/`, `.claude/checkpoints/`, `.claude/mailbox/`, and the files where

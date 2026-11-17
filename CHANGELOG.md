@@ -139,8 +139,31 @@ once it reaches its first tagged release.
   one line. "Leave this page?" is still never asked, and the app's own
   pages (the settings, the guide) are answered as before. A browser on
   another device goes on pressing OK until both ends are this version.
+- **A new worktree starts from the base as the server has it now.** A new
+  branch was cut from `origin/main` as the checkout last saw it, which
+  could be days old, so the branch started behind. Before cutting, the app
+  now fetches that one branch from the server. The line is shown with the
+  `git worktree add` line under **More**. With no network, or a server
+  that does not answer in twenty seconds, the branch is cut from the base
+  as it stands on the machine, as before. A base that is a local branch,
+  a tag or a commit is not fetched.
+- **The server's browser no longer listens on a port.** The browser the
+  server version runs was reached through a DevTools port on the
+  loopback, which any program of any account on the same machine could
+  also connect to and drive its pages, the signed-in ones included. The
+  app now talks to that browser over a private pipe, and the browser
+  opens no port. **Open DevTools beside it** still works: DevTools
+  connects through a door of the app's own that needs a key made at each
+  start and reaches only the page it was opened for.
 
 ### Fixed
+- **A link that opens in a new tab, in the server's browser.** On the
+  server version, a `target="_blank"` link or `window.open` did nothing
+  that anybody could see: the new window was made where no screen shows
+  it and stayed running. The address now opens as a browser tab in the
+  same folder, beside the page that asked. It comes to the front when a
+  press on the page opened it; one a script opened by itself is added
+  without taking the screen. The same address is not opened twice.
 - **The git column follows a commit or checkout typed into a terminal.**
   It read its folder again only when an AI tab there finished work, so
   after `git commit` or `git checkout` in a plain terminal it went on

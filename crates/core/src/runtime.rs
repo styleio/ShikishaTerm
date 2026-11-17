@@ -3269,6 +3269,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // A reopened tab to bring into view once it is on screen, and until when
     // to keep looking for it
     let mut reveal: Option<(String, Instant)> = None;
+    // When each page last had a tab opened for a window it asked for
+    let mut page_windows_lately: std::collections::HashMap<String, Vec<Instant>> = Default::default();
     // Pages whose console said something since the panel was last told, the
     // newest line each surface was sent per page, and when that last was.
     // Sent in batches rather than per line: a page logging in a loop would
@@ -9126,6 +9128,48 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 append_hook_log(&format!("notice: not shown ({e})"));
             }
         }
+        // A window a page asked for in a browser with none to give (the
+        // server's): the address is opened as a tab of the page's folder,
+        // beside it. Brought to the front only when a press on the page
+        // asked -- a tab a script opened by itself is there to be found, and
+        // does not take the screen from what the person is doing
+        for (child, url, by_hand) in shell.mail().take_page_windows() {
+            let (Some(desk), Some(key)) = (desks.get(desk_index), caps.name_of_child(&child)) else {
+                append_hook_log(&format!("page window: dropped one from {child}, a page of no desk on screen"));
+                continue;
+            };
+            let url = url.trim().to_string();
+            // Where its tab stands. A page that is nobody's tab -- one a
+            // script opened and placed -- has no row to put another in
+            let Some(folder) = desk.page_tab(&key).map(|ft| desk.folder_of(ft).and_then(|f| f.place()).unwrap_or_default()) else {
+                append_hook_log(&format!("page window: dropped one from {child}, which is not a tab ({url})"));
+                continue;
+            };
+            if !shikisha_shared::is_openable(&url) {
+                append_hook_log(&format!("page window: dropped one from {child}, not an address a tab opens ({url})"));
+                continue;
+            }
+            // A page may not fill the row: so many in a while, and no more
+            let now = Instant::now();
+            let lately = page_windows_lately.entry(child.clone()).or_default();
+            lately.retain(|at| now.duration_since(*at) < PAGE_WINDOWS_WITHIN);
+            if lately.len() >= PAGE_WINDOWS_MOST {
+                append_hook_log(&format!("page window: dropped one from {child}, which has opened {PAGE_WINDOWS_MOST} in a short while ({url})"));
+                continue;
+            }
+            match page_in_folder(desk, &folder, &url, &page_name_of(&url)) {
+                Ok((id, fresh)) => {
+                    if fresh {
+                        lately.push(now);
+                        watcher.poke();
+                    }
+                    if by_hand {
+                        reveal = Some((id, Instant::now() + Duration::from_secs(if fresh { 20 } else { 10 })));
+                    }
+                }
+                Err(e) => flash = Some(e),
+            }
+        }
         // A page asking about them: told what was said about its site, or the
         // question put up when it wants one and nobody has answered yet
         for (child, site, ask) in shell.mail().take_notice_asks() {
@@ -12658,11 +12702,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     file.display().to_string(),
                     file.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "page".into()),
                 )),
-                (None, "web") if shikisha_shared::is_openable(&press.target) => Some((
-                    press.target.trim().to_string(),
-                    // The address's host is what a person would call the page
-                    press.target.split("//").nth(1).and_then(|r| r.split(['/', '?', '#']).next()).unwrap_or("page").to_string(),
-                )),
+                (None, "web") if shikisha_shared::is_openable(&press.target) => Some((press.target.trim().to_string(), page_name_of(&press.target))),
                 _ => None,
             };
             if press.act == "page"
@@ -14461,7 +14501,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         Some(&ask.base),
                         (!ask.at.trim().is_empty()).then_some(at.as_path()),
                         env,
-                    ),
+                    )
+                    // The one step of it that talks to a server signs in as
+                    // the project's account
+                    .map(|mut plan| {
+                        plan.git = desks.get(desk_index).map(|d| d.git_use_of_folder(&from).0).unwrap_or_default();
+                        plan
+                    }),
                 };
                 // A checkout's machine being prepared is copied half-installed:
                 // the worktree would miss what the project is being given
@@ -14653,7 +14699,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     // far it has got, and one that fails says so on its own row
                     // while the others become cards
                     for (ai, plan) in fanned {
-                        let Ok(plan) = plan else { continue };
+                        let Ok(mut plan) = plan else { continue };
+                        // As for one worktree: the step that talks to a
+                        // server signs in as the project's account
+                        if plan.host.is_none() {
+                            plan.git = desks.get(desk_index).map(|d| d.git_use_of_folder(&from).0).unwrap_or_default();
+                        }
                         let project_key = project_key_of(desks.get(desk_index), &plan.project);
                         // Each folder's own branch is the drawn name with its
                         // AI on the end, so each is drawn in its own right
@@ -17663,6 +17714,17 @@ pub fn files_at(panel: &str, surfaces: &[Surface], tabs: &[Tab]) -> Option<Files
         _ => Some(p.dir).filter(|d| !d.as_os_str().is_empty()).map(FilesAt::Here),
     }
 }
+
+/// What a person would call the page at an address: its host
+fn page_name_of(url: &str) -> String {
+    url.trim().split("//").nth(1).and_then(|r| r.split(['/', '?', '#']).next()).filter(|h| !h.is_empty()).unwrap_or("page").to_string()
+}
+
+/// How many tabs one page may have opened for the windows it asks for, in
+/// how long. A page a person is using opens one now and then; one that asks
+/// without end is not given the row of tabs to fill
+const PAGE_WINDOWS_MOST: usize = 6;
+const PAGE_WINDOWS_WITHIN: Duration = Duration::from_secs(60);
 
 /// A browser tab showing `url` in the folder `key` (a place key), written
 /// down beside the folder's other tabs so it is there again next time. One
@@ -23908,6 +23970,7 @@ mod tests {
             sign_in: Default::default(),
             preparing: Default::default(),
             private: false,
+            git: Default::default(),
         };
         let taken = far_in_use(Some(&desk), plan("/home/user/site-fix", vm("m0"))).unwrap_err();
         let taken = taken.downcast_ref::<crate::worktree::InUse>().expect("a second machine on the same place was made");

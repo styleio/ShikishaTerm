@@ -739,6 +739,12 @@ pub enum Ev {
     /// The box a page had open is gone: answered, or left behind when the
     /// page went somewhere else. Made by the host, as `PageDialog` is
     PageDialogGone { from: Option<String> },
+    /// A page asked for a window of its own -- a link that opens in a new
+    /// tab, `window.open` -- in a browser that has no window to give it.
+    /// `by_hand` is whether a press or a key on the page asked (the browser's
+    /// word for it), as against a script by itself. Made by the host that
+    /// runs the page, from what the browser says, never read off a message
+    PageWindow { from: Option<String>, url: String, by_hand: bool },
     /// The person's answer to a page's box, from the board or a phone.
     /// `page` is the page's in-window name and `id` the opening the answer
     /// is for; `text` is what was typed into a prompt -- or `None` when the

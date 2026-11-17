@@ -50,7 +50,21 @@ pub struct Plan {
     pub preparing: crate::microvm::Preparing,
     /// On a MicroVM: its machines made private (see `e2b::Asking::private`)
     pub private: bool,
+    /// On this machine: the account the project's git signs in as, for the
+    /// one step that talks to a server (see [`Plan::refreshing`]). As the
+    /// settings say it, before any secret is read
+    pub git: crate::config::GitUse,
 }
+
+/// How long bringing the base up to date may take before the branch is cut
+/// from the base as it stands here. A server that answers does so well inside
+/// this; one that does not is not waited on for the two minutes a connection
+/// takes to give up by itself
+const REFRESH_LIMIT: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// How long a base just brought up to date counts as up to date: several
+/// worktrees asked for at once -- one per AI -- ask the server once
+const REFRESH_KEPT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// The machines a making on a MicroVM made, as soon as it made them: the one
 /// the project's checkout is on, when there was none yet, and the worktree's
@@ -140,7 +154,7 @@ impl Plan {
     /// it was when the checkout was made
     fn cutting(&self) -> Vec<Vec<String>> {
         if !self.on_microvm() {
-            return vec![self.argv()];
+            return self.refreshing().into_iter().chain([self.argv()]).collect();
         }
         vec![
             vec![
@@ -153,6 +167,60 @@ impl Plan {
             ],
             self.argv(),
         ]
+    }
+
+    /// What brings the base up to date before a new branch is cut from it,
+    /// when the base is a branch as a server has it (`origin/main`).
+    ///
+    /// `origin/main` in a checkout is what the server had the last time
+    /// somebody fetched, which may be last week: a branch cut from it starts
+    /// behind, and the pull request made of it carries a week of other
+    /// people's merges as conflicts to come. Only the one branch is asked
+    /// for, so a repository with a thousand branches answers as fast as one
+    /// with two.
+    ///
+    /// Tried, not required (see [`refresh`]): with no network the branch is
+    /// cut from the base as it stands here, as it always was. A base that is
+    /// a branch of this checkout's own, a tag or a commit is what it is, and
+    /// nothing is asked of any server
+    pub fn refreshing(&self) -> Option<Vec<String>> {
+        if !self.fresh || self.on_microvm() {
+            return None;
+        }
+        let (remote, branch) = self.base.split_once('/')?;
+        let branch = match self.host {
+            // Here, what the checkout has under that server's name says
+            // whether it is a branch of a server at all, and what the
+            // server's `HEAD` stands for
+            None => {
+                let git = crate::repo::family_of(&self.main)?;
+                match branch {
+                    "HEAD" => std::fs::read_to_string(git.join(format!("refs/remotes/{remote}/HEAD")))
+                        .ok()?
+                        .trim()
+                        .strip_prefix(&format!("ref: refs/remotes/{remote}/"))
+                        .filter(|b| !b.is_empty())?
+                        .to_string(),
+                    b if ref_exists(&git, &format!("refs/remotes/{remote}/{b}")) => b.to_string(),
+                    _ => return None,
+                }
+            }
+            // On another machine nothing is asked while planning (see
+            // `plan_on`), so only the name every clone gives its server is
+            // taken for one. Its `HEAD` is not a branch to ask for by name:
+            // all of that server's branches are brought instead
+            Some(_) if remote == "origin" => branch.to_string(),
+            Some(_) => return None,
+        };
+        let mut v: Vec<String> = ["git", "-C"].map(String::from).to_vec();
+        v.push(self.main.display().to_string());
+        // Its housekeeping is not waited for inside the limit
+        v.extend(["-c", "gc.auto=0", "-c", "maintenance.auto=false", "fetch", "--no-tags", "--quiet"].map(String::from));
+        v.push(remote.to_string());
+        if branch != "HEAD" {
+            v.push(format!("+refs/heads/{branch}:refs/remotes/{remote}/{branch}"));
+        }
+        Some(v)
     }
 
     /// What the project says it needs, after it is there to need it.
@@ -379,6 +447,7 @@ pub fn plan_for(
         sign_in: Default::default(),
         preparing: Default::default(),
         private: false,
+        git: Default::default(),
     })
 }
 
@@ -469,6 +538,7 @@ pub fn plan_on(far: &Far, branch: &str, prefix: &str, base: Option<&str>, at: Op
         sign_in: far.sign_in.clone(),
         preparing: far.preparing.clone(),
         private: far.private,
+        git: Default::default(),
     })
 }
 
@@ -655,9 +725,16 @@ fn make_noting(plan: &Plan, at_stage: &dyn Fn(Stage), stop: &dyn Fn() -> bool, m
     // Whether git made the worktree: only then is there anything of this
     // making's to take back
     let mut added = false;
+    let refreshing = plan.refreshing();
     for (stage, argv) in steps {
         at_stage(stage);
-        let ran = run_for(plan, &argv);
+        let ran = match refreshing.as_ref() == Some(&argv) {
+            true => {
+                refresh(plan, &argv);
+                Ok(())
+            }
+            false => run_for(plan, &argv),
+        };
         added |= ran.is_ok() && adds_worktree(&argv);
         let stopped = stop();
         if ran.is_err() || stopped {
@@ -995,6 +1072,45 @@ fn take_back(plan: &Plan, added: bool) {
         {
             let _ = run(&["git".into(), "-C".into(), main, "branch".into(), "-D".into(), plan.branch.clone()]);
         }
+    }
+}
+
+/// Bring the base up to date ([`Plan::refreshing`]), or leave it as it is.
+///
+/// Never a reason for the making to fail: the server not answering, no
+/// network, a sign-in that is refused -- each leaves the base as this
+/// checkout last saw it, which is what every branch was cut from before, and
+/// the log says which. A base that is not there at all is git's to refuse, in
+/// the step after this one
+fn refresh(plan: &Plan, argv: &[String]) {
+    static FRESH: std::sync::Mutex<Vec<(String, std::time::Instant)>> = std::sync::Mutex::new(Vec::new());
+    // One at a time: two fetches of one branch into one repository at once
+    // have the second stop on the first one's lock
+    let mut fresh = FRESH.lock().unwrap_or_else(|e| e.into_inner());
+    fresh.retain(|(_, at)| at.elapsed() < REFRESH_KEPT);
+    let key = format!("{}\u{1f}{}", plan.host.as_ref().map(|h| h.name.as_str()).unwrap_or_default(), argv.join("\u{1f}"));
+    if fresh.iter().any(|(k, _)| *k == key) {
+        return;
+    }
+    let ran = match plan.host {
+        // Here: signed in as the project's account, and given up on -- with
+        // everything it started -- when the server takes too long
+        None => plan
+            .git
+            .to_git(true, &crate::git::secret)
+            .map_err(|e| anyhow::anyhow!(e))
+            .and_then(|who| {
+                let args: Vec<&str> = argv.iter().skip(3).map(String::as_str).collect();
+                crate::git::run_as(&plan.main, &args, "", REFRESH_LIMIT, &who).map(|_| ())
+            }),
+        Some(_) => run_for(plan, argv),
+    };
+    match ran {
+        Ok(()) => fresh.push((key, std::time::Instant::now())),
+        Err(e) => crate::append_hook_log(&format!(
+            "worktree: {} was not brought up to date, and the branch is cut from it as it stands: {e:#}",
+            plan.base
+        )),
     }
 }
 
@@ -4818,6 +4934,7 @@ tools/conpty.ps1"));
             sign_in: Default::default(),
             preparing: Default::default(),
             private: false,
+            git: Default::default(),
         };
         // On Windows git is also told to take long paths, on the way in as
         // on the way out; the line shown says so, since it is the line run
@@ -5125,6 +5242,87 @@ tools/conpty.ps1"));
     /// and a plain push refused to choose between that and its own name.
     /// A branch somebody sets to follow another name on purpose is still told
     /// so in plain words.
+    #[test]
+    fn a_new_branch_is_cut_from_the_base_as_the_server_has_it_now() {
+        let root = scratch("refresh");
+        let _ = std::fs::remove_dir_all(&root);
+        let seed = root.join("seed");
+        let server = root.join("far.git");
+        let main = root.join("proj");
+        std::fs::create_dir_all(&seed).unwrap();
+        let git = |at: &Path, args: &[&str]| -> String {
+            let mut run = std::process::Command::new("git");
+            run.arg("-C").arg(at).args(args);
+            let out = crate::detach_console(&mut run).output().expect("git is needed");
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        git(&seed, &["init", "-q", "-b", "main"]);
+        git(&seed, &["config", "user.email", "t@example.com"]);
+        git(&seed, &["config", "user.name", "t"]);
+        std::fs::write(seed.join("readme.md"), "hi\n").unwrap();
+        git(&seed, &["add", "-A"]);
+        git(&seed, &["commit", "-qm", "first"]);
+        git(&seed, &["clone", "-q", "--bare", &seed.display().to_string(), &server.display().to_string()]);
+        git(&seed, &["clone", "-q", &server.display().to_string(), &main.display().to_string()]);
+        git(&seed, &["remote", "add", "far", &server.display().to_string()]);
+        let merged = |words: &str| {
+            std::fs::write(seed.join("readme.md"), words).unwrap();
+            git(&seed, &["commit", "-qam", words.trim()]);
+            git(&seed, &["push", "-q", "far", "main"]);
+            git(&server, &["rev-parse", "refs/heads/main"])
+        };
+        let old = git(&main, &["rev-parse", "origin/main"]);
+
+        // Somebody's work is merged on the server after this checkout last
+        // looked: the branch starts from it, and so does the line on screen
+        let now = merged("somebody's merge\n");
+        assert_ne!(old, now);
+        let cut = plan(&main, "starts-current", Some("origin/main")).unwrap();
+        let steps = cut.argvs();
+        assert_eq!(steps.len(), 2, "{steps:?}");
+        assert_eq!(steps[0][3..], ["-c", "gc.auto=0", "-c", "maintenance.auto=false", "fetch", "--no-tags", "--quiet", "origin", "+refs/heads/main:refs/remotes/origin/main"].map(String::from));
+        assert_eq!(cut.line().lines().count(), 2, "what runs is not what is shown: {}", cut.line());
+        create(&cut).unwrap();
+        assert_eq!(git(&cut.folder, &["rev-parse", "HEAD"]), now, "cut from the base as it was the last time somebody fetched");
+
+        // The same, when nobody names a base: the server's default
+        let unnamed = plan(&main, "starts-current-too", None).unwrap();
+        assert_eq!(unnamed.base, "origin/main");
+        assert_eq!(unnamed.refreshing().as_ref(), Some(&steps[0]));
+
+        // The server not answering is not a reason to have no worktree: the
+        // branch is cut from the base as it stands here
+        // (in a checkout of its own: a base just fetched counts as fetched
+        // for a moment, and this one was)
+        let lone = root.join("lone");
+        git(&seed, &["clone", "-q", &server.display().to_string(), &lone.display().to_string()]);
+        let before = git(&lone, &["rev-parse", "origin/main"]);
+        merged("a merge nobody here hears of\n");
+        git(&lone, &["remote", "set-url", "origin", &root.join("nowhere.git").display().to_string()]);
+        let cut = plan(&lone, "starts-offline", Some("origin/HEAD")).unwrap();
+        assert!(cut.refreshing().is_some_and(|a| a.last().is_some_and(|l| l.ends_with(":refs/remotes/origin/main"))), "{:?}", cut.refreshing());
+        create(&cut).unwrap();
+        assert_eq!(git(&cut.folder, &["rev-parse", "HEAD"]), before);
+
+        // What is not a server's branch asks no server: a branch of the
+        // checkout's own, one that is there already, a name with a slash
+        git(&main, &["branch", "topic/own", "origin/main"]);
+        assert_eq!(plan(&main, "from-own", Some("main")).unwrap().refreshing(), None);
+        assert_eq!(plan(&main, "from-own-slash", Some("topic/own")).unwrap().argvs().len(), 1);
+        assert_eq!(plan(&main, "topic/own", Some("origin/main")).unwrap().argvs().len(), 1, "a branch that exists is not cut from anything");
+
+        // On a server, only the name every clone gives its own
+        let there = crate::config::HostSpec { name: "bench".into(), at: "ssh://me@host:22".into(), ..Default::default() };
+        let home = crate::config::ProjectHome { host: "bench".into(), at: "/srv/p".into(), ..Default::default() };
+        let on = |base: Option<&str>| plan_on(&far(&there, Some(&home), "p", ""), "x", "", base, None).unwrap().argvs();
+        let said = |a: &Vec<String>| a[3..].join(" ");
+        assert_eq!(said(&on(None)[0]), "-c gc.auto=0 -c maintenance.auto=false fetch --no-tags --quiet origin", "{:?}", on(None));
+        assert!(said(&on(Some("origin/dev"))[0]).ends_with("origin +refs/heads/dev:refs/remotes/origin/dev"));
+        assert_eq!(on(Some("dev")).len(), 1);
+        assert_eq!(on(Some("topic/dev")).len(), 1);
+    }
+
     #[test]
     fn a_branch_cut_from_the_remote_pushes_under_its_own_name() {
         let root = scratch("tracks");

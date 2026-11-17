@@ -19,7 +19,7 @@
 //! screen's session apart from the one automation uses, and needs no list of
 //! the events a screen of some other version might want.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Sender, channel};
@@ -116,38 +116,15 @@ fn admitted(path: &str, origin: &str, key: &str) -> Option<String> {
 fn serve(stream: TcpStream, key: &str, tell: tao::event_loop::EventLoopProxy<Cmd>) {
     let Ok(read_side) = stream.try_clone() else { return };
     let mut reader = BufReader::new(read_side);
-    let mut first = String::new();
-    if reader.read_line(&mut first).is_err() {
-        return;
-    }
-    let path = first.split_whitespace().nth(1).unwrap_or_default().to_string();
-    let (mut origin, mut client_key) = (String::new(), String::new());
-    loop {
-        let mut line = String::new();
-        if reader.read_line(&mut line).is_err() || line.trim().is_empty() {
-            break;
-        }
-        if let Some((k, v)) = line.split_once(':') {
-            match k.trim().to_ascii_lowercase().as_str() {
-                "origin" => origin = v.trim().to_string(),
-                "sec-websocket-key" => client_key = v.trim().to_string(),
-                _ => {}
-            }
-        }
-    }
+    let Some(asked) = ws::read_opening(&mut reader) else { return };
     let mut out = stream;
-    let Some(page) = admitted(&path, &origin, key).filter(|_| !client_key.is_empty()) else {
-        // Nothing about why: a caller that has no business here learns nothing
-        let _ = out.write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+    let Some(page) = admitted(&asked.path, &asked.origin, key).filter(|_| !asked.key.is_empty()) else {
+        let _ = out.write_all(ws::TURNED_AWAY);
         // The address carries the key, so only the page is written down
         shikisha_core::append_hook_log("[devtools] refused a connection");
         return;
     };
-    let hello = format!(
-        "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {}\r\n\r\n",
-        ws::accept_key(&client_key)
-    );
-    if out.write_all(hello.as_bytes()).is_err() {
+    if out.write_all(ws::welcome(&asked.key).as_bytes()).is_err() {
         return;
     }
     let conn = NEXT.fetch_add(1, Ordering::Relaxed);

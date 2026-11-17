@@ -499,6 +499,7 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         | Ev::NoticeAsk { .. }
         | Ev::PageDialog { .. }
         | Ev::PageDialogGone { .. }
+        | Ev::PageWindow { .. }
         | Ev::ConsoleLine { .. }
         | Ev::Seek { .. }
         | Ev::Download { .. }
@@ -4643,7 +4644,7 @@ mod tests {
             // Kept on this machine on purpose
             "Paste", "Password",
             // What this PC's own pages report
-            "Ready", "Result", "Where", "Frame", "Loading", "JsError", "Recorded", "Picked", "PageNotice", "NoticeAsk", "PageDialog", "PageDialogGone", "ConsoleLine", "Touched", "Compose", "Pen",
+            "Ready", "Result", "Where", "Frame", "Loading", "JsError", "Recorded", "Picked", "PageNotice", "NoticeAsk", "PageDialog", "PageDialogGone", "PageWindow", "ConsoleLine", "Touched", "Compose", "Pen",
             // ...and what this PC's browser says about a search and a download
             "Seek", "Download",
             // This PC's window, tray and keys

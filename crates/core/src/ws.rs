@@ -27,6 +27,54 @@ pub fn accept_key(client_key: &str) -> String {
     B64.encode(sha1(&input))
 }
 
+/// What a WebSocket's opening request asked for, read off a raw socket: the
+/// path, and the three headers a door decides by
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Opening {
+    pub path: String,
+    pub origin: String,
+    pub host: String,
+    /// The `Sec-WebSocket-Key`; empty when the request was not an opening
+    pub key: String,
+}
+
+/// Read an opening request to the end of its headers. `None` when the
+/// socket ends first
+pub fn read_opening<R: std::io::BufRead>(r: &mut R) -> Option<Opening> {
+    let mut first = String::new();
+    if r.read_line(&mut first).ok()? == 0 {
+        return None;
+    }
+    let mut asked = Opening { path: first.split_whitespace().nth(1).unwrap_or_default().to_string(), ..Default::default() };
+    loop {
+        let mut line = String::new();
+        if r.read_line(&mut line).ok()? == 0 || line.trim().is_empty() {
+            return Some(asked);
+        }
+        if let Some((k, v)) = line.split_once(':') {
+            let v = v.trim().to_string();
+            match k.trim().to_ascii_lowercase().as_str() {
+                "origin" => asked.origin = v,
+                "host" => asked.host = v,
+                "sec-websocket-key" => asked.key = v,
+                _ => {}
+            }
+        }
+    }
+}
+
+/// The answer that lets an opening in
+pub fn welcome(key: &str) -> String {
+    format!(
+        "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {}\r\n\r\n",
+        accept_key(key)
+    )
+}
+
+/// The answer to an opening that is not let in. Nothing about why: a caller
+/// with no business at the door learns nothing from it
+pub const TURNED_AWAY: &[u8] = b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+
 /// Complete a handshake after the route has checked its key and admission.
 pub(crate) fn upgrade(req: tiny_http::Request, key: &str) -> Box<dyn tiny_http::ReadWrite + Send> {
     let accept = accept_key(key);
