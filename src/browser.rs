@@ -1440,51 +1440,10 @@ fn wrap_eval(id: u64, js: &str) -> String {
 
 
 
-/// Everything a browser has to say about who it is, once a name is chosen.
-///
-/// The name is not the only place the claim is made. It is made again, in
-/// `Sec-CH-UA` and in `navigator.userAgentData`, and those are not written
-/// from the name — a browser calling itself Chrome while announcing
-/// "Microsoft Edge WebView2" alongside has told a site more than it would
-/// have by saying nothing at all. So the brands are built out of the name
-/// itself, and the two always agree.
-///
-/// A name with no Chromium version in it (someone naming a browser that is
-/// not one) is given no brands: that is what a browser which does not speak
-/// client hints sends.
+/// What a page's engine is told when it is given a name to call itself:
+/// the name and everything said beside it (`shikisha_core::useragent`)
 fn ua_override(ua: &str) -> String {
-    let after = |mark: &str| -> Option<String> {
-        let at = ua.find(mark)? + mark.len();
-        let ver: String = ua[at..].chars().take_while(|c| c.is_ascii_digit()).collect();
-        (!ver.is_empty()).then_some(ver)
-    };
-    let mut brands = Vec::new();
-    if let Some(major) = after("Chrome/") {
-        // The greased entry is part of the format, not decoration: a site
-        // that hard-codes the list is meant to trip over it
-        brands.push(serde_json::json!({ "brand": "Chromium", "version": major }));
-        brands.push(serde_json::json!({ "brand": "Not=A?Brand", "version": "99" }));
-        match after("Edg/") {
-            Some(edge) => {
-                brands.push(serde_json::json!({ "brand": "Microsoft Edge", "version": edge }))
-            }
-            None => brands
-                .push(serde_json::json!({ "brand": "Google Chrome", "version": major })),
-        }
-    }
-    serde_json::json!({
-        "userAgent": ua,
-        "userAgentMetadata": {
-            "brands": brands,
-            "platform": "Windows",
-            "platformVersion": "15.0.0",
-            "architecture": "x86",
-            "bitness": "64",
-            "model": "",
-            "mobile": false,
-        },
-    })
-    .to_string()
+    shikisha_core::useragent::said(ua).to_string()
 }
 
 /// Brings the window to the front from another thread
@@ -1669,37 +1628,6 @@ mod nav_tests {
         // Discard unknown instructions. Doing nothing is better than silently doing something else
         assert!(read(r#"{"kind":"go","what":"quit"}"#).is_none());
         assert!(read(r#"{"kind":"go"}"#).is_none());
-    }
-
-    /// A chosen name has to be told the same way twice, or the second telling
-    /// gives away the first.
-    #[test]
-    fn what_the_browser_says_it_is_agrees_with_itself() {
-        let chrome = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
-                      (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36";
-        let v: serde_json::Value = serde_json::from_str(&ua_override(chrome)).unwrap();
-        let brands = v["userAgentMetadata"]["brands"].as_array().unwrap();
-        let names: Vec<&str> = brands.iter().filter_map(|b| b["brand"].as_str()).collect();
-        assert!(names.contains(&"Google Chrome"), "{names:?}");
-        assert!(!names.iter().any(|n| n.contains("WebView")), "it disagrees with what it calls itself: {names:?}");
-        assert_eq!(brands[0]["version"], "151");
-
-        // Edge names itself twice; both have to be there or the pair is odd
-        let edge = format!("{chrome} Edg/151.0.0.0");
-        let v: serde_json::Value = serde_json::from_str(&ua_override(&edge)).unwrap();
-        let names: Vec<&str> = v["userAgentMetadata"]["brands"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(|b| b["brand"].as_str())
-            .collect();
-        assert!(names.contains(&"Microsoft Edge") && names.contains(&"Chromium"), "{names:?}");
-
-        // Something that is not a Chromium at all sends no brands, which is
-        // exactly what such a browser does
-        let v: serde_json::Value =
-            serde_json::from_str(&ua_override("Mozilla/5.0 … Firefox/999.0")).unwrap();
-        assert!(v["userAgentMetadata"]["brands"].as_array().unwrap().is_empty());
     }
 
     /// A phone reporting its screen shape parses into a View input, and a

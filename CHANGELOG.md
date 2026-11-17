@@ -219,6 +219,15 @@ once it reaches its first tagged release.
   history of that session and an AI's CLI had no chance to put its
   session away. They are now sent the hangup a closing terminal sends,
   given up to 0.3 seconds, and only what is still running then is killed.
+- **The server's browser no longer says it is a robot.** A browser run
+  without a window calls itself `HeadlessChrome`, and many sites answer
+  that with a refusal or a puzzle. The server version's pages now call
+  themselves Chrome, as the same browser with a window does. Where a tab
+  sets its own user agent, the rest of what a browser says about itself
+  (`Sec-CH-UA`, `navigator.userAgentData`) is now sent to match it on
+  the server too; before, it was dropped there. In the window app, a user
+  agent naming a Mac or Linux was announced as Windows beside the name;
+  the system announced is now the one in the name.
 - **A phone left on the page stops knocking on a PC that is off.** When
   the line to the PC dropped, the page tried again every second and a
   half for as long as it stayed open. Each try in a row now waits twice

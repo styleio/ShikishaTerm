@@ -320,6 +320,10 @@ pub struct Chrome {
     door: std::sync::OnceLock<Option<ScreenDoor>>,
     /// Set when the browser is being let go, for the door to stop answering
     closing: Arc<std::sync::atomic::AtomicBool>,
+    /// What its pages are told to call themselves when no tab says
+    /// otherwise: its own name without the word that says it has no window
+    /// (`useragent::with_a_window`). `None` when its name does not say so
+    calls_itself: Option<String>,
 }
 
 impl Chrome {
@@ -392,7 +396,7 @@ impl Chrome {
         // asked something it can always answer
         let started = Cdp::over(to, from).and_then(|cdp| {
             match cdp.call(None, "Browser.getVersion", serde_json::json!({}), START_MS) {
-                Ok(_) => Ok(cdp),
+                Ok(v) => Ok((cdp, v.get("userAgent").and_then(|u| u.as_str()).and_then(crate::useragent::with_a_window))),
                 Err(_) => {
                     // What it said about why, in its own words, rather than
                     // "it did not answer in time" -- given a moment to arrive
@@ -406,7 +410,7 @@ impl Chrome {
                 }
             }
         });
-        let cdp = match started {
+        let (cdp, calls_itself) = match started {
             Ok(c) => c,
             Err(e) => {
                 let _ = child.kill();
@@ -417,7 +421,7 @@ impl Chrome {
                 return Err(e);
             }
         };
-        Ok(Self { child, profile, temporary, cdp, door: Default::default(), closing: Default::default() })
+        Ok(Self { child, profile, temporary, cdp, door: Default::default(), closing: Default::default(), calls_itself })
     }
 
     /// Whether the browser is still there to be spoken to. It can go on its
@@ -2445,12 +2449,11 @@ impl shikisha_shared::BrowserHost for Pages {
                 "Page.addScriptToEvaluateOnNewDocument",
                 serde_json::json!({ "source": page_script() }),
             )?;
-            if let Some(ua) = profile.user_agent.as_deref() {
-                chrome.call_page(
-                    &session,
-                    "Network.setUserAgentOverride",
-                    serde_json::json!({ "userAgent": ua }),
-                )?;
+            // The name the tab chose, or else the browser's own without the
+            // word that says it has no window -- and, either way, everything
+            // said beside the name made to agree with it
+            if let Some(ua) = profile.user_agent.as_deref().or(chrome.calls_itself.as_deref()) {
+                chrome.call_page(&session, "Emulation.setUserAgentOverride", crate::useragent::said(ua))?;
             }
             if rect.2 > 0 && rect.3 > 0 {
                 chrome.call_page(
@@ -2973,6 +2976,16 @@ mod tests {
         let (url, complete) = wait_ready(&pages).expect("the page does not report that loading finished");
         assert_eq!(url, site, "it reports a different address");
         assert!(complete, "it says it finished without waiting for images and CSS");
+
+        // It calls itself a browser like any other: not one with no window,
+        // in the name or in what is said beside the name
+        use crate::pageops::Speaks as _;
+        let name = pages.eval(Some("p"), "return navigator.userAgent", t).unwrap();
+        assert!(name.contains("Chrome/") && !name.contains("Headless"), "it says it has no window: {name}");
+        let beside = pages
+            .eval(Some("p"), "return navigator.userAgentData ? navigator.userAgentData.brands.map(b => b.brand).join(',') : 'none'", t)
+            .unwrap();
+        assert!(!beside.contains("Headless"), "what it says beside its name gives it away: {beside}");
 
         // ── looking ──────────────────────────────────────────────────────
         assert_eq!(pages.find(Some("p"), &Sel::Css("#here".into()), t).unwrap(), Found::Visible);

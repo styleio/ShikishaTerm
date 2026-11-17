@@ -32,6 +32,7 @@ pub mod charset;
 pub mod cdp;
 pub mod chrome;
 pub mod devscreen;
+pub mod useragent;
 pub mod clients;
 pub mod closed;
 pub mod config;
