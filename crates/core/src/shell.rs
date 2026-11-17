@@ -22965,13 +22965,15 @@ kbd.addEventListener("keydown", e => {
   if (e.isComposing) return;
   if (setupUp()) { e.preventDefault(); return; }
   const nm = NAMED[e.key];
-  // Shift and Alt travel with a named key. A character carries its own shift
-  // already (the browser hands over "%", not shift and "5"), but Enter, Tab and
-  // the arrows have no shifted spelling -- and a program that asked to tell
-  // Shift+Enter from Enter has no way to be told otherwise
+  // Shift, Alt and Ctrl travel with a named key. A character carries its own
+  // shift already (the browser hands over "%", not shift and "5"), but Enter,
+  // Tab and the arrows have no shifted spelling -- and a program that asked
+  // to tell Shift+Enter from Enter has no way to be told otherwise. Ctrl has
+  // no character to name here (Ctrl+Left jumps a word in a shell), so it is
+  // said by being there at all
   if (nm) {
     e.preventDefault();
-    send({kind:"key", named:nm, shift:e.shiftKey, alt:e.altKey});
+    send({kind:"key", named:nm, shift:e.shiftKey, alt:e.altKey, ctrl:e.ctrlKey ? "+" : undefined});
     return;
   }
   // ⌘ on a Mac's keys is the app's, never the terminal's. ⌘V at the window
@@ -23081,7 +23083,7 @@ document.addEventListener("keydown", e => {
   focus();
   if (document.activeElement !== kbd) return;
   e.preventDefault();
-  if (nm) send({kind:"key", named:nm, shift:e.shiftKey, alt:e.altKey});
+  if (nm) send({kind:"key", named:nm, shift:e.shiftKey, alt:e.altKey, ctrl:e.ctrlKey ? "+" : undefined});
   else if (e.ctrlKey && !altGr(e)) send({kind:"key", ctrl:ctrlKeyOf(e), shift:e.shiftKey, alt:e.altKey});
   else send({kind:"key", text:e.key});
 }, true);
@@ -25277,7 +25279,7 @@ function sendCastKey(name, ev) {
   } else if (name === "space") {
     send({kind:"key", text:" "});
   } else if (name !== "ctrl" && name !== "alt") {
-    send({kind:"key", named: TERM_KEY[name] || name, shift, alt});
+    send({kind:"key", named: TERM_KEY[name] || name, shift, alt: alt || modAlt, ctrl: (modCtrl || !!(ev && ev.ctrlKey)) ? "+" : undefined});
   }
   if (modCtrl || modAlt) { modCtrl = false; modAlt = false; refreshMods(); }
 }
@@ -32458,7 +32460,7 @@ mod tests {
         );
         // Shift and Alt have no spelling of their own on a named key
         assert!(
-            p.contains(r#"send({kind:"key", named: TERM_KEY[name] || name, shift, alt});"#),
+            p.contains(r#"send({kind:"key", named: TERM_KEY[name] || name, shift, alt: alt || modAlt, ctrl: (modCtrl || !!(ev && ev.ctrlKey)) ? "+" : undefined});"#),
             "Shift+Tab arrives as a plain Tab"
         );
         // Enter is still the Send button, Shift+Enter is still this box's

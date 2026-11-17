@@ -986,7 +986,9 @@ pub enum Ev {
     /// `shift` and `alt` ride along with a named key. A character already
     /// carries its own shift -- the page sends `%`, not shift and `5` -- but
     /// Enter, Tab and the arrows have no such spelling, and a program that
-    /// asked to tell Shift+Enter from Enter cannot be told without them
+    /// asked to tell Shift+Enter from Enter cannot be told without them.
+    /// Ctrl held with a named key is `ctrl` being there at all, whatever it
+    /// holds: Ctrl+Left has no character to name
     Key {
         text: Option<String>,
         named: Option<String>,

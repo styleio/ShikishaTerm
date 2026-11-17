@@ -5095,6 +5095,12 @@ impl Tab {
         self.parser.lock().unwrap_or_else(|e| e.into_inner()).screen().bracketed_paste()
     }
 
+    /// Whether the program has put the cursor keys in application mode
+    /// (`CSI ? 1 h`): which spelling of the arrows, Home and End it reads
+    pub fn application_cursor(&self) -> bool {
+        self.parser.lock().unwrap_or_else(|e| e.into_inner()).screen().application_cursor()
+    }
+
     /// Whether the width narrowed while waiting for a response (the text may have been chopped)
     pub fn resized_while_waiting(&self) -> bool {
         self.resized_while_waiting.load(Ordering::Relaxed)

@@ -9,7 +9,9 @@
 
 use crate::hooks::{Command, HookEngine, TabCtx};
 use crate::host::Shell;
-use crate::keymap::{key_to_bytes_with, named_key};
+use crate::keymap::{key_to_bytes_for, named_key};
+#[cfg(test)]
+use crate::keymap::key_to_bytes_with;
 use crate::send::{Check, Landing, Look, PendingSend, Step, paste_chunks};
 use crate::tab::{CopyState, RecordedStep, Tab, extract_text};
 use crate::view::{
@@ -16722,7 +16724,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             // Soft lock: viewing and copying still work, but input is ignored
                             locked_hit = true;
                         } else if let Some(bytes) =
-                            key_to_bytes_with(&key, crate::tab::keyboard_flags(&t.keyboard))
+                            key_to_bytes_for(&key, crate::tab::keyboard_flags(&t.keyboard), t.application_cursor())
                         {
                             // Manual input breaks the chain. Except input to a tab that
                             // received a draft doesn't break it — that's not a takeover,
@@ -22893,6 +22895,11 @@ pub fn keys_for(ev: &shikisha_shared::Ev) -> Vec<Event> {
                 if *alt {
                     mods |= KeyModifiers::ALT;
                 }
+                // With a named key `ctrl` names no character: that it is
+                // there at all says Ctrl was held
+                if ctrl.is_some() {
+                    mods |= KeyModifiers::CONTROL;
+                }
                 named_key(n)
                     .map(|code| vec![Event::Key(KeyEvent::new(code, mods))])
                     .unwrap_or_default()
@@ -24215,6 +24222,19 @@ mod tests {
         match chord.first() {
             Some(Event::Key(k)) => assert_eq!(k.modifiers, KeyModifiers::CONTROL | KeyModifiers::SHIFT),
             other => panic!("Ctrl+Shift+M did not arrive: {other:?}"),
+        }
+
+        // Ctrl held with a named key arrives as Ctrl on that key, and is
+        // spelled for the program as every terminal spells it
+        let word_left = keys_for(&shikisha_shared::Ev::Key {
+            text: None, named: Some("left".into()), ctrl: Some("+".into()), shift: false, alt: false,
+        });
+        match word_left.first() {
+            Some(Event::Key(k)) => {
+                assert_eq!((k.code, k.modifiers), (KeyCode::Left, KeyModifiers::CONTROL), "Ctrl was dropped from a named key");
+                assert_eq!(key_to_bytes_with(k, 0), Some(b"\x1b[1;5D".to_vec()));
+            }
+            other => panic!("Ctrl+Left did not arrive: {other:?}"),
         }
 
         let plain = pressed("enter", false).expect("Enter did not arrive");

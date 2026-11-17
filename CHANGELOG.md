@@ -172,6 +172,28 @@ once it reaches its first tagged release.
   was closed, or the AI in it ended, the job stayed open and its workers
   went on reporting to nobody, with nothing on screen saying so. After two
   minutes you now get one notification naming the job, with what to do.
+- **Ctrl, Shift and Alt with the arrow keys reach the program.** Ctrl+Left
+  arrived in a tab as a plain Left, so a shell did not jump a word, an
+  editor did not select with Shift+arrow, and an AI CLI that switches on
+  Alt+arrow did nothing. The arrows, Home, End, Page Up and Down, Insert,
+  Delete and the function keys are now sent with their modifiers, spelled
+  as terminals spell them (`ESC [ 1 ; 5 D` for Ctrl+Left). Alt+arrow is
+  sent that way too, where it used to be an Escape followed by the arrow.
+  The Ctrl and Alt buttons of the phone's key row now apply to those keys
+  as well.
+- **The arrow keys in a full-screen program that asks for its own.**
+  A program that puts the cursor keys in application mode (vim, less, some
+  file managers) is now sent the arrows, Home and End in that mode's
+  spelling. Sent the ordinary one, some of them took an arrow for Escape
+  and a letter.
+- **DevTools that stop reading are let go.** What a page said to its
+  DevTools was kept in memory until DevTools read it. With DevTools left
+  open in a tab that had gone to sleep, a busy page could fill memory
+  without end. DevTools more than 64 MB behind, or taking nothing for
+  thirty seconds, are now disconnected; open them again to go on.
+- **A page cannot open windows without end.** The pages of one browser
+  tab could open any number of windows over it, each a whole page with
+  its own process. Past eight open at once, the next is refused.
 - **A link that opens in a new tab, in the server's browser.** On the
   server version, a `target="_blank"` link or `window.open` did nothing
   that anybody could see: the new window was made where no screen shows
