@@ -219,6 +219,14 @@ once it reaches its first tagged release.
   history of that session and an AI's CLI had no chance to put its
   session away. They are now sent the hangup a closing terminal sends,
   given up to 0.3 seconds, and only what is still running then is killed.
+- **A screen redrawn by a full-screen program is shown whole.** Programs
+  that redraw the whole screen (the AI CLIs do, many times a second) ask
+  the terminal to hold what they write and show it all at once. The app
+  showed each piece as it came, so a phone saw a flicker of half-drawn
+  screens, and the state shown for a tab could be read off a screen that
+  never was. Output between "hold" and "show" (`CSI ? 2026`) is now put
+  on the screen in one step; a program asking whether the terminal can
+  do this is told that it can.
 - **A key held down repeats on a Mac.** Holding a letter in a terminal
   typed it once: macOS shows a menu of accented letters for a held key
   unless a program opts out. The app now opts out for itself the first

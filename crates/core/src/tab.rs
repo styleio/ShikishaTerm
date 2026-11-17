@@ -693,6 +693,99 @@ fn note_of(params: &[&[u8]]) -> Option<(String, String)> {
     }
 }
 
+/// Output a program asked to have shown all at once, held until it says the
+/// picture is whole.
+///
+/// A full-screen program redraws in many small writes, and a terminal that
+/// shows each as it comes shows the screen half drawn: the old bottom under
+/// a new top, a list with a hole where the selection will be. So a program
+/// says "hold on" before it starts (`CSI ? 2026 h`) and "now" when it is
+/// done (`CSI ? 2026 l`), and the terminal shows nothing in between. The
+/// AI CLIs do, on every frame. Not held, their redraws reached a phone as a
+/// flicker of half pictures, and state detection read screens that never
+/// were.
+///
+/// Held here, before the parser, and handed over in one piece: the parser
+/// is locked for the whole of it, so nothing that looks at the screen -- the
+/// drawing, the detection -- can look in the middle. A program that says
+/// "hold on" and never "now" (killed, cut off) is not believed for long
+#[derive(Default)]
+pub struct Synced {
+    held: Vec<u8>,
+    since: Option<Instant>,
+}
+
+type SharedSynced = Arc<Mutex<Synced>>;
+
+const SYNC_BEGIN: &[u8] = b"\x1b[?2026h";
+const SYNC_END: &[u8] = b"\x1b[?2026l";
+/// How long, and how much, is held for a picture that is never said to be
+/// whole
+const SYNC_FOR: std::time::Duration = std::time::Duration::from_secs(1);
+const SYNC_MOST: usize = 4 * 1024 * 1024;
+
+impl Synced {
+    /// Output as it arrives, handed on to `put` in the pieces the parser is
+    /// to be given whole: what is not held, as it comes; what is, when its
+    /// end arrives
+    fn take(&mut self, chunk: &[u8], put: &mut dyn FnMut(&[u8])) {
+        let find = |hay: &[u8], needle: &[u8]| hay.windows(needle.len()).position(|w| w == needle);
+        let mut rest = chunk.to_vec();
+        while !rest.is_empty() {
+            match self.since {
+                // Shown as it comes, up to where it asks to be held. (The
+                // asking cut in two by where a read ended is not seen, and
+                // that one picture is drawn as it comes -- as every picture
+                // was before)
+                None => match find(&rest, SYNC_BEGIN) {
+                    None => {
+                        put(&rest);
+                        return;
+                    }
+                    Some(at) => {
+                        let after = rest.split_off(at + SYNC_BEGIN.len());
+                        put(&rest);
+                        self.since = Some(Instant::now());
+                        rest = after;
+                    }
+                },
+                // Held, up to where it says the picture is whole. Looked for
+                // from a little before what is new, since the end may have
+                // been cut in two by where the last read ended
+                Some(since) => {
+                    let from = self.held.len().saturating_sub(SYNC_END.len() - 1);
+                    self.held.extend_from_slice(&rest);
+                    rest.clear();
+                    match find(&self.held[from..], SYNC_END) {
+                        Some(at) => {
+                            rest = self.held.split_off(from + at + SYNC_END.len());
+                            put(&std::mem::take(&mut self.held));
+                            self.since = None;
+                        }
+                        None if self.held.len() > SYNC_MOST || since.elapsed() > SYNC_FOR => {
+                            put(&std::mem::take(&mut self.held));
+                            self.since = None;
+                        }
+                        None => {}
+                    }
+                }
+            }
+        }
+    }
+
+    /// What has been held too long with nothing more arriving, to be shown
+    /// after all
+    fn overdue(&mut self) -> Option<Vec<u8>> {
+        match self.since {
+            Some(since) if since.elapsed() > SYNC_FOR => {
+                self.since = None;
+                Some(std::mem::take(&mut self.held))
+            }
+            _ => None,
+        }
+    }
+}
+
 /// What turns off everything a program may have asked of its terminal's
 /// input, said as the program itself would have said it on its way out:
 /// the mouse and how it is spelled, the wheel as arrows, focus reports,
@@ -840,7 +933,7 @@ impl vt100::Callbacks for QueryResponder {
         &mut self,
         screen: &mut vt100::Screen,
         i1: Option<u8>,
-        _i2: Option<u8>,
+        i2: Option<u8>,
         params: &[&[u16]],
         c: char,
     ) {
@@ -857,6 +950,10 @@ impl vt100::Callbacks for QueryResponder {
             (None, 'c', _) => self.reply(b"\x1b[?6c"),
             // DA2: secondary terminal type query
             (Some(b'>'), 'c', _) => self.reply(b"\x1b[>0;0;0c"),
+            // Asked whether output can be held to be shown all at once
+            // (`CSI ? 2026 $ p`): it can, and is not being just now -- what
+            // is held is not read until it is let go (see `Synced`)
+            (Some(b'?'), 'p', Some(2026)) if i2 == Some(b'$') => self.reply(b"\x1b[?2026;2$y"),
             // The keyboard a program is asking for. Claude Code asks on
             // startup, and so does anything else that wants Shift+Enter to
             // arrive as Shift+Enter instead of as a bare Return.
@@ -2249,6 +2346,71 @@ mod tests {
             answers, "\x1b[?1u\x1b[?1u",
             "it says it will do even what it cannot: {answers:?}"
         );
+
+        // Asked whether a picture can be held to be shown whole: it can
+        p.process(b"\x1b[?2026$p");
+        let answers = String::from_utf8_lossy(&said.lock().unwrap()).to_string();
+        assert!(answers.ends_with("\x1b[?2026;2$y"), "not told that output can be held: {answers:?}");
+    }
+
+    /// A picture a program asked to have shown whole reaches the screen in
+    /// one piece, however the reads cut it up; what comes before and after
+    /// is shown as it comes
+    #[test]
+    fn a_picture_asked_to_be_shown_whole_is_handed_over_whole() {
+        let fed = |chunks: &[&[u8]]| -> (Vec<String>, super::Synced) {
+            let mut held = super::Synced::default();
+            let mut put: Vec<String> = Vec::new();
+            for c in chunks {
+                held.take(c, &mut |whole: &[u8]| put.push(String::from_utf8_lossy(whole).replace('\x1b', "E")));
+            }
+            (put, held)
+        };
+        // Not asked for: as it comes
+        assert_eq!(fed(&[b"one", b"two"]).0, ["one", "two"]);
+        // Asked for, in one read: what is before, then the picture whole,
+        // then what is after
+        assert_eq!(fed(&[b"before\x1b[?2026hTOP\r\nBOTTOM\x1b[?2026lafter"]).0, ["beforeE[?2026h", "TOP\r\nBOTTOME[?2026l", "after"]);
+        // Cut up by the reads, the end itself cut in two: still one piece
+        let (put, held) = fed(&[b"\x1b[?2026hTO", b"P\r\n", b"BOTTOM\x1b[?20", b"26l", b"after"]);
+        assert_eq!(put, ["E[?2026h", "TOP\r\nBOTTOME[?2026l", "after"]);
+        assert!(held.since.is_none() && held.held.is_empty());
+        // Nothing is shown until it says the picture is whole
+        let (put, held) = fed(&[b"\x1b[?2026hhalf a pic", b"ture"]);
+        assert_eq!(put, ["E[?2026h"], "half a picture was shown");
+        assert_eq!(held.held, b"half a picture");
+        // Two pictures in a row, in one read
+        assert_eq!(
+            fed(&[b"\x1b[?2026hA\x1b[?2026l\x1b[?2026hB\x1b[?2026l"]).0,
+            ["E[?2026h", "AE[?2026l", "E[?2026h", "BE[?2026l"]
+        );
+        // More than is ever a picture: let go, not kept without end
+        let much = vec![b'x'; super::SYNC_MOST + 1];
+        let (put, held) = fed(&[b"\x1b[?2026h", &much]);
+        assert_eq!(put.len(), 2, "held without end");
+        assert!(held.since.is_none());
+    }
+
+    /// A program that asks for a picture to be held and never says it is
+    /// whole is not believed for long: what it drew is shown after all
+    #[test]
+    fn a_picture_never_said_to_be_whole_is_shown_after_a_while() {
+        let mut held = super::Synced::default();
+        let mut put: Vec<Vec<u8>> = Vec::new();
+        held.take(b"\x1b[?2026hleft half drawn", &mut |w: &[u8]| put.push(w.to_vec()));
+        assert_eq!(held.overdue(), None, "let go at once");
+        held.since = std::time::Instant::now().checked_sub(super::SYNC_FOR + std::time::Duration::from_millis(10));
+        assert_eq!(held.overdue().as_deref(), Some(&b"left half drawn"[..]));
+        assert_eq!(held.overdue(), None);
+        // ...and what comes next is shown as it comes
+        held.take(b"next", &mut |w: &[u8]| put.push(w.to_vec()));
+        assert_eq!(put.last().map(Vec::as_slice), Some(&b"next"[..]));
+        // More arriving after too long lets it go as well
+        held.take(b"\x1b[?2026hA", &mut |_: &[u8]| {});
+        held.since = std::time::Instant::now().checked_sub(super::SYNC_FOR + std::time::Duration::from_millis(10));
+        let mut late: Vec<u8> = Vec::new();
+        held.take(b"B", &mut |w: &[u8]| late.extend_from_slice(w));
+        assert_eq!(late, b"AB");
     }
 
     /// What a program left switched on is all off after a reset, and what
@@ -3840,6 +4002,8 @@ pub struct Tab {
     bell_count: Arc<AtomicU64>,
     /// Cumulative bytes read from the PTY (incremented by the reader thread)
     bytes_out: Arc<AtomicU64>,
+    /// Output held to be shown all at once (see [`Synced`])
+    synced: SharedSynced,
     /// Holds this tab's processes. Its first purpose is being dropped, which
     /// is what ends them; its second is being counted, which is how a tab
     /// knows it still has work running after the turn is over. See
@@ -4739,6 +4903,7 @@ impl Tab {
         // Cumulative output volume. The INDEX waveform is drawn from its deltas
         // (the change in screen hash alone doesn't tell us "how much is moving")
         let bytes_out = Arc::new(AtomicU64::new(0));
+        let synced: SharedSynced = Default::default();
         let not_utf8 = Arc::new(AtomicBool::new(false));
         let notes: Notes = Arc::new(Mutex::new(Vec::new()));
         let far_hooks: FarHooks = Arc::new(Mutex::new(Vec::new()));
@@ -4795,6 +4960,7 @@ impl Tab {
             let parser = Arc::clone(&parser);
             let counter = Arc::clone(&bytes_out);
             let mojibake = Arc::clone(&not_utf8);
+            let held = Arc::clone(&synced);
             let mut reader = master.try_clone_reader()?;
             let enc = opts.encoding;
             let mut log = opts
@@ -4849,12 +5015,14 @@ impl Tab {
                             // half-width character is written).
                             // If it panics, rebuild the parser and keep reading.
                             // Giving up here would mean the tab shows nothing ever again
+                            //
+                            // Handed over in the pieces a program asked to
+                            // have shown whole (`Synced`)
                             let hit = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
                                 || {
-                                    parser
-                                        .lock()
-                                        .unwrap_or_else(|e| e.into_inner())
-                                        .process(chunk);
+                                    held.lock().unwrap_or_else(|e| e.into_inner()).take(chunk, &mut |whole: &[u8]| {
+                                        parser.lock().unwrap_or_else(|e| e.into_inner()).process(whole);
+                                    });
                                 },
                             ));
                             if hit.is_err() {
@@ -4969,6 +5137,7 @@ impl Tab {
             far_term,
             bell_count,
             bytes_out,
+            synced,
             job,
             job_rest: None,
             aside: Default::default(),
@@ -5770,6 +5939,14 @@ impl Tab {
     }
 
     fn read_state(&mut self, start: Instant) -> (TabState, TabState) {
+        // A picture held for a program that never said it was whole, with
+        // nothing more arriving to let it go: shown after all
+        let late = self.synced.lock().unwrap_or_else(|e| e.into_inner()).overdue();
+        if let Some(late) = late {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.parser.lock().unwrap_or_else(|e| e.into_inner()).process(&late);
+            }));
+        }
         let turned = self.tick_state(start);
         // Written down here, the one place every change passes through, so
         // "done, 5 minutes ago" is counted from the change and not from a guess
