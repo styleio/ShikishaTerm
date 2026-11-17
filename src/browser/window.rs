@@ -322,6 +322,7 @@ pub(super) fn run_window(
     // wears the program's icon -- the one a person quits from
     #[cfg(target_os = "macos")]
     if wears_the_icon {
+        super::frame::keys_repeat_mac();
         super::frame::menu_bar(ev_tx.clone());
         super::frame::end_when_told(ev_tx.clone());
     }

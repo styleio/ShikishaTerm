@@ -219,6 +219,12 @@ once it reaches its first tagged release.
   history of that session and an AI's CLI had no chance to put its
   session away. They are now sent the hangup a closing terminal sends,
   given up to 0.3 seconds, and only what is still running then is killed.
+- **A key held down repeats on a Mac.** Holding a letter in a terminal
+  typed it once: macOS shows a menu of accented letters for a held key
+  unless a program opts out. The app now opts out for itself the first
+  time it starts, if that setting was not already made. To have the accent
+  menu back, run `defaults write` for the app with
+  `ApplePressAndHoldEnabled -bool true`; the app does not change it again.
 - **Merge merges the commit you were looking at.** The Merge button on a
   pull request merged whatever the branch held at that moment. A commit
   pushed after the checks were read as green was merged with them, unseen.

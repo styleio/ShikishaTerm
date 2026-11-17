@@ -542,6 +542,35 @@ pub(super) fn drag(window: &tao::window::Window, at: Option<(f64, f64)>) {
     let _ = window.drag_window();
 }
 
+/// Have a key held down repeat, on a Mac, as it does in a terminal.
+///
+/// A Mac answers a letter held down with a little menu of its accented
+/// forms, unless the program says it does not want that. In a terminal it
+/// is never wanted: `j` held in vim moved one line and stopped, and a
+/// held Backspace was the only key that went on. The setting is the
+/// program's own (`ApplePressAndHoldEnabled`, in its own defaults), read by
+/// the system when a text field starts.
+///
+/// Written once, and never over a choice: only when the setting is not
+/// there, and only if this has not decided before -- somebody who takes it
+/// out again to have the accent menu back is not overruled at the next
+/// start
+#[cfg(target_os = "macos")]
+pub(super) fn keys_repeat_mac() {
+    use objc2_foundation::{NSString, NSUserDefaults};
+    let defaults = NSUserDefaults::standardUserDefaults();
+    let decided = NSString::from_str("ShikishaPressAndHoldDecided");
+    let setting = NSString::from_str("ApplePressAndHoldEnabled");
+    if defaults.boolForKey(&decided) {
+        return;
+    }
+    if defaults.objectForKey(&setting).is_none() {
+        defaults.setBool_forKey(false, &setting);
+        shikisha_core::append_hook_log("mac: held keys repeat (the accent menu is off for this app; ApplePressAndHoldEnabled)");
+    }
+    defaults.setBool_forKey(true, &decided);
+}
+
 /// A Mac's bar double-clicked: what the person chose in System Settings
 /// ("Double-click a window's title bar to"): fill the screen, zoom, minimise,
 /// or nothing. Zoom is the window's own, not a maximise: it goes to the size
