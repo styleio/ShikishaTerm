@@ -3181,6 +3181,7 @@
   "err.caps.host_not_allowed": "許可されていない接続先です: {host}",
   "err.caps.http_disabled": "HTTPは有効化されていません",
   "err.caps.queue_closed": "送信キューが閉じています",
+  "err.browser.window_gone": "このタブが引き取るはずだった窓は、ページが自分で閉じました。そのため、このタブに表示するものはありません。",
   "err.browser.bad_url": "開けないアドレスです: {url}（http:// か https:// のアドレス、またはこのPCのファイルのパスにしてください）",
   "err.localpage.server": "このPCのファイルを表示する準備ができませんでした: {e}",
   "err.localpage.folder": "フォルダは開けません。中のHTMLファイルのパスにしてください: {path}",

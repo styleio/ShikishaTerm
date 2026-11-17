@@ -3184,6 +3184,7 @@
   "err.caps.host_not_allowed": "This destination is not allowed: {host}",
   "err.caps.http_disabled": "HTTP is not enabled",
   "err.caps.queue_closed": "The send queue is closed",
+  "err.browser.window_gone": "The window this tab was made for closed itself, so the tab has nothing to show.",
   "err.browser.bad_url": "Cannot open this address: {url} (use an http:// or https:// address, or the path of a file on this PC)",
   "err.localpage.server": "Files on this PC could not be made ready to show: {e}",
   "err.localpage.folder": "A folder cannot be opened. Use the path of an HTML file in it: {path}",

@@ -107,7 +107,7 @@ fn worth_hearing(ev: &Ev) -> bool {
         // browser there said, which is all a script here has to go by
         || matches!(ev, Ev::PageDialog { from: Some(_), .. } | Ev::PageDialogGone { from: Some(_) })
         // A window one of its pages asked for: opened here as a tab
-        || matches!(ev, Ev::PageWindow { from: Some(_), .. })
+        || matches!(ev, Ev::PageWindow { from: Some(_), .. } | Ev::PageWindowGone { .. })
 }
 
 /// How long to wait for an answer past the deadline the ask itself carried.

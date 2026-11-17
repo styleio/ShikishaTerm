@@ -173,7 +173,10 @@ once it reaches its first tagged release.
   tab's DevTools does not open the next tab's. DevTools' own panels work
   as before. What stays possible is what inspecting a page means: DevTools
   can do anything to its own page, including sending it to another site
-  and reading what that page then holds.
+  and reading what that page then holds. On the server, DevTools sets and
+  deletes cookies, and clears a site's storage, only for the sites its
+  page and the frames in it are at; in the window that is not yet
+  checked.
 
 ### Fixed
 - **Two servers that share one home folder no longer end each other's
@@ -262,8 +265,13 @@ once it reaches its first tagged release.
   showed each piece as it came, so a phone saw a flicker of half-drawn
   screens, and the state shown for a tab could be read off a screen that
   never was. Output between "hold" and "show" (`CSI ? 2026`) is now put
-  on the screen in one step; a program asking whether the terminal can
-  do this is told that it can.
+  on the screen in one step, however the request is cut up on its way and
+  whether or not it is sent with other modes; a program asking whether
+  the terminal can do this is told that it can, and whether it is doing
+  so now. A question the program puts to the terminal in the middle of a
+  picture (where the cursor is, what the terminal is) is answered at
+  once: what is held is shown up to the question. A picture never said
+  to be whole is shown after one second, or when the program ends.
 - **A key held down repeats on a Mac.** Holding a letter in a terminal
   typed it once: macOS shows a menu of accented letters for a held key
   unless a program opts out. The app now opts out for itself the first
@@ -319,10 +327,14 @@ once it reaches its first tagged release.
   started it completes), and what was posted into it is there. It shares
   its opener's storage, private or not, and uses the same browser profile
   and user agent. A window opened blank and sent to an address a moment
-  later (how many sign-ins start) is followed to that address. The same
-  address is not opened twice, and a page that opens windows without end
-  is stopped at six a minute. When the app is started again, the tab is
-  opened afresh at its address, like any tab.
+  later (how many sign-ins start) is followed to that address. Each
+  window gets a tab of its own, even when another tab already shows that
+  address, and only the tab made for a window takes it. A window that
+  closes itself (the last step of a sign-in does) takes its tab with it.
+  A private tab's window stays open after the private tab is closed, and
+  the private storage goes when the last of them does. A page that opens
+  windows without end is stopped at six a minute. When the app is
+  started again, the tab is opened afresh at its address, like any tab.
 - **The git column follows a commit or checkout typed into a terminal.**
   It read its folder again only when an AI tab there finished work, so
   after `git commit` or `git checkout` in a plain terminal it went on

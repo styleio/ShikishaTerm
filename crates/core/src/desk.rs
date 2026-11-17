@@ -290,11 +290,11 @@ pub fn apply_ws_config(
             }
         }
     }
-    // Close whatever's left that isn't in config
-    for mut t in running.into_iter().flatten() {
-        t.kill();
-        removed += 1;
-    }
+    // Close whatever's left that isn't in config: together, so that what
+    // they are given to go is one moment between them
+    let mut left: Vec<Tab> = running.into_iter().flatten().collect();
+    Tab::kill_all(left.iter_mut());
+    removed += left.len();
     *tabs = ordered;
 
     let mut parts = vec![i18n::t("msg.config_reloaded")];

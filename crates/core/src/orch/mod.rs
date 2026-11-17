@@ -1146,7 +1146,16 @@ impl Orchestra {
         // up on before it reported, which it is reporting on all the same.
         // That is a late report on the one named, not a mistake about the
         // one it is on
-        let on_now = self.my_assignment(&me, c.incarnation)?.filter(|a| named.is_none_or(|n| n == a.id));
+        let on_now = self.my_assignment(&me, c.incarnation)?;
+        // What it is told to do next after a report on something that is
+        // over: stop -- unless it is on something else now, which it goes on
+        // with. Told to stop, a worker that does as it is told left the
+        // work it has in hand
+        let after = match on_now.as_ref().filter(|a| named.is_some_and(|n| n != a.id)) {
+            Some(a) => format!("You are still on a{}: go on with it, and report on it when it is done.", a.id),
+            None => "Stop here and wait at the prompt.".to_string(),
+        };
+        let on_now = on_now.filter(|a| named.is_none_or(|n| n == a.id));
         let a = match on_now {
             Some(a) => a,
             None => {
@@ -1206,12 +1215,12 @@ impl Orchestra {
                         Ok(json!({
                             "assignment": format!("a{}", a.id), "state": "ended before this report",
                             "ended": why,
-                            "next": ["The lead has been handed what you reported, as a note. Stop here and wait at the prompt."],
+                            "next": [format!("The lead has been handed what you reported, as a note. {after}")],
                         }))
                     }
                     Some(a) if a.over() => Ok(json!({
                         "assignment": format!("a{}", a.id), "state": "already reported",
-                        "next": ["Stop here and wait at the prompt."],
+                        "next": [after],
                     })),
                     _ => Err("this tab has no assignment to report on".into()),
                 };

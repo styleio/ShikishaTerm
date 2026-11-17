@@ -743,8 +743,20 @@ pub enum Ev {
     /// tab, `window.open` -- in a browser that has no window to give it.
     /// `by_hand` is whether a press or a key on the page asked (the browser's
     /// word for it), as against a script by itself. Made by the host that
-    /// runs the page, from what the browser says, never read off a message
-    PageWindow { from: Option<String>, url: String, by_hand: bool },
+    /// runs the page, from what the browser says, never read off a message.
+    /// `window` is the browser's own name for the window, when the host
+    /// keeps the window itself for the tab made for it to take
+    PageWindow {
+        from: Option<String>,
+        url: String,
+        by_hand: bool,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        window: String,
+    },
+    /// A window said with [`Ev::PageWindow`] closed itself (`window.close()`,
+    /// as the last step of a sign-in does): the tab made for it goes, as the
+    /// window would have. Made by the host, from what the browser says
+    PageWindowGone { window: String },
     /// The person's answer to a page's box, from the board or a phone.
     /// `page` is the page's in-window name and `id` the opening the answer
     /// is for; `text` is what was typed into a prompt -- or `None` when the

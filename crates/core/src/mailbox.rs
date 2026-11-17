@@ -222,7 +222,10 @@ pub struct Mailbox {
     pub page_notices: Vec<(String, String, String, String)>,
     /// Windows pages asked for where there is none to give: (the page's
     /// name, the address, whether a press on the page asked)
-    pub page_windows: Vec<(String, String, bool)>,
+    pub page_windows: Vec<(String, String, bool, String)>,
+    /// Windows said before that have closed themselves, by the browser's
+    /// name for each
+    pub page_windows_gone: Vec<String>,
     /// Pages asking about their notifications: (page, site, whether the
     /// person is to be asked)
     pub notice_asks: Vec<(String, String, bool)>,
@@ -449,7 +452,8 @@ impl Mailbox {
             }
             Ev::Picked { from: Some(child), item } => self.picked.push((child, item)),
             Ev::PageNotice { from: Some(child), site, title, body } => self.page_notices.push((child, site, title, body)),
-            Ev::PageWindow { from: Some(child), url, by_hand } => self.page_windows.push((child, url, by_hand)),
+            Ev::PageWindow { from: Some(child), url, by_hand, window } => self.page_windows.push((child, url, by_hand, window)),
+            Ev::PageWindowGone { window } => self.page_windows_gone.push(window),
             Ev::NoticeAsk { from: Some(child), site, ask } => self.notice_asks.push((child, site, ask)),
             Ev::DialogAnswer { page, id, accept, text } => self.dialog_answers.push((page, id, accept, text)),
             Ev::ConsoleLine { from: Some(child), entry } => self.console_lines.push((child, entry)),
@@ -650,8 +654,11 @@ impl Mailbox {
     pub fn take_page_notices(&mut self) -> Vec<(String, String, String, String)> {
         std::mem::take(&mut self.page_notices)
     }
-    pub fn take_page_windows(&mut self) -> Vec<(String, String, bool)> {
+    pub fn take_page_windows(&mut self) -> Vec<(String, String, bool, String)> {
         std::mem::take(&mut self.page_windows)
+    }
+    pub fn take_page_windows_gone(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.page_windows_gone)
     }
     pub fn take_notice_asks(&mut self) -> Vec<(String, String, bool)> {
         std::mem::take(&mut self.notice_asks)

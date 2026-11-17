@@ -84,6 +84,52 @@ pub fn asked(method: &str, params: &serde_json::Value, target: Option<&str>, own
     }
 }
 
+/// The sites a message would change what the browser keeps for -- a cookie
+/// set or deleted, a site's storage cleared -- by host name. `None` for a
+/// message that changes nothing of the kind. A site that cannot be told
+/// from the message is the empty name, which is no page's site.
+///
+/// The protocol takes any address here: a screen on one page could set a
+/// cookie for a site the page has nothing to do with (a session of
+/// somebody else's choosing, waiting for the person to sign in to it), or
+/// delete one. A door that knows where its page is lets these through for
+/// the page's own sites only ([`within`])
+pub fn sites_written(method: &str, params: &serde_json::Value) -> Option<Vec<String>> {
+    let text = |v: &serde_json::Value, k: &str| v.get(k).and_then(|s| s.as_str()).unwrap_or_default().to_string();
+    // A cookie is for the address it names, or else the domain
+    let cookie = |c: &serde_json::Value| match host_of(&text(c, "url")) {
+        url if !url.is_empty() => url,
+        _ => text(c, "domain").trim_start_matches('.').to_ascii_lowercase(),
+    };
+    match method {
+        "Network.setCookie" | "Network.deleteCookies" => Some(vec![cookie(params)]),
+        "Network.setCookies" => Some(params.get("cookies").and_then(|c| c.as_array()).map(|c| c.iter().map(cookie).collect()).unwrap_or_default()),
+        "Storage.clearDataForOrigin" => Some(vec![host_of(&text(params, "origin"))]),
+        "Storage.clearDataForStorageKey" => Some(vec![host_of(&text(params, "storageKey"))]),
+        _ => None,
+    }
+}
+
+/// The host an address names, in small letters; empty when it names none
+pub fn host_of(address: &str) -> String {
+    let Some((_, rest)) = address.split_once("://") else { return String::new() };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    let host = match host.strip_prefix('[') {
+        // An IPv6 address, in its brackets
+        Some(v6) => v6.split(']').next().unwrap_or_default(),
+        None => host.split(':').next().unwrap_or_default(),
+    };
+    host.trim_end_matches('.').to_ascii_lowercase()
+}
+
+/// Whether every one of `sites` is a site of a page whose frames are at the
+/// hosts `frames`: the frame's own host, or a domain that host is under (a
+/// cookie for `example.com` is one the page at `shop.example.com` holds)
+pub fn within(sites: &[String], frames: &[String]) -> bool {
+    !sites.is_empty() && sites.iter().all(|site| !site.is_empty() && frames.iter().any(|f| f == site || f.ends_with(&format!(".{site}"))))
+}
+
 /// Cut what a screen asks down to its own page, where the same ask can be
 /// made of more: true when something was taken out.
 ///
@@ -177,6 +223,40 @@ pub const EARLY: usize = 16 * 1024 * 1024;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What a screen writes into the browser's keeping is for its page's
+    /// own sites
+    #[test]
+    fn what_a_screen_writes_is_for_its_pages_own_sites() {
+        let frames = ["shop.example.com".to_string(), "pay.example.net".to_string()];
+        let written = |method: &str, params: serde_json::Value| sites_written(method, &params).map(|sites| within(&sites, &frames));
+        // Not a write at all
+        assert_eq!(written("Network.getCookies", serde_json::json!({})), None);
+        assert_eq!(written("Runtime.evaluate", serde_json::json!({"expression": "document.cookie = 'a=b'"})), None);
+        // The page's own, and a frame's
+        assert_eq!(written("Network.setCookie", serde_json::json!({"name": "a", "value": "b", "url": "https://shop.example.com/cart"})), Some(true));
+        assert_eq!(written("Network.setCookie", serde_json::json!({"name": "a", "value": "b", "domain": ".example.com"})), Some(true));
+        assert_eq!(written("Network.deleteCookies", serde_json::json!({"name": "a", "domain": "pay.example.net"})), Some(true));
+        assert_eq!(written("Storage.clearDataForOrigin", serde_json::json!({"origin": "https://SHOP.example.com:8443", "storageTypes": "all"})), Some(true));
+        // Another site's, by any of the roads
+        assert_eq!(written("Network.setCookie", serde_json::json!({"name": "sid", "value": "x", "url": "https://bank.example.org/"})), Some(false));
+        assert_eq!(written("Network.setCookie", serde_json::json!({"name": "sid", "value": "x", "domain": "bank.example.org"})), Some(false));
+        assert_eq!(written("Network.deleteCookies", serde_json::json!({"name": "sid", "url": "https://bank.example.org/"})), Some(false));
+        assert_eq!(written("Storage.clearDataForOrigin", serde_json::json!({"origin": "https://bank.example.org", "storageTypes": "cookies"})), Some(false));
+        assert_eq!(written("Storage.clearDataForStorageKey", serde_json::json!({"storageKey": "https://bank.example.org/"})), Some(false));
+        // One of several is enough to refuse them all; a site that cannot
+        // be told is nobody's; a name that only ends like the page's is not it
+        assert_eq!(
+            written("Network.setCookies", serde_json::json!({"cookies": [{"name": "a", "value": "b", "url": "https://shop.example.com/"}, {"name": "sid", "value": "x", "domain": "bank.example.org"}]})),
+            Some(false)
+        );
+        assert_eq!(written("Network.setCookies", serde_json::json!({"cookies": []})), Some(false));
+        assert_eq!(written("Network.setCookie", serde_json::json!({"name": "a", "value": "b"})), Some(false));
+        assert_eq!(written("Network.setCookie", serde_json::json!({"name": "a", "value": "b", "domain": "notshop.example.com.evil.test"})), Some(false));
+        assert_eq!(written("Network.setCookie", serde_json::json!({"name": "a", "value": "b", "domain": "ample.com"})), Some(false));
+        assert_eq!(host_of("https://user:pw@[::1]:8080/x"), "::1");
+        assert_eq!(host_of("about:blank"), "");
+    }
 
     /// A screen follows its own page and its frames, and reaches no other
     #[test]

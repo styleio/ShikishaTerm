@@ -2231,6 +2231,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             Ok(n) => append_hook_log(&format!("{n} sign-in tab(s) left from before taken off the desk")),
             Err(e) => append_hook_log(&format!("could not look for sign-in tabs left from before: {e:#}")),
         }
+        // A tab made for a window a page opened is a tab like any other
+        // from here on: the window it was made for went with the browser
+        if let Err(e) = config::strip_marks_at(&config::config_file_path(), crate::pagewindow::MARK) {
+            append_hook_log(&format!("could not look for tabs made for windows that are gone: {e:#}"));
+        }
         config::load()
     } else {
         None
@@ -9192,7 +9197,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // beside it. Brought to the front only when a press on the page
         // asked -- a tab a script opened by itself is there to be found, and
         // does not take the screen from what the person is doing
-        for (child, url, by_hand) in shell.mail().take_page_windows() {
+        for (child, url, by_hand, window) in shell.mail().take_page_windows() {
             // A page is known by its desk's place in the list and its own
             // name. Its desk need not be the one on screen: a page goes on
             // working behind another desk, and its window is its desk's
@@ -9231,8 +9236,16 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 continue;
             }
             let folder = desk.folder_of(opener).and_then(|f| f.place()).unwrap_or_default();
-            match page_in_folder_like(desk, &folder, &url, &page_name_of(&url), Some(opener)) {
+            // A window the browser keeps for its tab gets a tab of its own
+            // every time, whatever else shows that address: it is a document
+            // of its own (what was posted into it, what its opener holds),
+            // not another look at the address
+            let kept = (!window.is_empty()).then_some(window.as_str());
+            match page_in_folder_like(desk, &folder, &url, &page_name_of(&url), Some(opener), kept) {
                 Ok((id, fresh)) => {
+                    if let Some(window) = kept.filter(|_| fresh) {
+                        crate::pagewindow::claim(&format!("{on_desk}/{id}"), window);
+                    }
                     if fresh {
                         for who in [String::new(), child.clone()] {
                             page_windows_lately.entry(who).or_default().push(now);
@@ -9246,6 +9259,16 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     }
                 }
                 Err(e) => flash = Some(e),
+            }
+        }
+        // A window a tab was made for closed itself (the last step of a
+        // sign-in does): its tab goes with it, as the window would have
+        for window in shell.mail().take_page_windows_gone() {
+            crate::pagewindow::let_go(&window);
+            match config::drop_marked_tabs_at(&config::config_file_path(), crate::pagewindow::MARK, Some(&window), None) {
+                Ok(0) => {}
+                Ok(_) => watcher.poke(),
+                Err(e) => append_hook_log(&format!("page window: the tab of a window that closed itself could not be taken off the desk: {e:#}")),
             }
         }
         // A page asking about them: told what was said about its site, or the
@@ -16890,6 +16913,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // and goes on, unless the person said to stop them all (far-keep plan §7)
     let mut kept_on: Vec<String> = Vec::new();
     let mut kept_for: std::collections::BTreeMap<String, u32> = Default::default();
+    // Those that end are all told first: the moment they are given to go
+    // is one moment between them, not one each (`Tab::closing_soon`)
+    for t in tabs.iter().chain(desk_tabs.iter().flatten()) {
+        if stop_all.get() || !t.kept_away() {
+            t.closing_soon();
+        }
+    }
     for t in tabs.iter_mut().chain(desk_tabs.iter_mut().flatten()) {
         if !stop_all.get() && t.kept_away() {
             if let Some(crate::elsewhere::Elsewhere::Cloud(h)) = t.machine()
@@ -17819,7 +17849,7 @@ const PAGE_WINDOWS_WITHIN: Duration = Duration::from_secs(60);
 /// already there for the same address is the answer instead of a second one.
 /// Gives the tab's name and whether it was just made
 fn page_in_folder(desk: &config::Desk, key: &std::path::Path, url: &str, name: &str) -> Result<(String, bool), String> {
-    page_in_folder_like(desk, key, url, name, None)
+    page_in_folder_like(desk, key, url, name, None, None)
 }
 
 /// The same, for a page opened from the page of the tab `like`: kept where
@@ -17831,9 +17861,19 @@ fn page_in_folder(desk: &config::Desk, key: &std::path::Path, url: &str, name: &
 /// chosen not to, and one of a tab in a profile of its own would sign in as
 /// whoever the ordinary profile is. A private tab's is private too: with a
 /// storage of its own, not the first one's (a private page shares with none)
-fn page_in_folder_like(desk: &config::Desk, key: &std::path::Path, url: &str, name: &str, like: Option<&config::FlatTab>) -> Result<(String, bool), String> {
+/// -- unless the browser keeps the window itself for the tab (`window`, its
+/// name), which is then taken as it stands, in the storage it was opened in.
+/// Such a tab is always a new one, and is marked with the window's name
+fn page_in_folder_like(
+    desk: &config::Desk,
+    key: &std::path::Path,
+    url: &str,
+    name: &str,
+    like: Option<&config::FlatTab>,
+    window: Option<&str>,
+) -> Result<(String, bool), String> {
     let kept = |ft: &config::FlatTab| (ft.cfg.private, ft.cfg.browser_profile.clone().filter(|_| !ft.cfg.private), ft.cfg.user_agent.clone());
-    let have = desk.tabs.iter().find(|ft| {
+    let have = desk.tabs.iter().filter(|_| window.is_none()).find(|ft| {
         desk.folder_of(ft).and_then(|f| f.place()).is_some_and(|p| crate::uistate::same_folder(&p, key))
             && config::browser_url_of(&ft.cfg.command.argv()).as_deref() == Some(url)
             // One kept somewhere else is not this one already there. A
@@ -17856,6 +17896,9 @@ fn page_in_folder_like(desk: &config::Desk, key: &std::path::Path, url: &str, na
         if let Some(ua) = calls_itself {
             line["user_agent"] = ua.into();
         }
+    }
+    if let Some(window) = window {
+        line[crate::pagewindow::MARK] = window.into();
     }
     // A tab in no folder puts its page in none either, rather than in
     // whichever folder this program happens to be started from

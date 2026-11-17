@@ -104,6 +104,7 @@ pub mod migrate;
 pub mod netaddr;
 pub mod notify;
 pub mod pagedialog;
+pub mod pagewindow;
 pub mod pagenotice;
 pub mod orch;
 pub mod pagejs;

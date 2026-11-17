@@ -429,6 +429,8 @@ fn a_late_report_is_about_the_assignment_it_names() {
     let said = w.ok("codex", "report", vec![json!("failed"), json!("Could not do the second."), json!({"assignment": "a2"})]);
     assert_eq!(said["state"], "ended before this report", "{said}");
     assert_eq!(said["assignment"], "a2", "{said}");
+    // ...and it is not told to stop: it has the third in hand
+    assert!(said["next"].to_string().contains("still on a3") && !said["next"].to_string().contains("Stop here"), "{said}");
     let inbox = w.ok("lead", "inbox", vec![]);
     assert!(inbox["mail"].to_string().contains("A late report on a2 (t2)"), "{inbox}");
     w.ok("lead", "inbox", vec![json!({"dealt": inbox["handover"]})]);

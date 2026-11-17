@@ -7335,6 +7335,34 @@ pub fn drop_marked_tabs_at(path: &Path, mark: &str, value: Option<&str>, folder:
     Ok(gone)
 }
 
+/// Take the key `mark` off every tab written with it, and say how many had
+/// it. For a mark that means something only while the app runs (which window
+/// a tab was made for): at the next start the tab is a tab like any other
+pub fn strip_marks_at(path: &Path, mark: &str) -> Result<usize> {
+    fn walk(v: &mut serde_json::Value, mark: &str) -> usize {
+        match v {
+            serde_json::Value::Object(map) => {
+                let mut gone = 0;
+                for list in ["tabs", "children"] {
+                    if let Some(serde_json::Value::Array(tabs)) = map.get_mut(list) {
+                        gone += tabs.iter_mut().filter_map(|t| t.as_object_mut()).filter_map(|t| t.remove(mark)).count();
+                    }
+                }
+                gone + map.values_mut().map(|child| walk(child, mark)).sum::<usize>()
+            }
+            serde_json::Value::Array(list) => list.iter_mut().map(|child| walk(child, mark)).sum(),
+            _ => 0,
+        }
+    }
+    let Ok(text) = std::fs::read_to_string(path) else { return Ok(0) };
+    let mut doc: serde_json::Value = serde_json::from_str(without_bom(&text))?;
+    let gone = walk(&mut doc, mark);
+    if gone > 0 {
+        crate::crypto::write_atomic(path, &serde_json::to_string_pretty(&doc)?)?;
+    }
+    Ok(gone)
+}
+
 pub fn add_tab_with_uid_at(
     path: &Path,
     desk: &str,
@@ -8249,6 +8277,20 @@ mod marked_tab_tests {
         assert_eq!(super::drop_marked_tabs_at(&path, "sign_in_for", Some("7"), Some(("/w", "vm"))).unwrap(), 1, "only the folder named");
         let _ = std::fs::remove_file(&path);
         assert_eq!(super::drop_marked_tabs_at(&path, "sign_in_for", None, None).unwrap(), 0, "no settings, nothing to do");
+
+        // A mark taken off, and the tabs that had it left where they are
+        std::fs::write(
+            &path,
+            r#"{"desks": [{"name": "d", "tabs": [
+                {"name": "receipt", "command": "browser https://shop.example/receipt", "window_of": "A1"},
+                {"name": "kept", "command": "sh", "children": [{"name": "child", "window_of": "B2"}]}
+            ]}]}"#,
+        )
+        .unwrap();
+        assert_eq!(super::strip_marks_at(&path, "window_of").unwrap(), 2);
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(!after.contains("window_of") && after.contains("receipt") && after.contains("child"), "{after}");
+        assert_eq!(super::strip_marks_at(&path, "window_of").unwrap(), 0);
     }
 }
 

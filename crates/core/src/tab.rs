@@ -383,6 +383,9 @@ pub struct QueryResponder {
     /// `OSC 7` address). How a terminal on another machine tells us that
     /// machine's own name, which nothing else does
     said_machine: ReportedCwd,
+    /// Whether a picture is being held to be shown whole just now
+    /// ([`Synced`]), for the program that asks
+    holding: Arc<AtomicBool>,
     /// What an AI's hook on another machine said to this terminal (see
     /// `agenthook::far_line`), waiting for the loop
     far_hooks: FarHooks,
@@ -708,66 +711,210 @@ fn note_of(params: &[&[u8]]) -> Option<(String, String)> {
 /// Held here, before the parser, and handed over in one piece: the parser
 /// is locked for the whole of it, so nothing that looks at the screen -- the
 /// drawing, the detection -- can look in the middle. A program that says
-/// "hold on" and never "now" (killed, cut off) is not believed for long
+/// "hold on" and never "now" (killed, cut off) is not believed for long.
+///
+/// **What is not held:** a question the program puts to its terminal in the
+/// middle of a picture (where the caret is, what the terminal is). The
+/// program is waiting for the answer, and one that gives the terminal a
+/// short while to give it would take a held question for no answer. So what
+/// is held is let go up to the question, which is then answered, and the
+/// rest of the picture is held as before
 #[derive(Default)]
 pub struct Synced {
     held: Vec<u8>,
     since: Option<Instant>,
+    /// Where in a control sequence the output stands, carried from one read
+    /// to the next: a read ends wherever it ends, in the middle of "hold on"
+    /// as readily as anywhere
+    at: Reading,
+    /// Whether a picture is being held now, for whoever answers the program
+    /// (the same as `since`, where it can be read without this lock)
+    holding: Arc<AtomicBool>,
 }
 
 type SharedSynced = Arc<Mutex<Synced>>;
 
-const SYNC_BEGIN: &[u8] = b"\x1b[?2026h";
-const SYNC_END: &[u8] = b"\x1b[?2026l";
+/// Where the output stands in a control sequence
+#[derive(Default)]
+enum Reading {
+    #[default]
+    Plain,
+    /// After ESC
+    Esc,
+    /// In `ESC [`: its parameters and what else came before its last letter
+    Csi(Vec<u8>),
+    /// In a string (`ESC ]`, `ESC P` and the like, named by `kind`): how it
+    /// starts, and whether the ESC that may end it has come
+    Text { kind: u8, head: Vec<u8>, esc: bool },
+}
+
+/// What a control sequence that just ended means for what is held
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Mark {
+    /// "Hold on": `CSI ? 2026 h`
+    Hold,
+    /// "Now": `CSI ? 2026 l`
+    Show,
+    /// A question the terminal answers
+    Asked,
+}
+
+/// How much of a control sequence is kept to tell what it is
+const READ_MOST: usize = 48;
+
+/// What the control sequence `ESC [ seq last` means
+fn csi_mark(seq: &[u8], last: u8) -> Option<Mark> {
+    let private = seq.first() == Some(&b'?');
+    let numbers = &seq[usize::from(private || seq.first() == Some(&b'>'))..];
+    let plain = numbers.iter().all(|b| b.is_ascii_digit() || *b == b';');
+    let mut params = numbers.split(|b| *b == b';').map(|p| std::str::from_utf8(p).ok().and_then(|p| p.parse::<u32>().ok()));
+    match last {
+        // With other modes in the same sequence as readily as alone
+        b'h' | b'l' if private && plain && params.any(|p| p == Some(2026)) => Some(if last == b'h' { Mark::Hold } else { Mark::Show }),
+        // Where the caret is and whether the terminal is well; what the
+        // terminal is; its parameters
+        b'n' | b'c' => Some(Mark::Asked),
+        b'x' if plain => Some(Mark::Asked),
+        // Whether a mode is set
+        b'p' if seq.contains(&b'$') => Some(Mark::Asked),
+        // The keyboard in force; the terminal's name and version
+        b'u' if private => Some(Mark::Asked),
+        b'q' if seq.first() == Some(&b'>') => Some(Mark::Asked),
+        // The window's size, in its several units
+        b't' if plain && params.next().flatten().is_some_and(|p| (13..=21).contains(&p)) => Some(Mark::Asked),
+        _ => None,
+    }
+}
+
+/// What a string that just ended means: a colour or the clipboard asked for
+/// (`OSC ... ; ?`), a setting or a capability asked for (`DCS $ q`, `DCS + q`)
+fn text_mark(kind: u8, head: &[u8]) -> Option<Mark> {
+    let asked = match kind {
+        b']' => head.windows(2).any(|w| w == b";?"),
+        b'P' => head.starts_with(b"$q") || head.starts_with(b"+q"),
+        _ => false,
+    };
+    asked.then_some(Mark::Asked)
+}
+
 /// How long, and how much, is held for a picture that is never said to be
 /// whole
 const SYNC_FOR: std::time::Duration = std::time::Duration::from_secs(1);
 const SYNC_MOST: usize = 4 * 1024 * 1024;
 
 impl Synced {
+    /// One more byte of output: what the control sequence it ends means,
+    /// when it ends one that means something here
+    fn read(&mut self, b: u8) -> Option<Mark> {
+        const ESC: u8 = 0x1b;
+        // The two controls that give a sequence up where it stands
+        const GIVEN_UP: [u8; 2] = [0x18, 0x1a];
+        match &mut self.at {
+            Reading::Plain => {
+                if b == ESC {
+                    self.at = Reading::Esc;
+                }
+                None
+            }
+            Reading::Esc => {
+                self.at = match b {
+                    b'[' => Reading::Csi(Vec::new()),
+                    b']' | b'P' | b'_' | b'^' | b'X' => Reading::Text { kind: b, head: Vec::new(), esc: false },
+                    ESC => Reading::Esc,
+                    _ => Reading::Plain,
+                };
+                None
+            }
+            Reading::Csi(seq) => match b {
+                ESC => {
+                    self.at = Reading::Esc;
+                    None
+                }
+                0x40..=0x7e => {
+                    let mark = csi_mark(seq, b);
+                    self.at = Reading::Plain;
+                    mark
+                }
+                0x20..=0x3f => {
+                    if seq.len() < READ_MOST {
+                        seq.push(b);
+                    }
+                    None
+                }
+                _ if GIVEN_UP.contains(&b) => {
+                    self.at = Reading::Plain;
+                    None
+                }
+                // Another control in the middle is acted on, and the sequence goes on
+                _ => None,
+            },
+            Reading::Text { kind, head, esc } => {
+                let ends = (*esc && b == b'\\') || (*kind == b']' && b == 0x07 && !*esc);
+                if ends {
+                    let mark = text_mark(*kind, head);
+                    self.at = Reading::Plain;
+                    return mark;
+                }
+                if *esc {
+                    // An ESC that did not end it starts something else
+                    self.at = Reading::Esc;
+                    return self.read(b);
+                }
+                match b {
+                    ESC => *esc = true,
+                    _ if GIVEN_UP.contains(&b) => self.at = Reading::Plain,
+                    _ if head.len() < READ_MOST => head.push(b),
+                    _ => {}
+                }
+                None
+            }
+        }
+    }
+
+    fn hold(&mut self, on: bool) {
+        self.since = on.then(Instant::now);
+        self.holding.store(on, Ordering::SeqCst);
+    }
+
     /// Output as it arrives, handed on to `put` in the pieces the parser is
     /// to be given whole: what is not held, as it comes; what is, when its
-    /// end arrives
+    /// end arrives -- or a question in it does
     fn take(&mut self, chunk: &[u8], put: &mut dyn FnMut(&[u8])) {
-        let find = |hay: &[u8], needle: &[u8]| hay.windows(needle.len()).position(|w| w == needle);
-        let mut rest = chunk.to_vec();
-        while !rest.is_empty() {
-            match self.since {
-                // Shown as it comes, up to where it asks to be held. (The
-                // asking cut in two by where a read ended is not seen, and
-                // that one picture is drawn as it comes -- as every picture
-                // was before)
-                None => match find(&rest, SYNC_BEGIN) {
-                    None => {
-                        put(&rest);
-                        return;
-                    }
-                    Some(at) => {
-                        let after = rest.split_off(at + SYNC_BEGIN.len());
-                        put(&rest);
-                        self.since = Some(Instant::now());
-                        rest = after;
-                    }
-                },
-                // Held, up to where it says the picture is whole. Looked for
-                // from a little before what is new, since the end may have
-                // been cut in two by where the last read ended
-                Some(since) => {
-                    let from = self.held.len().saturating_sub(SYNC_END.len() - 1);
-                    self.held.extend_from_slice(&rest);
-                    rest.clear();
-                    match find(&self.held[from..], SYNC_END) {
-                        Some(at) => {
-                            rest = self.held.split_off(from + at + SYNC_END.len());
-                            put(&std::mem::take(&mut self.held));
-                            self.since = None;
-                        }
-                        None if self.held.len() > SYNC_MOST || since.elapsed() > SYNC_FOR => {
-                            put(&std::mem::take(&mut self.held));
-                            self.since = None;
-                        }
-                        None => {}
-                    }
+        let mut from = 0;
+        for (i, b) in chunk.iter().enumerate() {
+            let Some(mark) = self.read(*b) else { continue };
+            let upto = &chunk[from..=i];
+            match (mark, self.since.is_some()) {
+                // Shown as it comes, up to where it asks to be held
+                (Mark::Hold, false) => {
+                    put(upto);
+                    self.hold(true);
+                }
+                // Held, up to where it says the picture is whole
+                (Mark::Show, true) => {
+                    self.held.extend_from_slice(upto);
+                    put(&std::mem::take(&mut self.held));
+                    self.hold(false);
+                }
+                // Let go up to the question, which is answered; the rest of
+                // the picture is still held
+                (Mark::Asked, true) => {
+                    self.held.extend_from_slice(upto);
+                    put(&std::mem::take(&mut self.held));
+                }
+                (Mark::Hold, true) | (Mark::Show, false) | (Mark::Asked, false) => continue,
+            }
+            from = i + 1;
+        }
+        let rest = &chunk[from..];
+        match self.since {
+            None if rest.is_empty() => {}
+            None => put(rest),
+            Some(since) => {
+                self.held.extend_from_slice(rest);
+                if self.held.len() > SYNC_MOST || since.elapsed() > SYNC_FOR {
+                    put(&std::mem::take(&mut self.held));
+                    self.hold(false);
                 }
             }
         }
@@ -777,12 +924,17 @@ impl Synced {
     /// after all
     fn overdue(&mut self) -> Option<Vec<u8>> {
         match self.since {
-            Some(since) if since.elapsed() > SYNC_FOR => {
-                self.since = None;
-                Some(std::mem::take(&mut self.held))
-            }
+            Some(since) if since.elapsed() > SYNC_FOR => self.rest(),
             _ => None,
         }
+    }
+
+    /// Whatever is held, to be shown now: nothing more is coming (the
+    /// program ended)
+    fn rest(&mut self) -> Option<Vec<u8>> {
+        self.since?;
+        self.hold(false);
+        Some(std::mem::take(&mut self.held))
     }
 }
 
@@ -951,9 +1103,12 @@ impl vt100::Callbacks for QueryResponder {
             // DA2: secondary terminal type query
             (Some(b'>'), 'c', _) => self.reply(b"\x1b[>0;0;0c"),
             // Asked whether output can be held to be shown all at once
-            // (`CSI ? 2026 $ p`): it can, and is not being just now -- what
-            // is held is not read until it is let go (see `Synced`)
-            (Some(b'?'), 'p', Some(2026)) if i2 == Some(b'$') => self.reply(b"\x1b[?2026;2$y"),
+            // (`CSI ? 2026 $ p`): it can, and whether it is being just now
+            // (see `Synced`)
+            (Some(b'?'), 'p', Some(2026)) if i2 == Some(b'$') => match self.holding.load(Ordering::SeqCst) {
+                true => self.reply(b"\x1b[?2026;1$y"),
+                false => self.reply(b"\x1b[?2026;2$y"),
+            },
             // The keyboard a program is asking for. Claude Code asks on
             // startup, and so does anything else that wants Shift+Enter to
             // arrive as Shift+Enter instead of as a bare Return.
@@ -2305,6 +2460,7 @@ mod tests {
                 notes: Arc::new(Mutex::new(Vec::new())),
                 cwd: Arc::new(Mutex::new(String::new())),
                 said_machine: Default::default(),
+                holding: Default::default(),
                 window_title: Arc::new(Mutex::new(String::new())),
                 clipboard_writes: false,
                 keyboard: Arc::clone(&keyboard),
@@ -2351,6 +2507,11 @@ mod tests {
         p.process(b"\x1b[?2026$p");
         let answers = String::from_utf8_lossy(&said.lock().unwrap()).to_string();
         assert!(answers.ends_with("\x1b[?2026;2$y"), "not told that output can be held: {answers:?}");
+        // ...and, while one is, that it is
+        p.callbacks().holding.store(true, std::sync::atomic::Ordering::SeqCst);
+        p.process(b"\x1b[?2026$p");
+        let answers = String::from_utf8_lossy(&said.lock().unwrap()).to_string();
+        assert!(answers.ends_with("\x1b[?2026;1$y"), "not told that output is being held: {answers:?}");
     }
 
     /// A picture a program asked to have shown whole reaches the screen in
@@ -2389,6 +2550,38 @@ mod tests {
         let (put, held) = fed(&[b"\x1b[?2026h", &much]);
         assert_eq!(put.len(), 2, "held without end");
         assert!(held.since.is_none());
+
+        // Cut in two anywhere at all -- in the middle of "hold on", of
+        // "now", of the picture: everything arrives, in order, and the
+        // picture in one piece that ends with "now"
+        let whole: &[u8] = b"before\x1b[?2026hTOP\r\nBOTTOM\x1b[?2026lafter";
+        for cut in 0..=whole.len() {
+            let (put, held) = fed(&[&whole[..cut], &whole[cut..]]);
+            assert_eq!(put.concat().replace('E', "\x1b").as_bytes(), whole, "cut at {cut}");
+            let picture = put.iter().find(|p| p.contains('T')).unwrap_or_else(|| panic!("cut at {cut}: {put:?}"));
+            assert!(picture.contains("BOTTOM") && picture.ends_with("E[?2026l"), "cut at {cut}, the picture came in pieces: {put:?}");
+            assert!(held.since.is_none(), "cut at {cut}");
+        }
+        // Said with another mode in the same sequence
+        assert_eq!(fed(&[b"\x1b[?25;2026hA\x1b[?2026;25lB"]).0, ["E[?25;2026h", "AE[?2026;25l", "B"]);
+        // Something that only looks like it is not it
+        assert_eq!(fed(&[b"\x1b[2026hA", b"\x1b[?12026hB", b"\x1b]0;\x1b[?2026h\x07C"]).0.len(), 3);
+
+        // A question in the middle of a picture is not held: what is held is
+        // let go up to it, and the rest of the picture is held as before
+        let (put, held) = fed(&[b"\x1b[?2026hhalf\x1b[6n", b"more"]);
+        assert_eq!(put, ["E[?2026h", "halfE[6n"]);
+        assert_eq!(held.held, b"more");
+        assert!(held.holding.load(std::sync::atomic::Ordering::SeqCst));
+        for asked in [&b"\x1b[c"[..], b"\x1b[>c", b"\x1b[?2026$p", b"\x1b[?u", b"\x1b[>q", b"\x1b[18t", b"\x1b]11;?\x07", b"\x1b]10;?\x1b\\", b"\x1bP$qm\x1b\\"] {
+            let (put, _) = fed(&[b"\x1b[?2026hx", asked, b"y"]);
+            assert_eq!(put.len(), 2, "{:?} was held with the picture", String::from_utf8_lossy(asked));
+        }
+        // What is not a question stays held
+        for told in [&b"\x1b[2J"[..], b"\x1b[1;1H", b"\x1b[38;5;1m", b"\x1b]0;title\x07", b"\x1b[8;24;80t", b"\x1b[?25l"] {
+            let (put, _) = fed(&[b"\x1b[?2026hx", told, b"y"]);
+            assert_eq!(put.len(), 1, "{:?} let the picture go", String::from_utf8_lossy(told));
+        }
     }
 
     /// A program that asks for a picture to be held and never says it is
@@ -2482,6 +2675,7 @@ mod tests {
                 keyboard: Arc::new(Mutex::new(Vec::new())),
                 cwd: Arc::new(Mutex::new(String::new())),
                 said_machine: Default::default(),
+                holding: Default::default(),
             },
         );
 
@@ -2522,6 +2716,7 @@ mod tests {
                 notes: Arc::clone(&notes),
                 cwd: Arc::clone(&cwd),
                 said_machine: Default::default(),
+                holding: Default::default(),
                 window_title: Arc::new(Mutex::new(String::new())),
                 clipboard_writes: false,
                 keyboard: Arc::new(Mutex::new(Vec::new())),
@@ -4926,6 +5121,7 @@ impl Tab {
                 keyboard: Arc::clone(&keyboard),
                 cwd: Arc::clone(&reported_cwd),
                 said_machine: Arc::clone(&said_machine),
+                holding: Arc::clone(&synced.lock().unwrap_or_else(|e| e.into_inner()).holding),
                 clipboard_writes: crate::config::load()
                     .and_then(|c| c.tui_clipboard)
                     .unwrap_or(true),
@@ -5959,12 +6155,7 @@ impl Tab {
     fn read_state(&mut self, start: Instant) -> (TabState, TabState) {
         // A picture held for a program that never said it was whole, with
         // nothing more arriving to let it go: shown after all
-        let late = self.synced.lock().unwrap_or_else(|e| e.into_inner()).overdue();
-        if let Some(late) = late {
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                self.parser.lock().unwrap_or_else(|e| e.into_inner()).process(&late);
-            }));
-        }
+        self.show_held(false);
         let turned = self.tick_state(start);
         // Written down here, the one place every change passes through, so
         // "done, 5 minutes ago" is counted from the change and not from a guess
@@ -5975,9 +6166,34 @@ impl Tab {
         turned
     }
 
+    /// Show what is held for a picture that was never said to be whole:
+    /// once it has been held too long, or (`ended`) because its program is
+    /// gone and nothing more is coming.
+    ///
+    /// Handed to the parser while the held output is still locked, as the
+    /// reader does: let go of first, the reader could put the output that
+    /// came next in ahead of it. And counted, as output is when it arrives:
+    /// the count is what tells whoever draws the screen that it moved, and
+    /// this is the screen moving with nothing having arrived
+    fn show_held(&mut self, ended: bool) {
+        let mut synced = self.synced.lock().unwrap_or_else(|e| e.into_inner());
+        let late = match ended {
+            true => synced.rest(),
+            false => synced.overdue(),
+        };
+        let Some(late) = late else { return };
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.parser.lock().unwrap_or_else(|e| e.into_inner()).process(&late);
+        }));
+        self.bytes_out.fetch_add(1, Ordering::Relaxed);
+    }
+
     fn tick_state(&mut self, start: Instant) -> (TabState, TabState) {
         if self.exited() {
             let old = self.state;
+            // The last thing it drew may be in a picture it never said was
+            // whole: that is what it said last
+            self.show_held(true);
             // What the program said last, before it ended -- an error, or why
             // the tab is not going on -- is read as its screen from now on
             if old != TabState::Exited {
@@ -8293,6 +8509,7 @@ mod far_hook_tests {
                 notes: Default::default(),
                 cwd: Default::default(),
                 said_machine: Default::default(),
+                holding: Default::default(),
                 window_title: Default::default(),
                 clipboard_writes: false,
                 keyboard: Default::default(),
