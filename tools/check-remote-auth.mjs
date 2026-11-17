@@ -167,6 +167,13 @@ test('what a phone sends reaches the PC in the order it was sent', async () => {
     fetch: (url, options) => new Promise((resolve, reject) => {
       const said = JSON.parse(options.body);
       if (said.k === 'lost') { options.signal.addEventListener('abort', () => reject(new Error('aborted'))); return; }
+      // Answered, and the answer itself never arrives whole
+      if (said.k === 'cut') {
+        resolve({ok: true, json: () => new Promise((_, no) => options.signal.addEventListener('abort', () => no(new Error('aborted'))))});
+        return;
+      }
+      // Answered with nothing to read in it, as an older PC does
+      if (said.k === 'bare') { resolve({ok: true, json: () => Promise.reject(new Error('not JSON'))}); return; }
       setTimeout(() => { arrived.push(said.k); resolve({ok: true, json: async () => ({ok: true})}); }, waits[said.k]);
     }),
   });
@@ -183,4 +190,11 @@ test('what a phone sends reaches the PC in the order it was sent', async () => {
   giveUp.fn();
   assert.deepEqual({...(await lost)}, {ok: false, heard: false});
   assert.equal((await after).ok, true);
+  // An answer given up on while it was still arriving is not a yes; one
+  // with nothing to read in it is
+  const cut = context.overTheWire({k: 'cut'});
+  await flush();
+  timers.filter(t => t.ms === 15000).pop().fn();
+  assert.deepEqual({...(await cut)}, {ok: false, heard: false});
+  assert.deepEqual({...(await context.overTheWire({k: 'bare'}))}, {ok: true, heard: true});
 });

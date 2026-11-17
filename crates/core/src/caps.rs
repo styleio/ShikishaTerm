@@ -751,9 +751,11 @@ impl Capabilities {
         let desk = self.desk.get();
         // Kept as it was asked for: a file on this PC is served afresh each
         // time it is opened, at an address that is not the same after a restart
+        // ...and without the window it may have been made for: that is
+        // taken once, now, and a page opened again later is opened afresh
         self.opened.borrow_mut().insert(
             Self::key(desk, name),
-            (url.to_string(), profile.clone()),
+            (url.to_string(), profile.clone().taking(None)),
         );
         let url = match crate::localpage::address(url) {
             Some(served) => served.map_err(|why| anyhow::anyhow!(why))?,

@@ -152,7 +152,7 @@ impl Held {
         if !self.answering {
             return;
         }
-        self.writer.put(bytes.to_vec());
+        let _ = self.writer.put(bytes.to_vec());
     }
 }
 
@@ -197,24 +197,25 @@ impl Typed {
         Self { queue, waiting, said: Arc::default() }
     }
 
-    /// Queue `bytes` to be typed. Never waits. Dropped when the program has
-    /// left too much untaken already
-    fn put(&self, bytes: Vec<u8>) {
+    /// Queue `bytes` to be typed. Never waits. `false` when they were
+    /// dropped: the program has left too much untaken already
+    fn put(&self, bytes: Vec<u8>) -> bool {
         let n = bytes.len() as u64;
         if n == 0 {
-            return;
+            return true;
         }
         if self.waiting.fetch_add(n, Ordering::SeqCst) + n > TYPED_MOST {
             self.waiting.fetch_sub(n, Ordering::SeqCst);
             if !self.said.swap(true, Ordering::SeqCst) {
                 crate::fardaemon::log("a terminal's program is not taking what it is typed; what is typed from here on is dropped until it does");
             }
-            return;
+            return false;
         }
         self.said.store(false, Ordering::SeqCst);
         if self.queue.send(bytes).is_err() {
             self.waiting.fetch_sub(n, Ordering::SeqCst);
         }
+        true
     }
 }
 
@@ -433,7 +434,12 @@ fn wait_for_prompt(term: &Term, quiet: Duration) {
 }
 
 /// Whether the shell of `term` is editing a line now: in front on its
-/// terminal, with the terminal taking keys one at a time
+/// terminal, with the terminal taking keys one at a time and showing none
+/// of them itself (a shell that edits its line draws what is typed).
+///
+/// Both: a start-up file that asks for one key (`read -n 1`) also takes
+/// keys one at a time, with the shell in front -- but leaves the terminal
+/// showing them, and what is typed then is its answer, not a command
 #[cfg(unix)]
 fn at_prompt(term: &Term) -> bool {
     let Ok(master) = term.master.lock() else { return false };
@@ -445,7 +451,7 @@ fn at_prompt(term: &Term) -> bool {
     if unsafe { libc::tcgetattr(fd, &mut modes) } != 0 {
         return false;
     }
-    let editing = modes.c_lflag & libc::ICANON == 0;
+    let editing = modes.c_lflag & (libc::ICANON | libc::ECHO) == 0;
     let in_front = match (term.session, master.process_group_leader()) {
         (Some(shell), Some(front)) => i64::from(shell) == i64::from(front),
         _ => true,
@@ -1052,11 +1058,11 @@ impl Terms {
                 let shell = m["argv"].get(0).and_then(|a| a.as_str()).map(str::to_string).unwrap_or_else(login_shell);
                 std::thread::spawn(move || {
                     wait_for_prompt(&term, quiet_at_prompt(&shell));
-                    term.writer.put(line);
+                    let _ = term.writer.put(line);
                 });
             }
             #[cfg(not(unix))]
-            term.writer.put(line);
+            let _ = term.writer.put(line);
         }
         Ok(id)
     }
@@ -1218,8 +1224,12 @@ impl Job for Terms {
             "attach" => Some(self.attach(core, line, m)).filter(|a| a["did"] != "attaching"),
             "in" => match self.owned(line, m) {
                 Ok(term) => {
-                    term.writer.put(unb64(&m["b"]));
-                    None
+                    // Dropped: said, so that whoever typed is told, and does
+                    // not take a brief with its end missing for one sent
+                    match term.writer.put(unb64(&m["b"])) {
+                        true => None,
+                        false => Some(json!({ "did": "full", "term": m["term"], "why": "the program is not taking what it is typed" })),
+                    }
                 }
                 Err(no) => Some(no),
             },

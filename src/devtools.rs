@@ -165,13 +165,16 @@ fn serve(stream: TcpStream, keys: &std::sync::Mutex<std::collections::HashMap<St
                 // further. The sessions it names are the page's own: they
                 // are inside the one session this screen speaks through
                 match shikisha_core::devscreen::said(&text, None, &|_| true) {
+                    // Where the page is, is known where the page is: what
+                    // writes into the browser's keeping is judged there
                     shikisha_core::devscreen::Said::On => {
-                        if tell.send_event(Cmd::DevtoolsSay { conn, text }).is_err() {
+                        let writes = shikisha_core::devscreen::written_by(&text);
+                        if tell.send_event(Cmd::DevtoolsSay { conn, text, writes }).is_err() {
                             break;
                         }
                     }
                     shikisha_core::devscreen::Said::Trimmed(text) => {
-                        if tell.send_event(Cmd::DevtoolsSay { conn, text }).is_err() {
+                        if tell.send_event(Cmd::DevtoolsSay { conn, text, writes: None }).is_err() {
                             break;
                         }
                     }
@@ -233,6 +236,8 @@ impl Attach {
 
 struct Screen {
     to: Option<String>,
+    /// Where what is said to the screen goes
+    out: ws::Lane,
     /// The session attached for this screen, once the page has said which
     session: std::rc::Rc<std::cell::RefCell<Attach>>,
     /// Said before the session was there, in order
@@ -254,6 +259,7 @@ impl Screens {
         let session = std::rc::Rc::new(std::cell::RefCell::new(Attach::default()));
         let waiting = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
         let mine = std::rc::Rc::clone(&session);
+        let to_screen = out.clone();
         let heard = port.listen("Target.receivedMessageFromTarget", move |v| {
             let from = v.get("sessionId").and_then(|x| x.as_str());
             if from.is_some() && from == mine.borrow().session.as_deref()
@@ -300,7 +306,20 @@ impl Screens {
                 }
             });
         });
-        self.open.insert(conn, Screen { to, session, waiting, _heard: heard, port });
+        self.open.insert(conn, Screen { to, out: to_screen, session, waiting, _heard: heard, port });
+    }
+
+    /// The page the screen `conn` is for
+    pub fn page_of(&self, conn: u64) -> Option<&Option<String>> {
+        self.open.get(&conn).map(|s| &s.to)
+    }
+
+    /// Say `text` to the screen itself: an answer given here, in the
+    /// page's place
+    pub fn answer(&self, conn: u64, text: &str) {
+        if let Some(s) = self.open.get(&conn) {
+            let _ = s.out.send_text(text);
+        }
     }
 
     /// What the screen said, on to its session (or kept until it has one)

@@ -1383,7 +1383,9 @@ pub fn open_declared_browsers(desk: &config::Desk, caps: &hooks::Caps, errors: &
                 ft.cfg.browser_profile.as_deref().unwrap_or_default(),
                 ft.cfg.private,
             )
-            .calling_itself(ft.cfg.user_agent.clone());
+            .calling_itself(ft.cfg.user_agent.clone())
+            // A tab made for a window a page opened takes that window
+            .taking(crate::pagewindow::take(&desk.uid, &name));
             // A page that cannot open keeps its place and says why, the way a
             // program that cannot start does (see LaunchFailure): a toast
             // after a settings save was the only word of it, and the tab

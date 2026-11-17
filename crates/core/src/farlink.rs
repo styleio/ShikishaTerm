@@ -117,6 +117,8 @@ const TICK: Duration = Duration::from_secs(15);
 /// still there, and how long it is given to answer
 const QUIET_IS_ASKED: Duration = Duration::from_secs(40);
 const ANSWER_WITHIN: Duration = Duration::from_secs(20);
+/// How often a line is looked at for having gone quiet
+const WATCH_EVERY: Duration = Duration::from_secs(5);
 
 /// The folder the bridge lives in on its machine, below the account's home.
 /// Everything of it is here, so taking it off is one folder
@@ -301,10 +303,21 @@ impl Link {
     /// then showed a screen that no longer moved and took keys that went
     /// nowhere, for as long as the app ran, where a line seen to be dead
     /// is made again
-    fn answers(&self, within: Duration) -> bool {
+    ///
+    /// Asked on a thread of its own, and waited for here by the clock: a
+    /// line that takes nothing either holds whoever writes to it, and the
+    /// one that is to find the line dead must not be the one held
+    fn answers(self: &Arc<Self>, within: Duration) -> bool {
         let asked = Instant::now();
-        let _ = self.call("ping", Value::Null, within);
-        self.heard.lock().is_ok_and(|heard| *heard >= asked)
+        let asking = Arc::clone(self);
+        std::thread::spawn(move || {
+            let _ = asking.call("ping", Value::Null, within);
+        });
+        let heard = || self.heard.lock().is_ok_and(|heard| *heard >= asked);
+        while asked.elapsed() < within && self.is_up() && !heard() {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        heard()
     }
 
     /// Ask the bridge to do something over there, and wait for its answer
@@ -616,20 +629,35 @@ pub(crate) fn link_over(
     // Said until the line goes down; the bridge exits once it stops hearing it
     {
         let l = Arc::clone(&link);
-        let l_address = address.to_string();
         std::thread::Builder::new().name(format!("bridge tick {address}")).spawn(move || {
-            let address = l_address;
             loop {
-                let slept = Instant::now();
                 std::thread::sleep(TICK);
                 if !l.is_up() || !l.say(&Frame::Tick) {
                     break;
                 }
-                // Quiet for a while: asked whether it is still there. Not
-                // judged on a round this PC did not run through (it slept):
-                // the answer may be waiting to be read
+            }
+        })?;
+    }
+    // Watched by a thread that says nothing itself (the one above can be
+    // held by a line that takes nothing): a line gone quiet is asked whether
+    // anybody is still there, and one nobody answers on is let go of
+    {
+        let l = Arc::clone(&link);
+        let l_address = address.to_string();
+        std::thread::Builder::new().name(format!("bridge watch {address}")).spawn(move || {
+            let address = l_address;
+            let mut looked = Instant::now();
+            loop {
+                std::thread::sleep(WATCH_EVERY);
+                if !l.is_up() {
+                    break;
+                }
+                // Not judged on a round this PC did not run through (it
+                // slept): the answer may be waiting to be read
+                let slept = looked.elapsed();
+                looked = Instant::now();
                 let quiet = l.heard.lock().map(|h| h.elapsed()).unwrap_or_default();
-                if quiet < QUIET_IS_ASKED || slept.elapsed() > TICK * 2 {
+                if quiet < QUIET_IS_ASKED || slept > WATCH_EVERY * 3 {
                     continue;
                 }
                 let asked = Instant::now();
@@ -640,6 +668,7 @@ pub(crate) fn link_over(
                     l.close();
                     break;
                 }
+                looked = Instant::now();
             }
         })?;
     }
@@ -1081,12 +1110,17 @@ pub fn remove(at: &crate::elsewhere::Elsewhere) -> Result<()> {
         Some(l) => Some(l),
         None => {
             let home = far_home(at)?;
-            // In the one folder there used to be, or in a machine's own
-            // (`fardaemon::own_run`)
+            // Known by its key, which is there for as long as a resident
+            // process is (it is written as one becomes resident and taken
+            // away as it goes) -- in the one folder there used to be, or in
+            // a machine's own (`fardaemon::own_run`). Not by its door: a
+            // home too deep for a door's name has the door somewhere else
+            // (`keepipe::door`), and looked for where it is not, a resident
+            // process other apps were using was taken for nobody and ended
             let home = crate::ssh::sh_quote(&home);
             let ran = crate::elsewhere::exec(
                 at,
-                &format!("for s in {home}/run/{KEEP_SOCK} {home}/run-*/{KEEP_SOCK}; do test -S \"$s\" && echo held; done"),
+                &format!("for k in {home}/run/keep.key {home}/run-*/keep.key; do test -f \"$k\" && echo held; done"),
                 30_000,
             )?;
             match ran.out.contains("held") {
@@ -1136,25 +1170,16 @@ pub fn remove(at: &crate::elsewhere::Elsewhere) -> Result<()> {
     // first), and the folder goes only once it is seen gone: one that does
     // not go leaves the removal undone, to be tried again
     let daemon = crate::ssh::sh_quote(&format!("{home}/shikisha-bridge-[^ ]* daemon"));
-    let ran = crate::elsewhere::exec(
-        at,
-        &format!(
-            "pkill -TERM -f {daemon} 2>/dev/null; i=0; \
-             while pgrep -f {daemon} >/dev/null && [ $i -lt 20 ]; do sleep 0.5; i=$((i+1)); done; \
-             if pgrep -f {daemon} >/dev/null; then echo still-running; \
-             elif ls {home}/run-*/keep.key >/dev/null 2>&1; then echo shared; ls {home}/run-*/keep.key; \
-             else rm -rf {home}; fi",
-            home = crate::ssh::sh_quote(&home)
-        ),
-        60_000,
-    )?;
+    let ran = crate::elsewhere::exec(at, &removal_script(&daemon, &crate::ssh::sh_quote(&home)), 60_000)?;
     if ran.out.contains("still-running") {
         bail!("the bridge's resident process on {} did not end; its folder is left, to be taken off again", at.address());
     }
     // A key still there after this machine's resident process is gone is
     // another machine's: one that has the same home folder (a home kept on
     // a file server) and a resident process of its own, whose program and
-    // doors are in this folder too. The folder is not deleted from under it
+    // doors are in this folder too -- in a folder of its own, or, started
+    // by an earlier build, in the one folder there used to be. The folder
+    // is not deleted from under it
     if ran.out.lines().next() == Some("shared") {
         let keys: Vec<&str> = ran.out.lines().skip(1).collect();
         bail!(crate::i18n::tp("err.bridge.shared", &[("host", &at.address()), ("files", &keys.join(", "))]));
@@ -1163,6 +1188,27 @@ pub fn remove(at: &crate::elsewhere::Elsewhere) -> Result<()> {
     crate::farterm::forget_machine(&crate::farterm::Place::Far(at.clone()));
     crate::append_hook_log(&format!("bridge: removed from {}", at.address()));
     Ok(())
+}
+
+/// The line that ends the bridge's resident process on a machine and takes
+/// its folder away. `daemon` is what the resident process's command line
+/// matches and `home` its folder, both already quoted for a shell.
+///
+/// Says `still-running` when the process did not end, and `shared` with
+/// the key files found, one a line, when a key is still there once it has:
+/// each is a resident process of another machine that has this home folder
+/// too. Each key is looked for by itself -- asked of `ls` together, one
+/// that is not there made the whole asking fail, and the folder was deleted
+/// from under the machine whose key was there
+fn removal_script(daemon: &str, home: &str) -> String {
+    format!(
+        "pkill -TERM -f {daemon} 2>/dev/null; i=0; \
+         while pgrep -f {daemon} >/dev/null && [ $i -lt 20 ]; do sleep 0.5; i=$((i+1)); done; \
+         if pgrep -f {daemon} >/dev/null; then echo still-running; else \
+         kept=0; for k in {home}/run/keep.key {home}/run-*/keep.key; do \
+         if test -f \"$k\"; then test $kept = 0 && echo shared; kept=1; echo \"$k\"; fi; done; \
+         test $kept = 0 && rm -rf {home}; fi; true"
+    )
 }
 
 /// What a tab over there needs in its environment for `shikisha` to reach this
@@ -1559,6 +1605,47 @@ mod tests {
         );
     }
 
+    /// Taking the bridge off a machine leaves its folder when another
+    /// machine that has the same home still has a resident process there,
+    /// whichever folder that one keeps its key in
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_another_machine_still_uses_is_not_deleted() {
+        let root = std::env::temp_dir().join(format!("sk-farlink-remove-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let run = |home: &std::path::Path| {
+            // Written, as the real one is, so that it does not match the
+            // line it is itself part of
+            let script = removal_script("'no-such-shikisha-process-[^ ]* daemon'", &crate::ssh::sh_quote(&home.to_string_lossy()));
+            let out = std::process::Command::new("sh").arg("-c").arg(&script).output().expect("sh");
+            String::from_utf8_lossy(&out.stdout).to_string()
+        };
+        let made = |name: &str, keys: &[&str]| {
+            let home = root.join(name);
+            std::fs::create_dir_all(home.join("run-0123456789ab")).unwrap();
+            std::fs::create_dir_all(home.join("run")).unwrap();
+            for key in keys {
+                std::fs::write(home.join(key), "k").unwrap();
+            }
+            home
+        };
+        // Nobody's key is there: the folder goes
+        let alone = made("a home with a space", &[]);
+        assert_eq!(run(&alone), "");
+        assert!(!alone.exists(), "a folder nobody uses was left");
+        // Another machine's key, in its own folder or in the one there used
+        // to be: said, and the folder left
+        for keys in [&["run-0123456789ab/keep.key"][..], &["run/keep.key"], &["run/keep.key", "run-0123456789ab/keep.key"]] {
+            let shared = made("shared", keys);
+            let said = run(&shared);
+            assert!(said.starts_with("shared\n"), "{keys:?}: {said:?}");
+            assert_eq!(said.lines().count(), 1 + keys.len(), "{said:?}");
+            assert!(shared.join(keys[0]).exists(), "{keys:?}: the folder was deleted from under another machine");
+            std::fs::remove_dir_all(&shared).unwrap();
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn a_frame_is_one_line_of_json() {
         for f in [
@@ -1740,5 +1827,38 @@ mod tests {
         assert!(!link.answers(Duration::from_millis(300)), "a line nothing answers on was taken for a live one");
         assert!(asked.elapsed() < Duration::from_secs(3));
         assert!(link.is_up(), "asking is not what lets go of it");
+
+        // A line that does not even take what is written to it: whoever
+        // asks is not held by the writing, and still says "nobody" in time
+        struct Stuck(std::sync::mpsc::Receiver<()>);
+        impl Write for Stuck {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                let _ = self.0.recv();
+                Err(std::io::Error::other("closed"))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let (let_go, held) = std::sync::mpsc::channel();
+        let stuck = Arc::new(Link {
+            out: Mutex::new(Box::new(Stuck(held))),
+            socket: None,
+            closer: None,
+            waiting: Mutex::default(),
+            conns: Mutex::default(),
+            next: AtomicU64::new(0),
+            up: AtomicBool::new(true),
+            version: Mutex::new(None),
+            jobs: Mutex::new(Vec::new()),
+            job_listeners: Mutex::default(),
+            home: String::new(),
+            ends_at_logout: AtomicBool::new(false),
+            heard: Mutex::new(Instant::now()),
+        });
+        let asked = Instant::now();
+        assert!(!stuck.answers(Duration::from_millis(300)));
+        assert!(asked.elapsed() < Duration::from_secs(3), "whoever asks was held by a line that takes nothing: {:?}", asked.elapsed());
+        drop(let_go);
     }
 }

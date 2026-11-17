@@ -649,6 +649,9 @@ pub struct FarTerm {
     /// Gone back to after a start: it was told to stop, and its end was not
     /// seen -- stopped again if it still runs, and a new one started
     stopping: AtomicBool,
+    /// Something typed was dropped there (its program takes nothing of what
+    /// it is typed): said to whoever types next
+    full: AtomicBool,
     /// On a MicroVM, counted as a terminal of this app open there for as
     /// long as it is held: the machine is in use
     open_there: Mutex<Option<crate::e2b::Opened>>,
@@ -690,6 +693,7 @@ impl FarTerm {
             let_go: AtomicBool::new(false),
             left: Mutex::new(None),
             stopping: AtomicBool::new(false),
+            full: AtomicBool::new(false),
             open_there: Mutex::new(at.cloud().and_then(|h| h.instance.as_deref()).map(crate::e2b::Opened::new)),
         }
     }
@@ -1274,6 +1278,12 @@ impl std::io::Read for FarReader {
                         self.term.root.store(u64::from(root), Ordering::SeqCst);
                     }
                 }
+                // Something typed was dropped there: whoever types next is
+                // told (`FarWriter`), since what was typed went unanswered
+                "full" => {
+                    crate::append_hook_log(&format!("far terminal {}: what was typed was dropped there ({})", self.term.term(), m["why"].as_str().unwrap_or_default()));
+                    self.term.full.store(true, Ordering::SeqCst);
+                }
                 "refused" => {
                     crate::append_hook_log(&format!(
                         "far terminal {}: {} ({})",
@@ -1356,6 +1366,11 @@ const HELD_IN_MOST: usize = 1 << 20;
 
 impl std::io::Write for FarWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        // What was typed before this was dropped there: said once, here,
+        // where whoever is typing hears it
+        if self.term.full.swap(false, Ordering::SeqCst) {
+            return Err(std::io::Error::other("the program there is not taking what it is typed, and some of it was dropped"));
+        }
         // Not attached to yet: kept for the moment it is (`FarTerm::owned_by`).
         // Checked under the lock the flush takes, so nothing typed between
         // the owner arriving and the flush is left behind it

@@ -1242,15 +1242,12 @@ impl Cdp {
 }
 
 impl Cdp {
-    /// The hosts the page spoken to through `session` is at: its own and
-    /// those of the frames in it. Empty when the browser does not say
+    /// The addresses the page spoken to through `session` is at: its own
+    /// and those of the frames in it. Empty when the browser does not say
     fn frames_of(&self, session: &str) -> Vec<String> {
         fn walk(tree: &serde_json::Value, hosts: &mut Vec<String>) {
             if let Some(url) = tree.pointer("/frame/url").and_then(|u| u.as_str()) {
-                let host = crate::devscreen::host_of(url);
-                if !host.is_empty() && !hosts.contains(&host) {
-                    hosts.push(host);
-                }
+                hosts.push(url.to_string());
             }
             for child in tree.get("childFrames").and_then(|c| c.as_array()).into_iter().flatten() {
                 walk(child, hosts);
@@ -1753,7 +1750,18 @@ impl Pages {
                 if ev.method == "Target.targetDestroyed" {
                     if let Some(target) = ev.params.get("targetId").and_then(|t| t.as_str()) {
                         let mut book = seen.lock().unwrap_or_else(|e| e.into_inner());
-                        if book.windows.went(target) {
+                        let (closed_itself, left) = book.windows.went(target);
+                        // The private storage it was in goes with the last
+                        // of what was in it: a window that closed itself
+                        // before a tab took it, after the page that opened it
+                        // was closed, was the last, and nobody else is told
+                        if let Some(context) = left
+                            && !book.targets.values().any(|(_, c)| c.as_deref() == Some(context.as_str()))
+                            && !book.windows.in_context(&context)
+                        {
+                            speaker.tell(None, "Target.disposeBrowserContext", serde_json::json!({ "browserContextId": context }));
+                        }
+                        if closed_itself {
                             // It closed itself. Not yet said to the loop, it
                             // is not said at all; said, the tab made for it
                             // goes with it -- opened at its address instead,
@@ -2087,19 +2095,23 @@ impl Windows {
     }
 
     /// `target` is gone. Whether it was a window said to the loop -- waiting
-    /// for its tab, or taken by it -- that closed itself
-    fn went(&mut self, target: &str) -> bool {
+    /// for its tab, or taken by it -- that closed itself; and the private
+    /// storage it was in when it went by itself before a tab took it, which
+    /// nobody else is going to let go of
+    fn went(&mut self, target: &str) -> (bool, Option<String>) {
         let ours = self.closing.remove(target);
-        self.blank.remove(target);
-        let said = self.kept.remove(target).is_some() | self.taken.remove(target);
+        let blank = self.blank.remove(target).map(|w| w.context);
+        let kept = self.kept.remove(target).map(|w| w.context);
+        let said = kept.is_some() | self.taken.remove(target);
+        let left = if ours { None } else { blank.or(kept.clone()).flatten() };
         if ours || !said {
-            return false;
+            return (false, left);
         }
         if self.gone.len() >= 64 {
             self.gone.pop_front();
         }
         self.gone.push_back(target.to_string());
-        true
+        (true, left)
     }
 
     /// Whether a window still on the books is in the private storage `context`
@@ -2638,14 +2650,15 @@ impl shikisha_shared::BrowserHost for Pages {
         }
         let chrome = self.browser_for(&profile)?;
         let key = if profile.private { "default".to_string() } else { folder_name(&profile.name) };
-        // The window this tab was made for (`pagewindow`), waiting for it:
+        // The window this tab was made for (`pagewindow`, said in the
+        // profile it is opened with), waiting for it:
         // taken as its page, as it stands. Known by the window's own name,
         // never by where it was going -- a tab that merely opens the same
         // address is not handed a window another page opened, in whatever
         // storage that page is in. It keeps the storage it was opened in --
         // its opener's, private or not -- and shares it with its opener:
         // whichever closes last takes the storage along
-        let waiting = match crate::pagewindow::take(name) {
+        let waiting = match profile.window.clone() {
             None => None,
             Some(window) => {
                 let mut book = self.seen.lock().unwrap_or_else(|e| e.into_inner());
@@ -3916,8 +3929,8 @@ mod tests {
         // The tab made for it takes that very window: the same document
         // (what the opener wrote is there), still its opener's, not fetched
         // a second time
-        crate::pagewindow::claim("took", &window);
-        pages.open_child("took", &url, (0, 0, 900, 700), BrowserProfile::shared_default()).expect("the tab made for the window does not open");
+        let made_for = |window: &str| BrowserProfile::shared_default().taking(Some(window.to_string()));
+        pages.open_child("took", &url, (0, 0, 900, 700), made_for(&window)).expect("the tab made for the window does not open");
         assert_eq!(standing(), before + 1, "a second page was opened beside the window");
         assert_eq!(pages.eval(Some("took"), "return window.marked || 'a new document'", 5_000).unwrap(), "\"by the opener\"", "the window was opened again, not taken");
         assert_eq!(pages.eval(Some("took"), "return String(!!window.opener)", 5_000).unwrap(), "\"true\"", "it is no longer its opener's window");
@@ -3947,12 +3960,14 @@ mod tests {
         assert!(by_hand);
         // Its tab is on a desk nobody is looking at, and does not come for
         // it for a long while: the window waits for it all the same
-        crate::pagewindow::claim("linked", &window);
+        crate::pagewindow::claim("a-desk-behind", "linked", &window);
         waited_out(&pages);
         let _ = pages.drain();
         std::thread::sleep(std::time::Duration::from_millis(300));
         assert_eq!(standing(), before + 1, "a window its tab had not come for yet was closed");
-        pages.open_child("linked", &url, (0, 0, 900, 700), BrowserProfile::shared_default()).unwrap();
+        let mine = crate::pagewindow::take("a-desk-behind", "linked");
+        assert_eq!(mine.as_deref(), Some(window.as_str()));
+        pages.open_child("linked", &url, (0, 0, 900, 700), BrowserProfile::shared_default().taking(mine)).unwrap();
         assert_eq!(standing(), before + 1);
         pages.close_child("linked").unwrap();
         until("the linked page is still there after it closed", &|| standing() == before);
@@ -3967,8 +3982,7 @@ mod tests {
         assert!(by_hand);
         std::thread::sleep(std::time::Duration::from_millis(300));
         assert!(said_now(&pages).is_empty(), "one window was said twice");
-        crate::pagewindow::claim("signin", &window);
-        pages.open_child("signin", &url, (0, 0, 900, 700), BrowserProfile::shared_default()).unwrap();
+        pages.open_child("signin", &url, (0, 0, 900, 700), made_for(&window)).unwrap();
         assert_eq!(standing(), before + 1);
         // Done, it closes itself, as a sign-in's last step does: said, so
         // that its tab goes with it -- and a tab closed by the person is not
@@ -3988,10 +4002,9 @@ mod tests {
         // nothing to take, and does not ask the server for the address again
         pages.eval(Some(name), "window.once = window.open('/once?code=1'); return 1", 5_000).unwrap();
         let (url, _, window) = said(&pages).expect("the window was not said");
-        crate::pagewindow::claim("late", &window);
         pages.eval(Some(name), "once.close(); return 1", 5_000).unwrap();
         assert_eq!(gone(&pages).as_deref(), Some(window.as_str()));
-        assert!(pages.open_child("late", &url, (0, 0, 900, 700), BrowserProfile::shared_default()).is_err(), "a window that closed itself was opened again at its address");
+        assert!(pages.open_child("late", &url, (0, 0, 900, 700), made_for(&window)).is_err(), "a window that closed itself was opened again at its address");
         assert_eq!(standing(), before);
 
         // A private page's window is in the private page's storage, and goes
@@ -4009,14 +4022,36 @@ mod tests {
             _ => None,
         })
         .expect("the private page's window was not said");
-        crate::pagewindow::claim("private-window", &window);
-        pages.open_child("private-window", &url, (0, 0, 900, 700), private).unwrap();
+        pages.open_child("private-window", &url, (0, 0, 900, 700), private.clone().taking(Some(window.clone()))).unwrap();
         pages.close_child("private").unwrap();
         std::thread::sleep(std::time::Duration::from_millis(500));
         let cookies = pages.eval(Some("private-window"), "return document.cookie", 5_000).expect("the window went with the page that opened it");
         assert!(cookies.contains("kept=private"), "the window is not in the storage of the page that opened it: {cookies}");
         pages.close_child("private-window").unwrap();
         until("the private window is still there after it closed", &|| standing() == before);
+
+        // A private page's window that no tab ever takes, left behind when
+        // the page is closed and then closing itself: the private storage
+        // goes with it, the last thing that was in it
+        let storages = || {
+            let all = chrome.call("Target.getBrowserContexts", serde_json::json!({})).unwrap();
+            all.get("browserContextIds").and_then(|c| c.as_array()).map(|c| c.iter().filter_map(|v| v.as_str().map(str::to_string)).collect::<Vec<_>>()).unwrap_or_default()
+        };
+        pages.open_child("private-2", &site, (0, 0, 900, 700), private).unwrap();
+        waited(&pages, |ev| match ev {
+            shikisha_shared::Ev::Ready { from: Some(n), complete: true, .. } if n == "private-2" => Some(()),
+            _ => None,
+        })
+        .expect("the second private page never loaded");
+        let storage = pages.open.borrow().get("private-2").and_then(|p| p.context.clone()).expect("a private page has no storage of its own");
+        pages
+            .eval(Some("private-2"), "const w = window.open('', 'left'); w.document.write('<script>setTimeout(() => window.close(), 1500)<\\/script>'); return 1", 5_000)
+            .unwrap();
+        until("the private page's window was not opened", &|| standing() == before + 2);
+        pages.close_child("private-2").unwrap();
+        assert!(storages().contains(&storage), "the storage went from under a window still in it");
+        until("the window left behind is still there", &|| standing() == before);
+        until("the private storage outlived the last thing in it", &|| !storages().contains(&storage));
         assert!(gone_now(&pages).is_empty(), "a tab the person closed was said to have closed itself");
 
         // One left blank and never sent anywhere does not stay for ever,
@@ -4187,6 +4222,10 @@ mod tests {
             serde_json::json!({"method": "Network.setCookies", "params": {"cookies": [{"name": "sid", "value": "x", "url": "https://bank.example.org/"}]}}),
             serde_json::json!({"method": "Network.deleteCookies", "params": {"name": "sid", "url": "https://bank.example.org/"}}),
             serde_json::json!({"method": "Storage.clearDataForOrigin", "params": {"origin": "https://bank.example.org", "storageTypes": "cookies"}}),
+            // An address of the page's own beside a domain of another's
+            serde_json::json!({"method": "Network.setCookie", "params": {"name": "sid", "value": "x", "url": site, "domain": "bank.example.org"}}),
+            // The page's own host on another port is another place to store in
+            serde_json::json!({"method": "Storage.clearDataForOrigin", "params": {"origin": format!("http://{here}:9"), "storageTypes": "all"}}),
         ]
         .into_iter()
         .enumerate()

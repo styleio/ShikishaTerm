@@ -153,6 +153,11 @@ struct Line {
     leaving: std::sync::atomic::AtomicBool,
 }
 
+/// How long a process that would be resident waits for another that is
+/// deciding the same
+#[cfg(unix)]
+const LOCK_WAIT: Duration = Duration::from_secs(15);
+
 /// What every job reaches through: the lines to the apps
 pub struct Core {
     lines: Mutex<HashMap<u64, Arc<Line>>>,
@@ -687,7 +692,8 @@ fn ends_at_logout() -> bool {
     {
         static ENDS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         *ENDS.get_or_init(|| {
-            let ends = std::fs::read_to_string("/proc/self/cgroup").is_ok_and(|c| in_login_scope(&c)) && kills_at_logout(&login_settings());
+            let ends = std::fs::read_to_string("/proc/self/cgroup").is_ok_and(|c| in_login_scope(&c))
+                && login_manager_says().unwrap_or_else(|| kills_at_logout(&login_settings()));
             if ends {
                 log("this machine ends an account's programs at logout, and this process is in the login's scope: it will not outlive the login (loginctl enable-linger lets it)");
             }
@@ -696,6 +702,67 @@ fn ends_at_logout() -> bool {
     }
     #[cfg(not(target_os = "linux"))]
     false
+}
+
+/// Whether the login manager ends this account's programs at logout, as
+/// the manager itself says. `None` when it cannot be asked.
+///
+/// Asked of the manager rather than read from its files: a setting no file
+/// names is whatever the system was built with, which no file says -- some
+/// are built to end them -- and the manager may be set to end only some
+/// accounts' programs, or everybody's but some
+#[cfg(target_os = "linux")]
+fn login_manager_says() -> Option<bool> {
+    let ask = |what: &str| -> Option<String> {
+        let mut asked = std::process::Command::new("busctl")
+            .args(["get-property", "org.freedesktop.login1", "/org/freedesktop/login1", "org.freedesktop.login1.Manager", what])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .ok()?;
+        let until = Instant::now() + Duration::from_secs(3);
+        loop {
+            match asked.try_wait() {
+                Ok(Some(status)) if status.success() => break,
+                Ok(None) if Instant::now() < until => std::thread::sleep(Duration::from_millis(20)),
+                _ => {
+                    let _ = asked.kill();
+                    let _ = asked.wait();
+                    return None;
+                }
+            }
+        }
+        let mut said = String::new();
+        use std::io::Read as _;
+        asked.stdout.take()?.read_to_string(&mut said).ok()?;
+        Some(said.trim().to_string())
+    };
+    let kills = ask("KillUserProcesses")?;
+    // SAFETY: only reads this process's own account's entry, copied at once
+    let me = unsafe {
+        let pw = libc::getpwuid(libc::getuid());
+        if pw.is_null() || (*pw).pw_name.is_null() {
+            return None;
+        }
+        std::ffi::CStr::from_ptr((*pw).pw_name).to_string_lossy().into_owned()
+    };
+    let names = |what: &str| ask(what).map(|said| names_said(&said)).unwrap_or_default();
+    Some(ends_for(kills == "b true", &me, &names("KillOnlyUsers"), &names("KillExcludeUsers")))
+}
+
+/// The names in a list as the bus prints one: `as 2 "ada" "root"`
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn names_said(said: &str) -> Vec<String> {
+    said.split('"').skip(1).step_by(2).map(str::to_string).collect()
+}
+
+/// Whether the programs of the account `me` are ended at logout, on a
+/// machine that ends them (`kills`) for `only` these accounts when any are
+/// named, and never for `except` these
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn ends_for(kills: bool, me: &str, only: &[String], except: &[String]) -> bool {
+    kills && (only.is_empty() || only.iter().any(|n| n == me)) && !except.iter().any(|n| n == me)
 }
 
 /// Where the account's own manager is reached, when it is up and stays up
@@ -780,9 +847,19 @@ pub fn daemon(home: PathBuf) -> Result<()> {
     let lock = {
         let lock = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(run.join(LOCK_FILE))?;
         use std::os::unix::io::AsRawFd as _;
+        // Waited for a while, not without end. Whoever holds it is deciding
+        // who is resident, which takes a moment; one that takes longer has
+        // stopped while holding it, and every process started meanwhile
+        // (the door starts another when none has come up) would stand here
+        // behind it for as long as the one that became resident lives
+        let until = Instant::now() + LOCK_WAIT;
         // SAFETY: the descriptor is the lock file's, open for as long as `lock`
-        if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) } != 0 {
-            bail!("could not take the lock on {}", run.display());
+        while unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            if Instant::now() >= until {
+                log("another process is deciding who is resident and has not finished; this one leaves it to that one");
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(100));
         }
         lock
     };
@@ -1497,7 +1574,9 @@ pub fn serve_port(home: PathBuf, input: impl std::io::Read, mut output: impl Wri
         match find(&keep) {
             Found::Named(_) => break (run, keep),
             Found::Nobody if started.is_none_or(|at| at.elapsed() >= START_AGAIN) => {
-                start_daemon(&run)?;
+                // The second time, the plain way: the first start came to
+                // nothing, whichever way it was made
+                start_daemon(&run, started.is_some())?;
                 started = Some(Instant::now());
             }
             _ => {}
@@ -1564,7 +1643,7 @@ pub(crate) const START_AGAIN: Duration = Duration::from_secs(5);
 /// session of its own, so that the line ending does not end it. What it says
 /// goes to `run/keep.log`, the one place to look when it misbehaves
 #[cfg(windows)]
-fn start_daemon(run: &Path) -> Result<()> {
+fn start_daemon(run: &Path, _plainly: bool) -> Result<()> {
     let home = run.parent().ok_or_else(|| anyhow!("{} has no folder above it", run.display()))?;
     start_resident(home, &["--keeper".into(), home.to_string_lossy().into_owned()])
 }
@@ -1612,8 +1691,12 @@ pub fn start_resident(home: &Path, args: &[String]) -> Result<()> {
     }
 }
 
+/// `plainly`: in the login's own scope, never in one of the account's
+/// manager. Asked for when a start already came to nothing: the manager may
+/// take the command and refuse it a moment later, after this has returned,
+/// and asked the same way again it would refuse again
 #[cfg(unix)]
-fn start_daemon(run: &Path) -> Result<()> {
+fn start_daemon(run: &Path, plainly: bool) -> Result<()> {
     use std::os::unix::fs::OpenOptionsExt as _;
     use std::os::unix::process::CommandExt as _;
     std::fs::create_dir_all(run)?;
@@ -1641,7 +1724,8 @@ fn start_daemon(run: &Path) -> Result<()> {
     // that ends at once and badly is the command having failed -- the
     // manager not answering after all -- and the plain way is taken
     #[cfg(target_os = "linux")]
-    if let Some(runtime) = lingering_manager()
+    if !plainly
+        && let Some(runtime) = lingering_manager()
         && let Ok(mut child) = loose(in_own_scope(&runtime, &exe, &["daemon"]), log.try_clone()?)
     {
         let until = Instant::now() + Duration::from_millis(700);
@@ -2295,6 +2379,16 @@ mod tests {
         assert!(says(&["[Login]\nKillUserProcesses=no\n", "[Login]\nKillUserProcesses=yes\n"]));
         assert!(!says(&["[Login]\nKillUserProcessesNot=yes\n"]));
 
+        // What the manager itself says: which accounts it ends them for
+        let named = |list: &[&str]| list.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        assert_eq!(names_said("as 2 \"ada\" \"root\""), named(&["ada", "root"]));
+        assert_eq!(names_said("as 0"), named(&[]));
+        assert!(ends_for(true, "ada", &[], &named(&["root"])));
+        assert!(!ends_for(false, "ada", &[], &[]));
+        assert!(!ends_for(true, "ada", &[], &named(&["root", "ada"])), "an account left out is ended all the same");
+        assert!(!ends_for(true, "ada", &named(&["bob"]), &[]), "only other accounts are ended, and this one was counted");
+        assert!(ends_for(true, "ada", &named(&["bob", "ada"]), &[]));
+
         assert!(in_login_scope("0::/user.slice/user-1000.slice/session-42.scope\n"));
         assert!(in_login_scope("12:pids:/user.slice/user-1000.slice/session-c3.scope\n1:name=systemd:/user.slice/user-1000.slice/session-c3.scope\n"));
         assert!(!in_login_scope("0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-r0123.scope\n"));
@@ -2372,6 +2466,30 @@ mod tests {
         assert!(screen.contains("profile-took:[]"), "the start-up file took the first line: {screen}");
         assert_eq!(screen.matches("echo first-").count(), 1, "the first line shows twice: {screen}");
         term(&mut pc, json!({ "do": "stop", "term": id, "owner": at["owner"] }));
+
+        // A start-up file that asks for a single key has the terminal taking
+        // keys one at a time, as a prompt does: it is not taken for one, and
+        // the first letter of the line is not its answer
+        let one_key = home.join("one-key");
+        std::fs::create_dir_all(&one_key).unwrap();
+        std::fs::write(one_key.join(".bash_profile"), "read -n 1 -t 1 -p 'Continue? ' taken\necho \"profile-took:[$taken]\"\nPS1='ready> '\n").unwrap();
+        term(
+            &mut pc,
+            json!({ "do": "open", "ref": 2, "tab": "t2", "rows": 24, "cols": 80, "then": "echo second-$((40+2))-line",
+                "env": { "HOME": one_key.to_string_lossy() } }),
+        );
+        let id = term_said(&mut pc, |m| m["did"] == "opened" && m["ref"] == 2).expect("not opened")["term"].as_u64().unwrap();
+        let at = term_said(&mut pc, |m| m["did"] == "attached" && m["term"] == id).expect("not attached");
+        let mut outs = Vec::new();
+        while !screen_of(&at, &outs).contains("second-42-line") {
+            match term_said(&mut pc, |m| m["did"] == "out" && m["term"] == id) {
+                Some(out) => outs.push(out),
+                None => panic!("the first line never ran: {}", screen_of(&at, &outs)),
+            }
+        }
+        let screen = screen_of(&at, &outs);
+        assert!(screen.contains("profile-took:[]"), "a question for one key took the first letter of the line: {screen}");
+        term(&mut pc, json!({ "do": "stop", "term": id, "owner": at["owner"] }));
         drop(pc);
         let _ = resident.join();
         let _ = std::fs::remove_dir_all(&home);
@@ -2433,6 +2551,12 @@ mod tests {
         // The app is still heard: asked for the list, it is answered...
         term(&mut pc, json!({ "do": "list", "ref": 2 }));
         assert!(term_said(&mut pc, |m| m["did"] == "list" && m["ref"] == 2).is_some(), "the app was not heard behind the full terminal");
+        // ...and once more waits than is kept for a program, what is typed
+        // is dropped and said to be: never taken as typed when it was not
+        for _ in 0..200 {
+            term(&mut pc, json!({ "do": "in", "term": deaf, "owner": owner, "b": lines }));
+        }
+        assert!(term_said(&mut pc, |m| m["did"] == "full" && m["term"] == deaf).is_some(), "what was dropped was not said to be");
         // ...and another terminal opens and says what it is typed
         term(&mut pc, json!({ "do": "open", "ref": 3, "tab": "other", "rows": 24, "cols": 80, "then": "echo still-here" }));
         let other = term_said(&mut pc, |m| m["did"] == "opened" && m["ref"] == 3).expect("another terminal did not open")["term"].as_u64().unwrap();

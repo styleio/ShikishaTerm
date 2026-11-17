@@ -5215,8 +5215,16 @@ impl Tab {
                 crate::append_hook_log(&format!("could not put \"{title}\" in a job object"));
             }
 
-        // Typed on a thread of the tab's own, never on the caller's (`Typed`)
-        let writer: PtyWriter = Arc::new(Mutex::new(Box::new(Typed::into(master.take_writer()?))));
+        // A terminal of this PC's own is typed into on a thread of the
+        // tab's own, never on the caller's (`Typed`). One on another
+        // machine never waits on its program -- what is typed is put on the
+        // line -- and says for itself when the line cannot take it just now:
+        // an answer that must reach whoever typed, and that is no reason to
+        // stop typing into the tab for good
+        let writer: PtyWriter = match child.is_some() {
+            true => Arc::new(Mutex::new(Box::new(Typed::into(master.take_writer()?)))),
+            false => Arc::new(Mutex::new(master.take_writer()?)),
+        };
         let bell_count = Arc::new(AtomicU64::new(0));
         // Cumulative output volume. The INDEX waveform is drawn from its deltas
         // (the change in screen hash alone doesn't tell us "how much is moving")

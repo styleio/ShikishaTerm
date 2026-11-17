@@ -32,6 +32,11 @@ use std::sync::{Arc, Mutex};
 pub enum Ask {
     /// One method of the DevTools protocol, on one page
     Cdp { to: Option<String>, method: String, params: serde_json::Value, ms: u64 },
+    /// Keep a page drawing while something is done to it that waits on what
+    /// it draws (`Speaks::wake`): the window over there has hidden a page
+    /// that is not in front, and a hidden page draws nothing. A browser from
+    /// before this was asked does not know it, and goes on as it did
+    Wake { to: Option<String>, on: bool },
     /// One piece of JavaScript, in one page, waited for
     Eval { to: Option<String>, js: String, ms: u64 },
     /// The same, not waited for
@@ -378,6 +383,11 @@ impl Speaks for Far {
     fn refs(&self) -> &Mutex<HashMap<Option<String>, Vec<i64>>> {
         &self.inner.refs
     }
+
+    /// Asked of the window over there, which is the one that hid the page
+    fn wake(&self, to: Option<&str>, on: bool) {
+        let _ = self.inner.tell(&Ask::Wake { to: to.map(str::to_string), on });
+    }
 }
 
 impl BrowserHost for Far {
@@ -578,6 +588,10 @@ pub fn perform<B: BrowserHost + Speaks>(ask: &Ask, browser: &B) -> (bool, serde_
     let out = match ask {
         Ask::Cdp { to, method, params, ms } => {
             browser.cdp(to.as_deref(), method, params.clone(), *ms)
+        }
+        Ask::Wake { to, on } => {
+            browser.wake(to.as_deref(), *on);
+            Ok(serde_json::Value::Null)
         }
         Ask::Eval { to, js, ms } => browser
             .eval(to.as_deref(), js, *ms)

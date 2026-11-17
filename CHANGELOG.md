@@ -173,10 +173,12 @@ once it reaches its first tagged release.
   tab's DevTools does not open the next tab's. DevTools' own panels work
   as before. What stays possible is what inspecting a page means: DevTools
   can do anything to its own page, including sending it to another site
-  and reading what that page then holds. On the server, DevTools sets and
-  deletes cookies, and clears a site's storage, only for the sites its
-  page and the frames in it are at; in the window that is not yet
-  checked.
+  and reading what that page then holds. DevTools sets and deletes
+  cookies, and clears a site's storage, only for where its page is: a
+  cookie for the page's host or a domain above it, stored data for
+  exactly the page's scheme, host and port. On the server that counts the
+  frames in the page too; in the window it is the page's own address, so
+  a cookie of a frame from another site cannot be edited there.
 
 ### Fixed
 - **A second Codex account no longer asks again about folders you
@@ -312,7 +314,9 @@ once it reaches its first tagged release.
   that had gone away, held that thread. Every other tab of the app on
   that machine stood still, and after a minute the app was taken for gone
   and its connection was cut. What is typed now goes to each tab on a
-  thread of its own, and a tab opens on its own thread.
+  thread of its own, and a tab opens on its own thread. When a program
+  has left more than 8 MB untaken, what is typed after that is dropped
+  and the app is told, so it is not taken for sent.
 - **Connecting to a server just as its bridge was leaving no longer
   fails.** The bridge's resident process leaves a little after the last
   app has gone. An app that connected in that moment was let in and then
@@ -324,7 +328,8 @@ once it reaches its first tagged release.
   moment the shell was started, while it was still reading the account's
   start-up files. It showed twice on the screen, and a start-up file that
   asks a question took the line as its answer, so the AI never started.
-  With the bridge, the line is typed once the shell is at its prompt;
+  With the bridge, the line is typed once the shell is at its prompt (a
+  start-up file that waits for a single key is not taken for one);
   over plain SSH, once the server has said something and gone quiet.
 - **A lead is no longer woken every ten minutes about the same idle
   worker.** A worker that ended its turn without reporting was raised to

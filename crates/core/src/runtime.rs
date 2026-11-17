@@ -1992,9 +1992,11 @@ fn server_answers(
         tried += 1;
         let from = Instant::now();
         while from.elapsed() < wait {
-            let second = Instant::now();
+            // By the clock on the wall: the one a wait is counted by stands
+            // still while the machine sleeps, on some systems
+            let second = std::time::SystemTime::now();
             std::thread::sleep(Duration::from_secs(1));
-            if woke(second.elapsed()) {
+            if woke(second.elapsed().unwrap_or_default()) {
                 append_hook_log(&format!("this PC was asleep; {route} is asked again now"));
                 tried = 0;
                 break;
@@ -9278,7 +9280,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             match page_in_folder_like(desk, &folder, &url, &page_name_of(&url), Some(opener), kept) {
                 Ok((id, fresh)) => {
                     if let Some(window) = kept.filter(|_| fresh) {
-                        crate::pagewindow::claim(&format!("{on_desk}/{id}"), window);
+                        crate::pagewindow::claim(&desk.uid, &id, window);
                     }
                     if fresh {
                         for who in [String::new(), child.clone()] {

@@ -326,8 +326,10 @@ pub enum Cmd {
     /// A DevTools screen connected for a page (`devtools.rs`): what the page
     /// says to it goes to `out`
     DevtoolsOpen { conn: u64, to: Option<String>, out: shikisha_core::ws::Lane },
-    /// One message the screen said, for its page
-    DevtoolsSay { conn: u64, text: String },
+    /// One message the screen said, for its page. `writes`: the places it
+    /// would change what the browser keeps for, and what the screen is
+    /// answered when the page is not at them (`devscreen::written_by`)
+    DevtoolsSay { conn: u64, text: String, writes: Option<(Vec<shikisha_core::devscreen::Site>, String)> },
     /// The screen went away
     DevtoolsClose { conn: u64 },
     /// Put the window away. The program, its tabs and the phone's connection

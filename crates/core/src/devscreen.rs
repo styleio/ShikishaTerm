@@ -84,29 +84,81 @@ pub fn asked(method: &str, params: &serde_json::Value, target: Option<&str>, own
     }
 }
 
-/// The sites a message would change what the browser keeps for -- a cookie
-/// set or deleted, a site's storage cleared -- by host name. `None` for a
-/// message that changes nothing of the kind. A site that cannot be told
-/// from the message is the empty name, which is no page's site.
+/// One place a message would change what the browser keeps for
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Site {
+    /// A cookie's: a host name. A page at that host, or at a host under it,
+    /// holds such a cookie (one for `example.com` is held by the page at
+    /// `shop.example.com`)
+    Cookie(String),
+    /// A stored area's (local storage, a database): a scheme, a host and a
+    /// port together. Kept by exactly that, and never by a host above or
+    /// beside it
+    Origin(String),
+}
+
+/// The places a message would change what the browser keeps for -- a cookie
+/// set or deleted, a site's storage cleared. `None` for a message that
+/// changes nothing of the kind. A place that cannot be told from the
+/// message is the empty one, which is no page's.
 ///
 /// The protocol takes any address here: a screen on one page could set a
 /// cookie for a site the page has nothing to do with (a session of
 /// somebody else's choosing, waiting for the person to sign in to it), or
 /// delete one. A door that knows where its page is lets these through for
-/// the page's own sites only ([`within`])
-pub fn sites_written(method: &str, params: &serde_json::Value) -> Option<Vec<String>> {
+/// the page's own places only ([`within`])
+pub fn sites_written(method: &str, params: &serde_json::Value) -> Option<Vec<Site>> {
     let text = |v: &serde_json::Value, k: &str| v.get(k).and_then(|s| s.as_str()).unwrap_or_default().to_string();
-    // A cookie is for the address it names, or else the domain
-    let cookie = |c: &serde_json::Value| match host_of(&text(c, "url")) {
-        url if !url.is_empty() => url,
-        _ => text(c, "domain").trim_start_matches('.').to_ascii_lowercase(),
+    // A cookie may name an address, a domain, or both -- and the browser
+    // goes by the domain when it is given one. Every one named is a place
+    // it is for; naming none is naming no place
+    let cookie = |c: &serde_json::Value| -> Vec<Site> {
+        let mut places: Vec<Site> = Vec::new();
+        if c.get("url").is_some() {
+            places.push(Site::Cookie(host_of(&text(c, "url"))));
+        }
+        if c.get("domain").is_some() {
+            places.push(Site::Cookie(text(c, "domain").trim_start_matches('.').to_ascii_lowercase()));
+        }
+        match places.is_empty() {
+            true => vec![Site::Cookie(String::new())],
+            false => places,
+        }
     };
     match method {
-        "Network.setCookie" | "Network.deleteCookies" => Some(vec![cookie(params)]),
-        "Network.setCookies" => Some(params.get("cookies").and_then(|c| c.as_array()).map(|c| c.iter().map(cookie).collect()).unwrap_or_default()),
-        "Storage.clearDataForOrigin" => Some(vec![host_of(&text(params, "origin"))]),
-        "Storage.clearDataForStorageKey" => Some(vec![host_of(&text(params, "storageKey"))]),
+        "Network.setCookie" | "Network.deleteCookies" => Some(cookie(params)),
+        "Network.setCookies" => Some(params.get("cookies").and_then(|c| c.as_array()).map(|c| c.iter().flat_map(cookie).collect()).unwrap_or_default()),
+        "Storage.clearDataForOrigin" => Some(vec![Site::Origin(origin_of(&text(params, "origin")))]),
+        // A key is an origin, and after a `^` what it is kept apart by
+        "Storage.clearDataForStorageKey" => Some(vec![Site::Origin(origin_of(text(params, "storageKey").split('^').next().unwrap_or_default()))]),
         _ => None,
+    }
+}
+
+/// The scheme, host and port an address names, written one way (small
+/// letters, the scheme's own port left out); empty when it names none
+pub fn origin_of(address: &str) -> String {
+    let Some((scheme, rest)) = address.split_once("://") else { return String::new() };
+    let scheme = scheme.to_ascii_lowercase();
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let at = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    let port = match at.strip_prefix('[') {
+        Some(v6) => v6.split_once(']').and_then(|(_, after)| after.strip_prefix(':')),
+        None => at.split_once(':').map(|(_, port)| port),
+    };
+    let host = host_of(address);
+    if host.is_empty() {
+        return String::new();
+    }
+    let host = if host.contains(':') { format!("[{host}]") } else { host };
+    let usual = match scheme.as_str() {
+        "http" | "ws" => "80",
+        "https" | "wss" => "443",
+        _ => "",
+    };
+    match port.filter(|p| !p.is_empty() && *p != usual) {
+        Some(port) => format!("{scheme}://{host}:{port}"),
+        None => format!("{scheme}://{host}"),
     }
 }
 
@@ -123,11 +175,28 @@ pub fn host_of(address: &str) -> String {
     host.trim_end_matches('.').to_ascii_lowercase()
 }
 
-/// Whether every one of `sites` is a site of a page whose frames are at the
-/// hosts `frames`: the frame's own host, or a domain that host is under (a
-/// cookie for `example.com` is one the page at `shop.example.com` holds)
-pub fn within(sites: &[String], frames: &[String]) -> bool {
-    !sites.is_empty() && sites.iter().all(|site| !site.is_empty() && frames.iter().any(|f| f == site || f.ends_with(&format!(".{site}"))))
+/// Whether every one of `sites` is a place of a page whose frames are at
+/// the addresses `frames` (see [`Site`] for what each kind is held by)
+pub fn within(sites: &[Site], frames: &[String]) -> bool {
+    let held = |site: &Site| match site {
+        Site::Cookie(host) => !host.is_empty() && frames.iter().map(|f| host_of(f)).any(|f| f == *host || f.ends_with(&format!(".{host}"))),
+        Site::Origin(origin) => !origin.is_empty() && frames.iter().any(|f| origin_of(f) == *origin),
+    };
+    !sites.is_empty() && sites.iter().all(held)
+}
+
+/// A message from a screen that writes into the browser's keeping, for a
+/// door that learns where the page is only after the message is read: the
+/// places it writes for, and what the screen is answered when the page is
+/// not at them. `None` for a message that writes nothing of the kind
+pub fn written_by(text: &str) -> Option<(Vec<Site>, String)> {
+    let v = serde_json::from_str::<serde_json::Value>(text).ok()?;
+    let sites = sites_written(v.get("method")?.as_str()?, v.get("params").unwrap_or(&serde_json::Value::Null))?;
+    let mut answer = refusal(v.get("id").unwrap_or(&serde_json::Value::Null));
+    if let (Some(session), Some(o)) = (v.get("sessionId"), answer.as_object_mut()) {
+        o.insert("sessionId".into(), session.clone());
+    }
+    Some((sites, answer.to_string()))
 }
 
 /// Cut what a screen asks down to its own page, where the same ask can be
@@ -228,7 +297,7 @@ mod tests {
     /// own sites
     #[test]
     fn what_a_screen_writes_is_for_its_pages_own_sites() {
-        let frames = ["shop.example.com".to_string(), "pay.example.net".to_string()];
+        let frames = ["https://shop.example.com/cart?x=1".to_string(), "https://pay.example.net:8443/frame".to_string()];
         let written = |method: &str, params: serde_json::Value| sites_written(method, &params).map(|sites| within(&sites, &frames));
         // Not a write at all
         assert_eq!(written("Network.getCookies", serde_json::json!({})), None);
@@ -237,7 +306,34 @@ mod tests {
         assert_eq!(written("Network.setCookie", serde_json::json!({"name": "a", "value": "b", "url": "https://shop.example.com/cart"})), Some(true));
         assert_eq!(written("Network.setCookie", serde_json::json!({"name": "a", "value": "b", "domain": ".example.com"})), Some(true));
         assert_eq!(written("Network.deleteCookies", serde_json::json!({"name": "a", "domain": "pay.example.net"})), Some(true));
-        assert_eq!(written("Storage.clearDataForOrigin", serde_json::json!({"origin": "https://SHOP.example.com:8443", "storageTypes": "all"})), Some(true));
+        assert_eq!(written("Storage.clearDataForOrigin", serde_json::json!({"origin": "https://SHOP.example.com:443", "storageTypes": "all"})), Some(true));
+        assert_eq!(written("Storage.clearDataForOrigin", serde_json::json!({"origin": "https://pay.example.net:8443"})), Some(true));
+        assert_eq!(written("Storage.clearDataForStorageKey", serde_json::json!({"storageKey": "https://shop.example.com/^0https://top.example"})), Some(true));
+        // A cookie that names an address of the page's and a domain of
+        // somebody else's is for somebody else: the browser goes by the domain
+        assert_eq!(
+            written("Network.setCookie", serde_json::json!({"name": "sid", "value": "x", "url": "https://shop.example.com/", "domain": "bank.example.org"})),
+            Some(false)
+        );
+        assert_eq!(
+            written("Network.deleteCookies", serde_json::json!({"name": "sid", "url": "https://shop.example.com/", "domain": ".bank.example.org"})),
+            Some(false)
+        );
+        assert_eq!(written("Network.setCookie", serde_json::json!({"name": "a", "value": "b", "url": "https://shop.example.com/", "domain": ".example.com"})), Some(true));
+        // What is stored is kept by scheme, host and port: not by the
+        // domain above, another port, or the other scheme
+        for origin in ["https://example.com", "https://shop.example.com:8443", "http://shop.example.com", "https://pay.example.net", "https://other.shop.example.com"] {
+            assert_eq!(written("Storage.clearDataForOrigin", serde_json::json!({"origin": origin})), Some(false), "{origin}");
+        }
+        assert_eq!(origin_of("HTTPS://Shop.Example.com:443/x"), "https://shop.example.com");
+        assert_eq!(origin_of("http://[::1]:8080/x"), "http://[::1]:8080");
+        assert_eq!(origin_of("about:blank"), "");
+        // A message that writes is told apart, with its answer ready
+        let (sites, answer) = written_by(r#"{"id":7,"sessionId":"S","method":"Network.setCookie","params":{"name":"a","value":"b","domain":"bank.example.org"}}"#).unwrap();
+        assert_eq!(sites, [Site::Cookie("bank.example.org".into())]);
+        let answer: serde_json::Value = serde_json::from_str(&answer).unwrap();
+        assert_eq!((answer["id"].as_u64(), answer["sessionId"].as_str(), answer.get("error").is_some()), (Some(7), Some("S"), true));
+        assert_eq!(written_by(r#"{"id":8,"method":"Runtime.evaluate","params":{}}"#), None);
         // Another site's, by any of the roads
         assert_eq!(written("Network.setCookie", serde_json::json!({"name": "sid", "value": "x", "url": "https://bank.example.org/"})), Some(false));
         assert_eq!(written("Network.setCookie", serde_json::json!({"name": "sid", "value": "x", "domain": "bank.example.org"})), Some(false));

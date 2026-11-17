@@ -700,7 +700,27 @@ pub(super) fn run_window(
                     Some(v) => screens.open(conn, to, v.port(), out),
                     None => shikisha_core::append_hook_log(&format!("[devtools] screen {conn}: no such page here")),
                 },
-                Cmd::DevtoolsSay { conn, text } => screens.say(conn, text),
+                Cmd::DevtoolsSay { conn, text, writes } => {
+                    // A cookie set or deleted, a site's storage cleared: for
+                    // where the page is, and no other place. (Where the page
+                    // itself is: a frame in it at another site is not asked
+                    // after here, and what is written for one is refused)
+                    let elsewhere = writes.as_ref().is_some_and(|(sites, _)| {
+                        let at = screens
+                            .page_of(conn)
+                            .and_then(|to| target(main_view(&shell), &children, &overlays, to))
+                            .map(|page| page.url())
+                            .unwrap_or_default();
+                        !shikisha_core::devscreen::within(sites, &[at])
+                    });
+                    match (elsewhere, writes) {
+                        (true, Some((_, refused))) => {
+                            shikisha_core::append_hook_log(&format!("[devtools] screen {conn}: asked to write for a site its page is not at; refused"));
+                            screens.answer(conn, &refused);
+                        }
+                        _ => screens.say(conn, text),
+                    }
+                }
                 Cmd::DevtoolsClose { conn } => screens.close(conn),
                 Cmd::AddChild { name, url, rect, profile, through } => {
                     // Making a page runs on THIS event-loop thread, and this

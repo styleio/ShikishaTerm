@@ -5273,7 +5273,11 @@ const overTheWire = o => {
     const done = v => { clearTimeout(late); return v; };
     return fetch("api/intent?t=" + encodeURIComponent(TOKEN),
         {method:"POST", body:JSON.stringify(o), signal: stop ? stop.signal : undefined})
-      .then(r => r.ok ? r.json().then(j => ({ok: !(j && j.ok === false), heard: true}), () => ({ok: true, heard: true}))
+      // An answer with nothing to read in it is a yes (an older PC says no
+      // more). One given up on while it was still arriving is not: what it
+      // was going to say is not known, and a no must not be taken for a yes
+      .then(r => r.ok ? r.json().then(j => ({ok: !(j && j.ok === false), heard: true}),
+                          () => (stop && stop.signal.aborted) ? {ok: false, heard: false} : {ok: true, heard: true})
                       : {ok: false, heard: true})
       .then(done, () => done({ok: false, heard: false}));
   };
@@ -24511,6 +24515,9 @@ if (REMOTE) {
     // What is said once carries a number: the last one heard is said to
     // the PC when this page's line comes back, for what was said meanwhile
     if (typeof d.n === "number" && d.n > lastSaid) lastSaid = d.n;
+    // ...and where the numbers stand as this page connects: a page that
+    // has heard none yet asks from here, not from before it was opened
+    if (typeof d.said === "number" && d.said > lastSaid) lastSaid = d.said;
     connected();
     if (d.ui) window.__state(typeof d.ui === "string" ? d.ui : JSON.stringify(d.ui));
     // The rows that moved, when the shape of the screen is unchanged. Scrolling

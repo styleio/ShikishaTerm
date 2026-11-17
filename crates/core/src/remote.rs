@@ -727,7 +727,7 @@ impl States {
     /// Whether `msg` is the state itself, handed afresh to whoever connects,
     /// rather than something said once
     fn is_state(msg: &str) -> bool {
-        ["{\"ui\":", "{\"screen_html\":", "{\"rows\":", "{\"beat\":", "{\"cut\":", "{\"moved\":", "{\"panes\":"].iter().any(|head| msg.starts_with(head))
+        ["{\"ui\":", "{\"screen_html\":", "{\"rows\":", "{\"beat\":", "{\"cut\":", "{\"moved\":", "{\"panes\":", "{\"said\":"].iter().any(|head| msg.starts_with(head))
     }
 
     /// `msg` as it is said: numbered and kept when it is said once
@@ -3527,6 +3527,13 @@ fn handle(
                 for missed in heard.map(|n| lines.after(n)).unwrap_or_default() {
                     pending.fetch_add(1, Ordering::SeqCst);
                     let _ = stx.send(missed);
+                }
+                // Where the numbers stand now, once any have been given: a
+                // page that has heard none says this one when it comes
+                // back, and is not told what was said before it was opened
+                if lines.last > 0 {
+                    pending.fetch_add(1, Ordering::SeqCst);
+                    let _ = stx.send(format!("{{\"said\":{}}}", lines.last));
                 }
                 lines.push(StateClient {
                     tx: stx,
@@ -6639,14 +6646,25 @@ mod tests {
         let missed: serde_json::Value = serde_json::from_str(&read_text(&mut back).expect("what was said while the line was down is lost")).unwrap();
         assert_eq!(missed["git"]["second"], 2, "{missed}");
         assert!(missed["n"].as_u64().is_some_and(|m| m > n));
+        let stands = |text: Option<String>| text.and_then(|m| serde_json::from_str::<serde_json::Value>(&m).ok()).and_then(|v| v["said"].as_u64());
+        assert_eq!(stands(read_text(&mut back)), missed["n"].as_u64(), "a page is not told where the numbers stand");
         // Not told twice, and a page that says no number is told nothing old
         ui.push_state("{\"git\":{\"third\":3}}".to_string());
         assert!(read_text(&mut back).is_some_and(|m| m.contains("\"third\"")), "an answer was told twice");
-        let mut fresh = open(&phone.cookie, "&again=1");
+        // A page just opened is told where the numbers stand, and nothing
+        // that was said before it was: coming back having heard nothing
+        // more, it says that number and is told only what came after
+        let mut fresh = open(&phone.cookie, "");
         assert!(read_text(&mut fresh).is_some_and(|m| m.starts_with("{\"ui\"")));
         assert!(read_text(&mut fresh).is_some_and(|m| m.starts_with("{\"screen_html\"")));
+        let from = stands(read_text(&mut fresh)).expect("a page just opened is not told where the numbers stand");
+        drop(fresh);
         ui.push_state("{\"git\":{\"fourth\":4}}".to_string());
-        assert!(read_text(&mut fresh).is_some_and(|m| m.contains("\"fourth\"")), "a page that named no number was told old answers");
+        let mut again = open(&phone.cookie, &format!("&again=1&since={from}"));
+        assert!(read_text(&mut again).is_some_and(|m| m.starts_with("{\"ui\"")));
+        assert!(read_text(&mut again).is_some_and(|m| m.starts_with("{\"screen_html\"")));
+        let told = read_text(&mut again).unwrap_or_default();
+        assert!(told.contains("\"fourth\""), "a page that came back was told what was said before it was opened: {told}");
         ui.shutdown();
     }
 

@@ -602,7 +602,7 @@ fn run_bytes_as(dir: &Path, args: &[&str], input: &[u8], limit: Duration, who: &
     cmd.arg("-C").arg(dir);
     who.apply(&mut cmd);
     if let Some((thrown_away, real)) = APART.with(|a| a.borrow().clone()) {
-        cmd.env("GIT_OBJECT_DIRECTORY", thrown_away).env("GIT_ALTERNATE_OBJECT_DIRECTORIES", real);
+        cmd.env("GIT_OBJECT_DIRECTORY", thrown_away).env("GIT_ALTERNATE_OBJECT_DIRECTORIES", one_alternate(&real));
     }
     cmd.args(args)
         // Never sit waiting for a person who cannot see the prompt
@@ -1631,12 +1631,33 @@ fn merged_apart(dir: &Path, target: &str, head: &str) -> Option<String> {
     }
     let real = run(dir, &["rev-parse", "--path-format=absolute", "--git-path", "objects"]).ok().map(|p| PathBuf::from(p.trim()));
     let thrown_away = std::env::temp_dir().join(format!("shikisha-merge-{}", crate::random_hex(8)));
-    let (Some(real), Ok(())) = (real.filter(|p| p.is_dir()), std::fs::create_dir_all(&thrown_away)) else { return ask() };
+    // This account's alone. What is written there is made of what the
+    // repository holds, and the folder for things to throw away is one
+    // every account of the machine can look into
+    let made = {
+        let mut make = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut make, 0o700);
+        make.create(&thrown_away)
+    };
+    let (Some(real), Ok(())) = (real.filter(|p| p.is_dir()), made) else { return ask() };
     APART.with(|a| *a.borrow_mut() = Some((thrown_away.clone(), real)));
     let merged = ask();
     APART.with(|a| *a.borrow_mut() = None);
     let _ = std::fs::remove_dir_all(&thrown_away);
     merged
+}
+
+/// One folder of objects, as git is told of it in a list of several: the
+/// list is cut at `;` (`:` away from Windows), so a folder with that in its
+/// name is written in quotes, which git reads as one name
+fn one_alternate(folder: &Path) -> std::ffi::OsString {
+    let name = folder.to_string_lossy();
+    let cut = if cfg!(windows) { ';' } else { ':' };
+    match name.contains(cut) || name.starts_with('"') {
+        true => format!("\"{}\"", name.replace('\\', "\\\\").replace('"', "\\\"")).into(),
+        false => folder.as_os_str().to_os_string(),
+    }
 }
 
 /// Back onto the branch this one went into ([`integrated_into`]), with what
@@ -2649,7 +2670,9 @@ mod tests {
     /// leaves nothing behind in the repository
     #[test]
     fn asking_whether_a_branch_went_in_leaves_the_repository_as_it_was() {
-        let Some((seed, _far, near)) = catch_up_setup("apart") else { return };
+        // In a folder whose name has in it what a list of folders is cut at
+        let Some((seed, _far, near)) = catch_up_setup(if cfg!(windows) { "apart;two" } else { "apart:two" }) else { return };
+        assert_eq!(one_alternate(Path::new("/plain/objects")), std::ffi::OsString::from("/plain/objects"));
         // The work, on its branch...
         std::fs::write(near.join("b.txt"), "the work\n").unwrap();
         run(&near, &["add", "."]).unwrap();

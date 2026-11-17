@@ -1054,6 +1054,12 @@ pub struct BrowserProfile {
     /// profile because it is the same question — who this page is to a site —
     /// and it is asked at every place a page is opened
     pub user_agent: Option<String>,
+    /// The window a page opened that this page is to be, when the tab was
+    /// made for one (the browser's own name for the window): taken as it
+    /// stands rather than opened at the address. Said by whoever made the
+    /// tab, to a host that keeps such windows
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<String>,
 }
 
 impl BrowserProfile {
@@ -1064,7 +1070,14 @@ impl BrowserProfile {
             name: if n.is_empty() { "default".into() } else { n.to_string() },
             private,
             user_agent: None,
+            window: None,
         }
+    }
+
+    /// The same profile, for a tab made for the window `window`
+    pub fn taking(mut self, window: Option<String>) -> Self {
+        self.window = window;
+        self
     }
 
     /// The same profile, with a name of its own to give sites
@@ -1074,7 +1087,7 @@ impl BrowserProfile {
     }
     /// The default (shared "default" profile, persistent)
     pub fn shared_default() -> Self {
-        Self { name: "default".into(), private: false, user_agent: None }
+        Self { name: "default".into(), private: false, user_agent: None, window: None }
     }
 }
 
