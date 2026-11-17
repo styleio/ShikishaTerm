@@ -179,6 +179,15 @@ once it reaches its first tagged release.
   checked.
 
 ### Fixed
+- **A second Codex account no longer asks again about folders you
+  already trust.** Codex keeps the folders it trusts in its settings, and
+  an added account's settings are a copy made when the account was
+  added. A folder trusted since then under your usual account was asked
+  about again by the other account's Codex each time a tab started with
+  it, and work the app typed into such a tab went into that question.
+  Folders trusted under the usual account are now added to the account's
+  settings when a tab starts with it. A folder the account's own settings
+  already mention is left as it is there.
 - **A browser tab whose page crashed comes back, on the server
   version.** When the process drawing a page died (out of memory, a
   fault in the page), the tab stood as it was last seen: its picture did

@@ -329,11 +329,105 @@ fn make_up(k: &Kind, usual: &Path, dir: &Path, account: &crate::config::AiAccoun
     if k.cli == CLAUDE.cli {
         claude_extras(usual, dir)?;
     }
+    if k.cli == CODEX.cli {
+        codex_trust(usual, dir, &account.id);
+    }
     if first {
         crate::crypto::write_atomic(&made, "")?;
         FRESH.store(true, Ordering::Relaxed);
     }
     Ok(())
+}
+
+/// The folders Codex was told to trust in the usual folder, trusted under
+/// this account as well.
+///
+/// Codex keeps which folders it trusts in its settings, and an account's
+/// settings are a copy made when the account was: a folder trusted since --
+/// under the usual account, where most work starts -- was asked about again
+/// by every other account's Codex, each time a tab started with one, and a
+/// tab the app itself opens and types into had its work typed into that
+/// question. The yes was the person's, to this CLI, on this PC; it is carried
+/// each time a tab starts. A folder the account's own settings already speak
+/// of, either way, is left as the account has it
+fn codex_trust(usual: &Path, dir: &Path, id: &str) {
+    let Ok(theirs) = std::fs::read_to_string(usual.join("config.toml")) else { return };
+    let file = dir.join("config.toml");
+    let ours = match std::fs::read_to_string(&file) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(_) => return,
+    };
+    let Some((with, carried)) = codex_trust_carried(&theirs, &ours) else { return };
+    match crate::crypto::write_atomic(&file, &with) {
+        Ok(()) => crate::append_hook_log(&format!("account {id}: {carried} folder(s) Codex trusts under the usual account are trusted under this one")),
+        Err(e) => crate::append_hook_log(&format!("account {id}: the folders Codex trusts could not be carried over: {e:#}")),
+    }
+}
+
+/// The folder a line of Codex's settings opens a table for, when the line
+/// is `[projects.<folder>]` as Codex writes it (the folder in quotes of
+/// either kind, or bare), with the folder as written between the brackets
+fn codex_project(line: &str) -> Option<(String, &str)> {
+    let written = line.trim().strip_prefix("[projects.")?.strip_suffix(']')?.trim();
+    let folder = match written.as_bytes() {
+        [b'\'', .., b'\''] if written.len() >= 2 && !written[1..written.len() - 1].contains('\'') => written[1..written.len() - 1].to_string(),
+        // The escapes a quoted folder is written with are JSON's
+        [b'"', .., b'"'] if written.len() >= 2 => serde_json::from_str::<String>(written).ok()?,
+        _ if !written.is_empty() && written.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') => written.to_string(),
+        _ => return None,
+    };
+    Some((folder, written))
+}
+
+/// `ours` (an account's Codex settings) with the folders `theirs` (the usual
+/// account's) trusts added, and how many were. `None` when there is nothing
+/// to add -- or when either file says anything about folders in a way this
+/// does not read: a table added beside one written another way would be the
+/// same table twice, which Codex refuses to start on
+fn codex_trust_carried(theirs: &str, ours: &str) -> Option<(String, usize)> {
+    // Every folder a file opens a table for, as written, and whether it is
+    // trusted. None when the file speaks of folders some other way
+    fn folders(text: &str) -> Option<Vec<(String, String, bool)>> {
+        let mut found: Vec<(String, String, bool)> = Vec::new();
+        let mut within = false;
+        for line in text.lines().map(str::trim) {
+            if line.starts_with('[') {
+                within = false;
+                if line.starts_with("[projects") || line.starts_with("[[projects") {
+                    let (folder, written) = codex_project(line)?;
+                    found.push((folder, written.to_string(), false));
+                    within = true;
+                }
+            } else if line.starts_with("projects") && line["projects".len()..].trim_start().starts_with(['=', '.']) {
+                return None;
+            } else if within
+                && line.replace(' ', "") == "trust_level=\"trusted\""
+                && let Some(last) = found.last_mut()
+            {
+                last.2 = true;
+            }
+        }
+        Some(found)
+    }
+    let same = |a: &str, b: &str| match cfg!(windows) {
+        true => a.eq_ignore_ascii_case(b),
+        false => a == b,
+    };
+    let (theirs, known) = (folders(theirs)?, folders(ours)?);
+    let mut out = ours.trim_end_matches(['\n', '\r']).to_string();
+    let mut carried = 0;
+    for (folder, written, trusted) in &theirs {
+        if !trusted || known.iter().any(|(f, ..)| same(f, folder)) || theirs.iter().filter(|(f, ..)| same(f, folder)).count() != 1 {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push_str("\n\n");
+        }
+        out.push_str(&format!("[projects.{written}]\ntrust_level = \"trusted\""));
+        carried += 1;
+    }
+    (carried > 0).then(|| (out + "\n", carried))
 }
 
 /// What only Claude Code needs. Its memory file is read from its folder, so
@@ -705,6 +799,39 @@ mod tests {
 
     fn account(id: &str, cli: &str) -> crate::config::AiAccountSpec {
         crate::config::AiAccountSpec { id: id.into(), cli: cli.into(), name: String::new() }
+    }
+
+    /// A folder Codex trusts under the usual account is trusted under
+    /// another: added as Codex writes it, once, and never beside something
+    /// the account's own settings already say about folders
+    #[test]
+    fn the_folders_codex_trusts_are_carried_to_an_account() {
+        let usual = "model = \"gpt-5\"\n\n[projects.'d:\\work\\shop']\ntrust_level = \"trusted\"\n\n[projects.\"/home/ada/site\"]\ntrust_level = \"trusted\"\n\n[projects.'d:\\not-yet']\ntrust_level = \"untrusted\"\n\n[features]\nplugins = true\n";
+        let account = "model = \"gpt-5\"\n\n[projects.'d:\\elsewhere']\ntrust_level = \"trusted\"\n";
+        let (with, carried) = codex_trust_carried(usual, account).expect("nothing was carried");
+        assert_eq!(carried, 2);
+        assert!(with.starts_with(account.trim_end()), "what the account had was changed: {with}");
+        assert!(with.contains("[projects.'d:\\work\\shop']\ntrust_level = \"trusted\""), "{with}");
+        assert!(with.contains("[projects.\"/home/ada/site\"]\ntrust_level = \"trusted\""), "{with}");
+        assert!(!with.contains("not-yet"), "a folder not trusted was carried: {with}");
+        // Carried once: the second time there is nothing to add
+        assert_eq!(codex_trust_carried(usual, &with), None);
+        // A folder the account already speaks of is left as the account has
+        // it, however it is spelled there -- the person may have said no
+        let said_no = "[projects.\"d:\\\\work\\\\shop\"]\ntrust_level = \"untrusted\"\n";
+        let (with, carried) = codex_trust_carried(usual, said_no).unwrap();
+        assert_eq!(carried, 1, "{with}");
+        assert_eq!(with.matches("shop").count(), 1, "the same folder was written twice: {with}");
+        // Settings that speak of folders some other way are not added to
+        for other in ["[projects]\n\"d:/x\" = { trust_level = \"trusted\" }\n", "projects.'d:\\x'.trust_level = \"trusted\"\n", "projects = {}\n", "[projects.'a'.b]\nx = 1\n"] {
+            assert_eq!(codex_trust_carried(usual, other), None, "added beside {other:?}");
+            assert_eq!(codex_trust_carried(other, account), None, "read from {other:?}");
+        }
+        // An account with no settings yet gets the trusted folders alone
+        let (with, carried) = codex_trust_carried(usual, "").unwrap();
+        assert_eq!(carried, 2);
+        assert!(with.starts_with("[projects.'d:\\work\\shop']"), "{with}");
+        assert_eq!(codex_trust_carried("model = \"x\"\n", account), None);
     }
 
     #[test]
