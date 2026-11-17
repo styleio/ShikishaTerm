@@ -1847,7 +1847,8 @@ mod tests {
     /// An app's door, as the resident process sees one: the key shown, and
     /// frames both ways
     struct App {
-        to: UnixStream,
+        /// Shared with the ticking, so a tick never lands inside a frame
+        to: Arc<Mutex<UnixStream>>,
         from: BufReader<UnixStream>,
         hello: Frame,
     }
@@ -1863,11 +1864,28 @@ mod tests {
             let key = read_private(&run.join(KEY_FILE)).unwrap();
             let mut to = conn;
             writeln!(to, "{}", json!({ "role": "port", "key": key })).unwrap();
+            let to = Arc::new(Mutex::new(to));
+            // Say it is there, as the app does: a test that only listens for
+            // a minute (a slow machine reading a flood of output) is otherwise
+            // taken for an app gone, and its line cut under it. Ends with the
+            // app, so a test that drops it still sees it go
+            let ticking = Arc::downgrade(&to);
+            std::thread::spawn(move || {
+                let tick = serde_json::to_string(&Frame::Tick).unwrap();
+                loop {
+                    std::thread::sleep(Duration::from_secs(1));
+                    let Some(to) = ticking.upgrade() else { break };
+                    let Ok(mut to) = to.lock() else { break };
+                    if writeln!(to, "{tick}").is_err() {
+                        break;
+                    }
+                }
+            });
             App { to, from, hello }
         }
 
         fn say(&mut self, f: &Frame) {
-            writeln!(self.to, "{}", serde_json::to_string(f).unwrap()).unwrap();
+            writeln!(self.to.lock().unwrap(), "{}", serde_json::to_string(f).unwrap()).unwrap();
         }
 
         /// The next frame, skipping none; `None` when nothing comes in time
@@ -2068,7 +2086,7 @@ mod tests {
         // An app that asks and stops talking at once is still answered
         let mut brief = App::open(&run);
         brief.say(&Frame::Op { id: 7, op: "ping".into(), p: json!({}) });
-        brief.to.shutdown(std::net::Shutdown::Write).unwrap();
+        brief.to.lock().unwrap().shutdown(std::net::Shutdown::Write).unwrap();
         assert!(brief.hear_until(|f| matches!(f, Frame::Re { id: 7, .. })).is_some(), "asked, then silent: never answered");
         drop(brief);
         // Its line is let go once its answers are out, a moment later
@@ -2107,7 +2125,7 @@ mod tests {
         assert!(opened.is_some(), "the command did not reach the app that started its tab");
         let token = pc.hear_until(|f| matches!(f, Frame::Line { .. }));
         assert!(matches!(token, Some(Frame::Line { ref l, .. }) if l.contains("k-pc")), "{token:?}");
-        server.to.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+        server.to.lock().unwrap().set_read_timeout(Some(Duration::from_millis(500))).unwrap();
         server.from.get_ref().set_read_timeout(Some(Duration::from_millis(500))).unwrap();
         assert!(server.hear_until(|f| matches!(f, Frame::Open { .. })).is_none(), "another app heard a tab that is not its");
         drop(to);
