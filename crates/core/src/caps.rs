@@ -233,6 +233,10 @@ pub struct Capabilities {
     /// past the close so an open can be undone and redone (see `browser_spec`)
     opened: std::cell::RefCell<HashMap<String, (String, shikisha_shared::BrowserProfile)>>,
     page_uids: std::cell::RefCell<HashMap<String, String>>,
+    /// The desk each tab's page was opened for, by the desk's own id. A
+    /// page is known by where its desk stands in the list, and the list is
+    /// put in another order while pages stand open
+    page_desks: std::cell::RefCell<HashMap<String, String>>,
     /// The desk currently being viewed. Names are only meaningful within it
     desk: std::cell::Cell<usize>,
     /// Which pages are currently shown, and where. Skipped if unchanged.
@@ -369,6 +373,7 @@ impl Capabilities {
             hosted: std::cell::RefCell::new(Vec::new()),
             opened: std::cell::RefCell::new(HashMap::new()),
             page_uids: std::cell::RefCell::new(HashMap::new()),
+            page_desks: std::cell::RefCell::new(HashMap::new()),
             desk: std::cell::Cell::new(0),
             shown: std::cell::RefCell::new(None),
             nav: std::cell::RefCell::new(HashMap::new()),
@@ -1815,6 +1820,18 @@ impl Capabilities {
         closed
     }
 
+    /// The page `name` of the desk in view was opened for the desk whose
+    /// own id is `desk`
+    pub fn opened_for(&self, name: &str, desk: &str) {
+        self.page_desks.borrow_mut().insert(Self::key(self.desk.get(), name), desk.to_string());
+    }
+
+    /// The own id of the desk the page `page` (as its host names it) was
+    /// opened for, when that was written down
+    pub fn desk_of_page(&self, page: &str) -> Option<String> {
+        self.page_desks.borrow().get(page).cloned()
+    }
+
     /// Note this down as a page config opened
     pub fn note_declared(&self, name: &str) {
         self.declared
@@ -1857,6 +1874,7 @@ impl Capabilities {
         self.declared.borrow_mut().remove(&key);
         self.opened.borrow_mut().remove(&key);
         self.page_uids.borrow_mut().remove(&key);
+        self.page_desks.borrow_mut().remove(&key);
         *self.shown.borrow_mut() = None;
         // Its DevTools goes with it: a DevTools is about one page, and left
         // behind it inspects nothing -- and the next "Open DevTools" on a page

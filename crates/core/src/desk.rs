@@ -1393,7 +1393,10 @@ pub fn open_declared_browsers(desk: &config::Desk, caps: &hooks::Caps, errors: &
             let opened = page_address(desk, ft, &url)
                 .and_then(|u| caps.browser_open(&name, &u, profile).map_err(|e| format!("{e:#}")));
             match opened {
-                Ok(()) => forget_failure(&desk.uid, &name),
+                Ok(()) => {
+                    caps.opened_for(&name, &desk.uid);
+                    forget_failure(&desk.uid, &name)
+                }
                 Err(e) => {
                     remember_failure(&desk.uid, &name, "browser", &e);
                     errors.push(crate::i18n::tp("err.desk.browser_open", &[("id", &name), ("e", &e)]));

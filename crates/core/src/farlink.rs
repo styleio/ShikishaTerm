@@ -349,8 +349,10 @@ impl Out {
 impl Link {
     fn say(&self, f: &Frame) -> bool {
         let ok = self.out.put(f.line().into_bytes());
+        // Not taken: the line is given up on, and closed -- left open, its
+        // reader and its writer would stand for as long as the far end did
         if !ok {
-            self.up.store(false, Ordering::SeqCst);
+            self.close();
         }
         ok
     }
@@ -794,8 +796,9 @@ pub fn disconnect_all() {
     all.iter().for_each(|(_, l)| {
         l.say(&Frame::Bye);
     });
+    let until = Instant::now() + Duration::from_secs(2);
     for (key, l) in all {
-        l.out.written(Duration::from_secs(2));
+        l.out.written(until.saturating_duration_since(Instant::now()));
         l.close();
         crate::append_hook_log(&format!("bridge: let go of {key} on the way out"));
     }
@@ -1949,5 +1952,29 @@ mod tests {
         }
         assert!(!stuck.is_up(), "a line that would not take what was written is still counted as up");
         assert!(!stuck.to_job("terms", json!({ "do": "in" })));
+
+        // A line that has left too much unwritten is given up on and
+        // closed, not only counted as down
+        let (_never, held) = std::sync::mpsc::channel();
+        let closed = Arc::new(AtomicBool::new(false));
+        let shut = Arc::clone(&closed);
+        let full = Arc::new(Link {
+            out: Out::over(Box::new(Stuck(held))),
+            socket: None,
+            closer: Some(Box::new(move || shut.store(true, Ordering::SeqCst))),
+            waiting: Mutex::default(),
+            conns: Mutex::default(),
+            next: AtomicU64::new(0),
+            up: AtomicBool::new(true),
+            version: Mutex::new(None),
+            jobs: Mutex::new(Vec::new()),
+            job_listeners: Mutex::default(),
+            home: String::new(),
+            ends_at_logout: AtomicBool::new(false),
+            heard: Mutex::new(Instant::now()),
+        });
+        full.out.waiting.store(OUT_MOST, Ordering::SeqCst);
+        assert!(!full.say(&Frame::Tick));
+        assert!(!full.is_up() && closed.load(Ordering::SeqCst), "a line given up on was left open");
     }
 }

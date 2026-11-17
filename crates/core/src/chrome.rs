@@ -1824,9 +1824,11 @@ impl Pages {
                         // form a second time (an order placed twice)
                         true => {
                             crate::append_hook_log(&format!("chrome: the process of the page '{page}' died; the page is opened again at its address"));
+                            // Where it is, is not known: left as it is
+                            // rather than loaded again as it was reached
                             match at {
                                 Some(url) => speaker.tell(Some(&session), "Page.navigate", serde_json::json!({ "url": url })),
-                                None => speaker.tell(Some(&session), "Page.reload", serde_json::json!({})),
+                                None => crate::append_hook_log(&format!("chrome: where the page '{page}' was is not known; it is left as it is -- reload the tab to start it again")),
                             }
                         }
                         false => crate::append_hook_log(&format!(
@@ -1938,8 +1940,19 @@ impl Pages {
                         // ...and where the page is now, for opening it
                         // again there should its process die
                         if let Some(url) = ev.params.pointer("/frame/url").and_then(|u| u.as_str()).filter(|u| shikisha_shared::is_openable(u)) {
-                            book.at.insert(page.clone(), url.to_string());
+                            // What follows the # is said apart
+                            let part = ev.params.pointer("/frame/urlFragment").and_then(|f| f.as_str()).unwrap_or_default();
+                            book.at.insert(page.clone(), format!("{url}{part}"));
                         }
+                    }
+                }
+                // The page moved without loading anything (a page that
+                // draws its own screens changes its address this way): the
+                // page's own frame, which has its target's id
+                "Page.navigatedWithinDocument" => {
+                    let own = ev.params.get("frameId").and_then(|f| f.as_str()).is_some_and(|f| book.targets.get(f).is_some_and(|(p, _)| *p == page));
+                    if own && let Some(url) = ev.params.get("url").and_then(|u| u.as_str()).filter(|u| shikisha_shared::is_openable(u)) {
+                        book.at.insert(page.clone(), url.to_string());
                     }
                 }
                 // Arming the credentials above holds every request of this
@@ -2686,10 +2699,19 @@ impl shikisha_shared::BrowserHost for Pages {
                     // ordinary storage, and is not a private tab's page,
                     // whatever the tab was made beside
                     Some(kept) if kept.browser == key && kept.context.is_some() == profile.private => Some((window, kept.context)),
-                    // Not this tab's after all: nobody's to take
-                    Some(_) => {
+                    // Not this tab's after all: nobody's to take. The
+                    // private storage it was in goes with it when it was
+                    // the last thing in it (the page that opened it may have
+                    // closed while it waited)
+                    Some(kept) => {
                         book.windows.closing(&window);
                         chrome.speaker().tell(None, "Target.closeTarget", serde_json::json!({ "targetId": window }));
+                        if let Some(context) = kept.context
+                            && !book.targets.values().any(|(_, c)| c.as_deref() == Some(context.as_str()))
+                            && !book.windows.in_context(&context)
+                        {
+                            chrome.speaker().tell(None, "Target.disposeBrowserContext", serde_json::json!({ "browserContextId": context }));
+                        }
                         None
                     }
                     None => None,
@@ -2723,6 +2745,18 @@ impl shikisha_shared::BrowserHost for Pages {
             if adopted {
                 book.windows.taken.insert(target.clone());
             }
+        }
+        // A window taken as it stands has already gone where it was going,
+        // and nothing more is said of that: where it is, is asked now, so
+        // that it can be opened there again should its process die
+        if adopted
+            && let Some(at) = chrome
+                .call("Target.getTargetInfo", serde_json::json!({ "targetId": target }))
+                .ok()
+                .and_then(|said| said.pointer("/targetInfo/url").and_then(|u| u.as_str()).map(str::to_string))
+                .filter(|u| shikisha_shared::is_openable(u))
+        {
+            self.seen.lock().unwrap_or_else(|e| e.into_inner()).at.entry(name.to_string()).or_insert(at);
         }
 
         let dress = || -> anyhow::Result<()> {
@@ -4151,6 +4185,43 @@ mod tests {
         ready(&pages).expect("the order's page was not opened again");
         assert!(pages.href(Some(ordered), 5_000).unwrap().ends_with("/order"));
         assert_eq!(sent.load(std::sync::atomic::Ordering::SeqCst), 1, "the form was sent a second time");
+
+        // Where it has moved to without loading -- what follows the #, a
+        // page changing its own address -- is where it is opened again
+        pages.eval(Some(ordered), "history.pushState({}, '', '/order/42?tab=2#/items'); return 1", 5_000).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let _ = pages.drain();
+        chrome.speaker().tell(Some(&session), "Page.crash", serde_json::json!({}));
+        ready(&pages).expect("the page was not opened again where it had moved to");
+        assert!(pages.href(Some(ordered), 5_000).unwrap().ends_with("/order/42?tab=2#/items"), "{}", pages.href(Some(ordered), 5_000).unwrap());
+        assert_eq!(sent.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        // A form sent into a new window, and the window taken as its tab's
+        // page after the answer has loaded: it, too, is opened again at its
+        // address, with the form sent once
+        pages
+            .eval(Some(ordered), "document.body.innerHTML = '<form method=post action=/receipt target=_blank><input name=n value=2></form>'; document.forms[0].submit(); return 1", 5_000)
+            .unwrap();
+        let (url, window) = waited(&pages, |ev| match ev {
+            shikisha_shared::Ev::PageWindow { from: Some(n), url, window, .. } if n == ordered => Some((url.clone(), window.clone())),
+            _ => None,
+        })
+        .expect("the window the form was sent into was not said");
+        assert_eq!(sent.load(std::sync::atomic::Ordering::SeqCst), 2);
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        pages.open_child("receipt", &url, (0, 0, 900, 700), BrowserProfile::shared_default().taking(Some(window))).unwrap();
+        assert_eq!(sent.load(std::sync::atomic::Ordering::SeqCst), 2, "taking the window sent the form again");
+        let _ = pages.drain();
+        let (chrome, session) = pages.at(Some("receipt")).unwrap();
+        chrome.speaker().tell(Some(&session), "Page.crash", serde_json::json!({}));
+        waited(&pages, |ev| match ev {
+            shikisha_shared::Ev::Ready { from: Some(n), complete: true, .. } if n == "receipt" => Some(()),
+            _ => None,
+        })
+        .expect("the window taken as a page was not opened again");
+        assert!(pages.href(Some("receipt"), 5_000).unwrap().ends_with("/receipt"));
+        assert_eq!(sent.load(std::sync::atomic::Ordering::SeqCst), 2, "the form sent into the window was sent again");
+        pages.close_child("receipt").unwrap();
         pages.close_child(ordered).unwrap();
     }
 

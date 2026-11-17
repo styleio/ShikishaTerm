@@ -192,8 +192,10 @@ pub fn host_of(address: &str) -> String {
     };
     let named = !host.is_empty() && host.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':'));
     let numbered = port.is_empty() || port.strip_prefix(':').is_some_and(|p| p.chars().all(|c| c.is_ascii_digit()));
+    // As written, but for the case of its letters: a name with a dot at
+    // its end is another place to a browser than the name without one
     match named && numbered {
-        true => host.trim_end_matches('.').to_ascii_lowercase(),
+        true => host.to_ascii_lowercase(),
         false => String::new(),
     }
 }
@@ -374,7 +376,11 @@ mod tests {
         assert_eq!(written("Network.setCookie", serde_json::json!({"name": "a", "value": "b", "domain": "notshop.example.com.evil.test"})), Some(false));
         assert_eq!(written("Network.setCookie", serde_json::json!({"name": "a", "value": "b", "domain": "ample.com"})), Some(false));
         assert_eq!(host_of("https://[::1]:8080/x"), "::1");
-        assert_eq!(host_of("HTTPS://Shop.Example.com./x?y#z"), "shop.example.com");
+        assert_eq!(host_of("HTTPS://Shop.Example.com/x?y#z"), "shop.example.com");
+        // A dot at the end of a name makes it another place, kept apart
+        assert_eq!(origin_of("http://localhost.:8080/"), "http://localhost.:8080");
+        assert!(!within(&[Site::Origin(origin_of("http://localhost:8080"))], &["http://localhost.:8080/page".to_string()]));
+        assert!(within(&[Site::Origin(origin_of("http://localhost.:8080"))], &["http://localhost.:8080/page".to_string()]));
         assert_eq!(host_of("about:blank"), "");
         // An address a browser may read another way names no host here,
         // and what is asked for it is refused: a backslash it takes for a

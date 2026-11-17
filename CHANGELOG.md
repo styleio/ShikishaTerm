@@ -194,9 +194,10 @@ once it reaches its first tagged release.
   version.** When the process drawing a page died (out of memory, a
   fault in the page), the tab stood as it was last seen: its picture did
   not change, and everything a script asked of it waited out its
-  deadline. The page is now opened again at its address -- not loaded
-  again the way it was reached, so a page reached by sending a form does
-  not send the form a second time. One that dies three times in a minute
+  deadline. The page is now opened again at its address -- where it had
+  moved to, what follows the `#` included -- and not loaded again the way
+  it was reached, so a page reached by sending a form does not send the
+  form a second time. One that dies three times in a minute
   is left down, and the log says so. (In the window app the browser shows
   its own error page, as before.)
 - **Approving this app's hooks in Codex no longer starts Codex's

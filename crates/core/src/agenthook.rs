@@ -1359,19 +1359,33 @@ fn note_side_thread(id: &str) {
     if id.is_empty() || id.len() > 200 || !id.chars().all(|c| c.is_ascii_graphic()) {
         return;
     }
-    let mut all = side_threads();
-    if all.iter().any(|s| s == id) {
+    if is_side_thread(id) {
         return;
     }
-    all.push(id.to_string());
-    let keep = all.len().saturating_sub(SIDE_THREADS_MOST);
+    // Added at the end, in one write. Two hooks may be writing at the same
+    // moment (two tabs, each beginning a side thread): read, added to and
+    // written back whole, the second to write would take the first one's
+    // line out again
     let file = side_threads_file();
     if let Some(dir) = file.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    if let Err(e) = crate::crypto::write_atomic(&file, &(all[keep..].join("\n") + "\n")) {
-        crate::append_hook_log(&format!("a side thread could not be written down: {e:#}"));
+    use std::io::Write as _;
+    let added = std::fs::OpenOptions::new().create(true).append(true).open(&file).and_then(|mut f| f.write_all(format!("{id}\n").as_bytes()));
+    if let Err(e) = added {
+        crate::append_hook_log(&format!("a side thread could not be written down: {e}"));
     }
+}
+
+/// Cut the list of side threads down to the newest. Done by the app as it
+/// starts, and by nothing else: a hook only ever adds a line
+pub fn tidy_side_threads() {
+    let all = side_threads();
+    if all.len() <= SIDE_THREADS_MOST {
+        return;
+    }
+    let keep = all.len() - SIDE_THREADS_MOST;
+    let _ = crate::crypto::write_atomic(&side_threads_file(), &(all[keep..].join("\n") + "\n"));
 }
 
 /// `kind` is what the hook entry asked for: `session`, or `state:<STATE>`.
@@ -2917,10 +2931,16 @@ mod tests {
         // An id that is no word is not written among the lines
         note_side_thread("two\nlines");
         assert_eq!(side_threads().len(), written.lines().count());
-        // Never more than so many
+        // Many hooks adding at the same moment: every one is there after
+        let adding: Vec<_> = (0..24).map(|n| std::thread::spawn(move || note_side_thread(&format!("at-once-{n}")))).collect();
+        adding.into_iter().for_each(|t| t.join().unwrap());
+        assert!((0..24).all(|n| is_side_thread(&format!("at-once-{n}"))), "a side thread written at the same moment as another was lost");
+        // Cut down to the newest when the app starts, and by nothing else
         for n in 0..SIDE_THREADS_MOST + 3 {
             note_side_thread(&format!("many-{n}"));
         }
+        assert!(side_threads().len() > SIDE_THREADS_MOST && is_side_thread("side-thread-1"));
+        tidy_side_threads();
         assert_eq!(side_threads().len(), SIDE_THREADS_MOST);
         assert!(is_side_thread(&format!("many-{}", SIDE_THREADS_MOST + 2)) && !is_side_thread("side-thread-1"));
     }

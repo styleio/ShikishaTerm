@@ -2272,6 +2272,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         if let Err(e) = config::strip_marks_at(&config::config_file_path(), crate::pagewindow::MARK) {
             append_hook_log(&format!("could not look for tabs made for windows that are gone: {e:#}"));
         }
+        // The list of side threads the hooks add to is cut down here, by
+        // the app alone
+        crate::agenthook::tidy_side_threads();
         config::load()
     } else {
         None
@@ -9245,6 +9248,15 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 append_hook_log(&format!("page window: dropped one from {child}, whose desk is gone"));
                 continue;
             };
+            // ...and the desk standing there now is the one the page was
+            // opened for. Desks are put in another order while a page's
+            // window is on its way here, and the desk now in that place is
+            // not the page's: its tab of the same name is another tab, in
+            // another folder, kept another way
+            if caps.desk_of_page(&child).is_some_and(|opened_for| opened_for != desk.uid) {
+                append_hook_log(&format!("page window: dropped one from {child}; the desks were put in another order since its page was opened"));
+                continue;
+            }
             let url = url.trim().to_string();
             // Its tab: where the new one stands, and what it is like. A page
             // that is nobody's tab -- one a script opened and placed -- has
