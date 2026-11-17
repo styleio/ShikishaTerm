@@ -693,6 +693,14 @@ fn note_of(params: &[&[u8]]) -> Option<(String, String)> {
     }
 }
 
+/// What turns off everything a program may have asked of its terminal's
+/// input, said as the program itself would have said it on its way out:
+/// the mouse and how it is spelled, the wheel as arrows, focus reports,
+/// wrapped pastes, the arrows' and the keypad's other spellings -- all off,
+/// and the caret back
+const INPUT_MODES_OFF: &[u8] =
+    b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1007l\x1b[?1004l\x1b[?2004l\x1b[?1l\x1b>\x1b[?25h";
+
 /// The answer to a program asking what colours its terminal is drawn in
 /// (`OSC 10 ; ?` the text, `11` the background, `12` the caret), or
 /// `None` when that is not what was asked.
@@ -2241,6 +2249,29 @@ mod tests {
             answers, "\x1b[?1u\x1b[?1u",
             "it says it will do even what it cannot: {answers:?}"
         );
+    }
+
+    /// What a program left switched on is all off after a reset, and what
+    /// is on the screen is left where it was
+    #[test]
+    fn a_reset_puts_away_what_a_program_left_switched_on() {
+        let mut p = vt100::Parser::new(24, 80, 0);
+        p.process(b"left on screen\x1b[?1002h\x1b[?1006h\x1b[?1007h\x1b[?2004h\x1b[?1h\x1b=\x1b[?25l");
+        {
+            let s = p.screen();
+            assert_ne!(s.mouse_protocol_mode(), vt100::MouseProtocolMode::None);
+            assert!(s.bracketed_paste() && s.application_cursor() && s.application_keypad() && s.hide_cursor() && s.alternate_scroll());
+        }
+        p.process(super::INPUT_MODES_OFF);
+        let s = p.screen();
+        assert_eq!(s.mouse_protocol_mode(), vt100::MouseProtocolMode::None, "the mouse is still reported");
+        assert_eq!(s.mouse_protocol_encoding(), vt100::MouseProtocolEncoding::Default);
+        assert!(!s.bracketed_paste(), "pastes are still wrapped");
+        assert!(!s.application_cursor(), "the arrows are still in the other spelling");
+        assert!(!s.application_keypad());
+        assert!(!s.hide_cursor(), "the caret is still hidden");
+        assert!(!s.alternate_scroll());
+        assert!(s.contents().contains("left on screen"), "the screen was cleared");
     }
 
     /// A program asking what colours its terminal is drawn in is told, in
@@ -5154,6 +5185,23 @@ impl Tab {
     /// newlines inside become real submits. We judge by this declaration, not by guessing
     pub fn accepts_bracketed_paste(&self) -> bool {
         self.parser.lock().unwrap_or_else(|e| e.into_inner()).screen().bracketed_paste()
+    }
+
+    /// Put away what a program left switched on in this terminal.
+    ///
+    /// A full-screen program asks its terminal for things as it starts --
+    /// the mouse, pastes wrapped in markers, the arrows in another spelling,
+    /// a keyboard that tells Shift+Enter apart, no caret -- and takes them
+    /// back as it leaves. One that is killed, or loses its connection in
+    /// the middle, takes nothing back: the shell that is left gets
+    /// `^[[<35;40;12M` typed at it whenever the mouse moves, a paste arrives
+    /// with `[200~` around it, the arrows type letters. Nothing ends that
+    /// but the program that will not run again, so the person can
+    pub fn reset_input_modes(&mut self) {
+        self.parser.lock().unwrap_or_else(|e| e.into_inner()).process(INPUT_MODES_OFF);
+        if let Ok(mut asked) = self.keyboard.lock() {
+            asked.clear();
+        }
     }
 
     /// Whether the program has put the cursor keys in application mode

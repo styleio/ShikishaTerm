@@ -38,17 +38,36 @@ pub struct Opening {
     pub key: String,
 }
 
+/// The longest line of an opening request, and the most lines it may have.
+/// A browser's are a few hundred bytes and a dozen lines; whoever sends more
+/// is not opening a WebSocket
+const OPENING_LINE: u64 = 8 * 1024;
+const OPENING_LINES: usize = 64;
+
+/// How long an opening request may take to arrive. Set on the socket by the
+/// door before it reads one (see [`read_opening`]), and taken off after
+pub const OPENING_WITHIN: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Read an opening request to the end of its headers. `None` when the
-/// socket ends first
+/// socket ends first, or the request is longer than any opening is.
+///
+/// Read before the caller is known to be anybody: nothing here keeps more
+/// than a line of what it is sent, and a line that does not end is given up
+/// on. The door sets [`OPENING_WITHIN`] as the socket's read timeout first,
+/// so one that says nothing is not waited on either
 pub fn read_opening<R: std::io::BufRead>(r: &mut R) -> Option<Opening> {
-    let mut first = String::new();
-    if r.read_line(&mut first).ok()? == 0 {
-        return None;
+    // One line, or `None` for one that is too long or cut short
+    fn line<R: std::io::BufRead>(r: &mut R) -> Option<String> {
+        use std::io::BufRead as _;
+        let mut bytes = Vec::new();
+        let n = std::io::Read::take(&mut *r, OPENING_LINE).read_until(b'\n', &mut bytes).ok()?;
+        (n > 0 && bytes.last() == Some(&b'\n')).then(|| String::from_utf8_lossy(&bytes).into_owned())
     }
+    let first = line(r)?;
     let mut asked = Opening { path: first.split_whitespace().nth(1).unwrap_or_default().to_string(), ..Default::default() };
-    loop {
-        let mut line = String::new();
-        if r.read_line(&mut line).ok()? == 0 || line.trim().is_empty() {
+    for _ in 0..OPENING_LINES {
+        let line = line(r)?;
+        if line.trim().is_empty() {
             return Some(asked);
         }
         if let Some((k, v)) = line.split_once(':') {
@@ -61,6 +80,7 @@ pub fn read_opening<R: std::io::BufRead>(r: &mut R) -> Option<Opening> {
             }
         }
     }
+    None
 }
 
 /// The answer that lets an opening in
@@ -143,8 +163,62 @@ pub fn read_frame<R: Read>(r: &mut R) -> std::io::Result<(Op, Vec<u8>)> {
 
 /// The same, for a line whose answers are bigger than an intent.
 pub fn read_frame_upto<R: Read>(r: &mut R, most: usize) -> std::io::Result<(Op, Vec<u8>)> {
+    let (_, opcode, payload) = read_piece(r, most)?;
+    Ok((op_of(opcode)?, payload))
+}
+
+fn op_of(opcode: u8) -> std::io::Result<Op> {
+    Ok(match opcode {
+        0x1 => Op::Text,
+        0x2 => Op::Binary,
+        0x8 => Op::Close,
+        0x9 => Op::Ping,
+        0xA => Op::Pong,
+        other => return Err(err(&format!("unknown opcode {other}"))),
+    })
+}
+
+/// A message being put together from the pieces it was sent in (see
+/// [`read_message_upto`]): what it is, and what of it has arrived
+#[derive(Default)]
+pub struct Partial(Option<(Op, Vec<u8>)>);
+
+/// Read one whole message, however many frames it was sent in.
+///
+/// A browser sends a long message in pieces -- the first says what it is,
+/// the rest are continuations, the last says it is the last -- and a reader
+/// that takes each frame for a message drops the first piece as nonsense
+/// and hangs up on the second. `most` is the most the whole may come to.
+/// A ping or a close between the pieces is handed back as it comes;
+/// `partial` keeps what has arrived so far across such a return
+pub fn read_message_upto<R: Read>(r: &mut R, most: usize, partial: &mut Partial) -> std::io::Result<(Op, Vec<u8>)> {
+    loop {
+        let room = most - partial.0.as_ref().map_or(0, |(_, whole)| whole.len());
+        let (last, opcode, piece) = read_piece(r, room)?;
+        match (opcode, partial.0.as_mut()) {
+            // A piece after the first
+            (0x0, Some((_, whole))) => {
+                whole.extend_from_slice(&piece);
+                if last {
+                    return Ok(partial.0.take().expect("there, a line ago"));
+                }
+            }
+            (0x0, None) => return Err(err("a continuation with nothing to continue")),
+            // Something of its own in between: handed over, the pieces kept
+            (0x8..=0xA, _) => return Ok((op_of(opcode)?, piece)),
+            (_, Some(_)) => return Err(err("a new message inside another")),
+            (_, None) if last => return Ok((op_of(opcode)?, piece)),
+            (_, None) => partial.0 = Some((op_of(opcode)?, piece)),
+        }
+    }
+}
+
+/// One frame as it is on the wire: whether it is the last of its message,
+/// its opcode, and what it carries
+fn read_piece<R: Read>(r: &mut R, most: usize) -> std::io::Result<(bool, u8, Vec<u8>)> {
     let mut hdr = [0u8; 2];
     r.read_exact(&mut hdr)?;
+    let last = hdr[0] & 0x80 != 0;
     let opcode = hdr[0] & 0x0F;
     let masked = hdr[1] & 0x80 != 0;
     let mut len = (hdr[1] & 0x7F) as usize;
@@ -170,15 +244,7 @@ pub fn read_frame_upto<R: Read>(r: &mut R, most: usize) -> std::io::Result<(Op, 
     for (i, b) in payload.iter_mut().enumerate() {
         *b ^= mask[i & 3];
     }
-    let op = match opcode {
-        0x1 => Op::Text,
-        0x2 => Op::Binary,
-        0x8 => Op::Close,
-        0x9 => Op::Ping,
-        0xA => Op::Pong,
-        other => return Err(err(&format!("unknown opcode {other}"))),
-    };
-    Ok((op, payload))
+    Ok((last, opcode, payload))
 }
 
 fn err(msg: &str) -> std::io::Error {
@@ -276,28 +342,40 @@ impl<W: Write> WsWriter<W> {
 /// reader that has stopped reading (a tab asleep, a line gone quiet) while
 /// the sender has a great deal to say would otherwise have all of it kept
 /// here, without end. Past `most` bytes waiting the lane closes: nothing
-/// more is taken, what waits is thrown away, and the socket is handed to
-/// `ended` to be shut
-#[derive(Clone, Debug)]
+/// more is taken, what waits is thrown away, and the socket is cut loose
+#[derive(Clone)]
 pub struct Lane {
     out: std::sync::mpsc::Sender<Vec<u8>>,
     behind: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     shut: std::sync::Arc<std::sync::atomic::AtomicBool>,
     most: usize,
+    cut: std::sync::Arc<dyn Fn() + Send + Sync>,
+}
+
+impl std::fmt::Debug for Lane {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Lane").field("closed", &self.closed()).finish_non_exhaustive()
+    }
 }
 
 impl Lane {
-    /// Start writing to `w`. `ended` is given `w` back when the lane is
-    /// over: closed for being too far behind, a write failed, or every
-    /// sender gone
-    pub fn open<W: Write + Send + 'static>(mut w: W, most: usize, ended: impl FnOnce(W) + Send + 'static) -> Lane {
+    /// Start writing to `w`. `cut` ends the socket under it from any
+    /// thread (for a TCP one, a shutdown of a clone of it), and is called
+    /// once, when the lane is over: closed for being too far behind, a
+    /// write failed, or every sender gone.
+    ///
+    /// Cut from outside, and not left to the writer to stop: a write in
+    /// progress to a reader taking a byte now and then goes on for as long
+    /// as that reader likes, and a lane said to be closed would keep its
+    /// socket and its thread until then
+    pub fn open<W: Write + Send + 'static>(mut w: W, most: usize, cut: impl Fn() + Send + Sync + 'static) -> Lane {
         use std::sync::atomic::Ordering::Relaxed;
         let (out, waiting) = std::sync::mpsc::channel::<Vec<u8>>();
-        let lane = Lane { out, behind: Default::default(), shut: Default::default(), most };
-        let (behind, shut) = (lane.behind.clone(), lane.shut.clone());
+        let lane = Lane { out, behind: Default::default(), shut: Default::default(), most, cut: std::sync::Arc::new(cut) };
+        let (behind, mine) = (lane.behind.clone(), lane.loose());
         std::thread::spawn(move || {
             for frame in waiting {
-                if shut.load(Relaxed) {
+                if mine.closed() {
                     break;
                 }
                 let sent = w.write_all(&frame).and_then(|()| w.flush());
@@ -306,23 +384,36 @@ impl Lane {
                     break;
                 }
             }
-            shut.store(true, Relaxed);
-            ended(w);
+            mine.close();
         });
         lane
+    }
+
+    /// This lane without its way in: what the writer holds, so that the
+    /// writer does not keep its own queue open
+    fn loose(&self) -> Lane {
+        let (out, _) = std::sync::mpsc::channel();
+        Lane { out, ..self.clone() }
+    }
+
+    /// Close the lane, cutting its socket loose the first time
+    fn close(&self) {
+        if !self.shut.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            (self.cut)();
+        }
     }
 
     /// Queue one frame. `false` when the lane is closed, this frame being
     /// the one that closed it included
     pub fn send(&self, frame: Vec<u8>) -> bool {
         use std::sync::atomic::Ordering::Relaxed;
-        if self.shut.load(Relaxed) {
+        if self.closed() {
             return false;
         }
         let len = frame.len();
         if self.behind.fetch_add(len, Relaxed) + len > self.most {
             self.behind.fetch_sub(len, Relaxed);
-            self.shut.store(true, Relaxed);
+            self.close();
             // Wakes the writer, when it is waiting for something to write
             let _ = self.out.send(Vec::new());
             return false;
@@ -430,6 +521,109 @@ pub fn read_server_frame<R: Read>(s: &mut R) -> Option<(bool, u8, Vec<u8>)> {
 
 #[cfg(test)]
 mod tests {
+    /// A message sent in pieces is put together again, a ping between the
+    /// pieces is handed over as it comes, and the whole may only be so long
+    #[test]
+    fn a_message_in_pieces_is_read_whole() {
+        use super::{Op, Partial, client_encode, read_message_upto};
+        // One piece as a client writes it: the first says what it is, the
+        // rest are continuations, the last says it is the last
+        let piece = |first: bool, last: bool, body: &[u8]| {
+            let mut f = client_encode(Op::Text, body);
+            f[0] = (if last { 0x80 } else { 0 }) | (if first { 0x01 } else { 0 });
+            f
+        };
+        let mut wire = Vec::new();
+        wire.extend(piece(true, false, b"{\"a\":"));
+        wire.extend(client_encode(Op::Ping, b"still there?"));
+        wire.extend(piece(false, false, b"[1,2,"));
+        wire.extend(piece(false, true, b"3]}"));
+        wire.extend(client_encode(Op::Text, b"whole"));
+        let mut r = wire.as_slice();
+        let mut partial = Partial::default();
+        assert_eq!(read_message_upto(&mut r, 1024, &mut partial).unwrap(), (Op::Ping, b"still there?".to_vec()));
+        assert_eq!(read_message_upto(&mut r, 1024, &mut partial).unwrap(), (Op::Text, b"{\"a\":[1,2,3]}".to_vec()));
+        assert_eq!(read_message_upto(&mut r, 1024, &mut partial).unwrap(), (Op::Text, b"whole".to_vec()));
+
+        // Longer in all than it may be, however small the pieces
+        let mut wire = Vec::new();
+        wire.extend(piece(true, false, &[b'x'; 600]));
+        wire.extend(piece(false, true, &[b'x'; 600]));
+        assert!(read_message_upto(&mut wire.as_slice(), 1000, &mut Partial::default()).is_err(), "pieces add up past the most");
+        // A continuation of nothing, and a new message inside another
+        assert!(read_message_upto(&mut piece(false, true, b"x").as_slice(), 1000, &mut Partial::default()).is_err());
+        let mut wire = piece(true, false, b"a");
+        wire.extend(client_encode(Op::Text, b"b"));
+        assert!(read_message_upto(&mut wire.as_slice(), 1000, &mut Partial::default()).is_err());
+    }
+
+    /// An opening is read to the end of its headers, and one that is longer
+    /// than any opening is given up on without being kept
+    #[test]
+    fn an_opening_is_read_and_a_flood_is_not() {
+        use super::read_opening;
+        let asked = read_opening(&mut "GET /devtools/k/T HTTP/1.1\r\nHost: 127.0.0.1:9\r\nOrigin: devtools://devtools\r\nSec-WebSocket-Key: abc==\r\nX-Other: 1\r\n\r\nrest".as_bytes()).unwrap();
+        assert_eq!((asked.path.as_str(), asked.host.as_str(), asked.origin.as_str(), asked.key.as_str()), ("/devtools/k/T", "127.0.0.1:9", "devtools://devtools", "abc=="));
+        // Cut short
+        assert!(read_opening(&mut "GET / HTTP/1.1\r\nHost: x\r\n".as_bytes()).is_none());
+        assert!(read_opening(&mut "".as_bytes()).is_none());
+        // A line that never ends, and lines without end
+        let long = format!("GET / HTTP/1.1\r\nX: {}\r\n\r\n", "a".repeat(100_000));
+        assert!(read_opening(&mut long.as_bytes()).is_none(), "a line of any length was read");
+        let many = format!("GET / HTTP/1.1\r\n{}\r\n", "X: 1\r\n".repeat(10_000));
+        assert!(read_opening(&mut many.as_bytes()).is_none(), "any number of lines was read");
+    }
+
+    /// A lane hands on what it is given, closes when too much waits on it,
+    /// and cuts its socket loose once -- though a write is still under way
+    #[test]
+    fn a_lane_that_falls_too_far_behind_is_cut_loose() {
+        use super::Lane;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Mutex, mpsc};
+        // A reader that takes what is written only when told to
+        struct Slow(mpsc::Receiver<()>, Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Slow {
+            fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+                self.0.recv().map_err(|_| std::io::Error::other("cut"))?;
+                self.1.lock().unwrap().extend_from_slice(b);
+                Ok(b.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let (take, taken) = mpsc::channel();
+        let written: Arc<Mutex<Vec<u8>>> = Default::default();
+        let cuts = Arc::new(AtomicUsize::new(0));
+        let lane = Lane::open(Slow(taken, Arc::clone(&written)), 10, {
+            let cuts = Arc::clone(&cuts);
+            move || {
+                cuts.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+        assert!(lane.send(b"12345".to_vec()));
+        take.send(()).unwrap();
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while written.lock().unwrap().len() < 5 {
+            assert!(std::time::Instant::now() < until, "nothing was written");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(*written.lock().unwrap(), b"12345");
+        // The reader stops taking: a write waits on it, and more piles up
+        assert!(lane.send(b"abcde".to_vec()));
+        assert!(lane.send(b"fghij".to_vec()));
+        assert!(!lane.closed());
+        assert!(!lane.send(b"k".to_vec()), "more than it may hold was taken");
+        assert!(lane.closed());
+        assert_eq!(cuts.load(Ordering::SeqCst), 1, "not cut loose while a write was under way");
+        assert!(!lane.send(b"l".to_vec()), "a closed lane took something");
+        // Cut, the write under way fails, and the writer ends: cut once
+        drop(take);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert_eq!(cuts.load(Ordering::SeqCst), 1, "cut more than once");
+    }
+
     /// A frame this writes must be one the other side can read back. The two
     /// halves are written here, so a mistake in the length forms would agree
     /// with itself and prove nothing -- the lengths below are chosen to cross

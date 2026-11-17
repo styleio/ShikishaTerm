@@ -1145,8 +1145,20 @@ impl Orchestra {
         let a = match self.my_assignment(&me, c.incarnation)? {
             Some(a) => a,
             None => {
-                // Already reported, or never given anything
-                let last = self.store()?.last_for_tab(&me.uid).map_err(|e| e.to_string())?;
+                // Already reported, or never given anything. The one it
+                // names, when it names one of its own: a worker stopped on
+                // one task and then on the next may be reporting on the
+                // first, and what it found there is not the second's
+                let store = self.store()?;
+                let last = match named {
+                    Some(n) => store.assignment(n).map_err(|e| e.to_string())?.filter(|a| a.tab == me.uid),
+                    None => None,
+                };
+                let last = match last {
+                    Some(a) => Some(a),
+                    None if named.is_some() => return Err(format!("this tab was never on a{}", named.unwrap_or_default())),
+                    None => store.last_for_tab(&me.uid).map_err(|e| e.to_string())?,
+                };
                 return match last {
                     // Given up on before it reported -- its tab looked gone,
                     // its program was started again, the lead stopped it --
@@ -2335,10 +2347,14 @@ impl Orchestra {
                         ));
                     }
                 }
+                // There: what was said of it being gone is taken back, so
+                // that its going again is said again. Taken back whenever it
+                // is seen there and not only when this run saw it go -- what
+                // was said is kept across a restart of the app, and since
+                // when it was gone is not
                 false => {
-                    if self.leaderless_since.remove(&job.id).is_some() {
-                        let _ = store.lower(&key);
-                    }
+                    self.leaderless_since.remove(&job.id);
+                    let _ = store.lower(&key);
                 }
             }
             let assignments = store.assignments(job.id).unwrap_or_default();

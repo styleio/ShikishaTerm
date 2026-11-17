@@ -378,6 +378,7 @@ As the program ships. Whatever has been changed is under Settings > Shortcuts.
 - `Ctrl+B [` — Copy mode (/ searches, n and N walk the matches)
 - `Ctrl+B c` — Copy the latest answer
 - `Ctrl+B l` — Lock input
+- `Ctrl+B e` — Reset this tab's terminal: put away the mouse, paste and key modes a program left on
 - `Ctrl+B a` — Automation on / off
 - `Ctrl+B x` — Emergency stop
 - `Ctrl+B b` — Send the prefix key itself to the program

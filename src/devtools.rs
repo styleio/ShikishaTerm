@@ -8,9 +8,10 @@
 //!
 //! Not the browser's own remote-debugging port. That port lets any program on
 //! this machine drive every page, the signed-in ones included, and it cannot be
-//! opened for one page alone. This one needs a key made at each start, is only
-//! answered for a page this window has, and only to the DevTools screen itself
-//! (the `Origin` it connects from).
+//! opened for one page alone. This one needs a key made for the page the
+//! screen was asked for, is only answered for a page this window has, only to
+//! the DevTools screen itself (the `Origin` it connects from), and passes on
+//! only what stays with that page (`shikisha_core::devscreen`).
 //!
 //! How a message reaches the page: the page's own protocol session attaches a
 //! second session to the page (`Target.attachToTarget`) and speaks through it
@@ -28,10 +29,12 @@ use shikisha_core::ws::{self, Op};
 
 use crate::browser::Cmd;
 
-/// Where the bridge answers, and the key a connection has to name
+/// Where the bridge answers, and the key a connection has to name for each
+/// page a screen has been asked for. A key opens its own page and no other,
+/// so the address of one tab's screen is not a way into the next tab
 pub struct Bridge {
     pub port: u16,
-    pub key: String,
+    keys: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
 }
 
 /// Numbers the connections, so the window can tell whose answer is whose
@@ -45,40 +48,49 @@ impl Bridge {
     pub fn start(tell: tao::event_loop::EventLoopProxy<Cmd>) -> std::io::Result<Bridge> {
         let listener = TcpListener::bind("127.0.0.1:0")?;
         let port = listener.local_addr()?.port();
-        // 16 bytes: the key only has to outlast one run of the app, and
-        // guessing it is a round trip to this machine per try
-        let key = shikisha_core::random_hex(16);
-        let want = key.clone();
+        let keys: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, String>>> = Default::default();
+        let want = std::sync::Arc::clone(&keys);
+        let serving = shikisha_core::devscreen::Serving::default();
         std::thread::Builder::new()
             .name("devtools-bridge".into())
             .spawn(move || {
                 for stream in listener.incoming().flatten() {
+                    // Anybody on the machine can knock. One that knocks and
+                    // says nothing is not waited on, and past so many at
+                    // once the rest are not answered at all
+                    let Some(served) = serving.enter() else { continue };
+                    let _ = stream.set_read_timeout(Some(ws::OPENING_WITHIN));
                     let tell = tell.clone();
-                    let want = want.clone();
-                    let _ = std::thread::Builder::new()
-                        .name("devtools-line".into())
-                        .spawn(move || serve(stream, &want, tell));
+                    let want = std::sync::Arc::clone(&want);
+                    let _ = std::thread::Builder::new().name("devtools-line".into()).spawn(move || {
+                        let _served = served;
+                        serve(stream, &want, tell);
+                    });
                 }
             })?;
-        Ok(Bridge { port, key })
+        Ok(Bridge { port, keys })
+    }
+
+    /// What every screen's address begins with; the page's key and name follow
+    fn prefix(&self) -> String {
+        format!("devtools://devtools/bundled/devtools_app.html?ws=127.0.0.1:{}/devtools/", self.port)
     }
 
     /// Whether an address is one of this bridge's screens
     pub fn made(&self, url: &str) -> bool {
-        url.starts_with(&format!(
-            "devtools://devtools/bundled/devtools_app.html?ws=127.0.0.1:{}/devtools/{}/",
-            self.port, self.key
-        ))
+        let Some((key, page)) = url.strip_prefix(&self.prefix()).and_then(|rest| rest.split_once('/')) else { return false };
+        self.keys.lock().unwrap_or_else(|e| e.into_inner()).get(page).is_some_and(|k| shikisha_core::crypto::token_eq(k, key))
     }
 
-    /// The address the DevTools screen is opened at for page `to`
+    /// The address the DevTools screen is opened at for page `to`. Its key
+    /// is made the first time it is asked for: 16 bytes, which only have to
+    /// outlast one run of the app, and guessing them is a round trip to this
+    /// machine per try
     pub fn screen_url(&self, to: Option<&str>) -> String {
-        format!(
-            "devtools://devtools/bundled/devtools_app.html?ws=127.0.0.1:{}/devtools/{}/{}",
-            self.port,
-            self.key,
-            hex(to.unwrap_or_default())
-        )
+        let page = hex(to.unwrap_or_default());
+        let mut keys = self.keys.lock().unwrap_or_else(|e| e.into_inner());
+        let key = keys.entry(page.clone()).or_insert_with(|| shikisha_core::random_hex(16));
+        format!("{}{key}/{page}", self.prefix())
     }
 }
 
@@ -96,23 +108,26 @@ fn unhex(s: &str) -> Option<String> {
     String::from_utf8(bytes?).ok()
 }
 
-/// What a request asked for: the page, when the key, the path and the origin
-/// are all right, and nothing otherwise
-fn admitted(path: &str, origin: &str, key: &str) -> Option<String> {
+/// What a request asked for: the page, when its key, the path and the
+/// origin are all right, and nothing otherwise. `keys` is each page's key,
+/// by the page's name as the address spells it
+fn admitted(path: &str, origin: &str, keys: &std::collections::HashMap<String, String>) -> Option<String> {
     let rest = path.strip_prefix("/devtools/")?;
     let (given, page) = rest.split_once('/')?;
-    if !shikisha_core::crypto::token_eq(given, key) || origin != SCREEN_ORIGIN {
+    let keyed = keys.get(page).is_some_and(|key| shikisha_core::crypto::token_eq(given, key));
+    if !keyed || origin != SCREEN_ORIGIN {
         return None;
     }
     unhex(page).filter(|p| !p.is_empty())
 }
 
-fn serve(stream: TcpStream, key: &str, tell: tao::event_loop::EventLoopProxy<Cmd>) {
+fn serve(stream: TcpStream, keys: &std::sync::Mutex<std::collections::HashMap<String, String>>, tell: tao::event_loop::EventLoopProxy<Cmd>) {
     let Ok(read_side) = stream.try_clone() else { return };
     let mut reader = BufReader::new(read_side);
     let Some(asked) = ws::read_opening(&mut reader) else { return };
     let mut out = stream;
-    let Some(page) = admitted(&asked.path, &asked.origin, key).filter(|_| !asked.key.is_empty()) else {
+    let page = admitted(&asked.path, &asked.origin, &keys.lock().unwrap_or_else(|e| e.into_inner()));
+    let Some(page) = page.filter(|_| !asked.key.is_empty()) else {
         let _ = out.write_all(ws::TURNED_AWAY);
         // The address carries the key, so only the page is written down
         shikisha_core::append_hook_log("[devtools] refused a connection");
@@ -121,6 +136,8 @@ fn serve(stream: TcpStream, key: &str, tell: tao::event_loop::EventLoopProxy<Cmd
     if out.write_all(ws::welcome(&asked.key).as_bytes()).is_err() {
         return;
     }
+    // Let in: from here it is waited on for as long as it is open
+    let _ = out.set_read_timeout(None);
     let conn = NEXT.fetch_add(1, Ordering::Relaxed);
     shikisha_core::append_hook_log(&format!("[devtools] screen {conn} opened on page '{page}'"));
     // What the page says goes out on a writer of its own, so a page talking
@@ -129,16 +146,30 @@ fn serve(stream: TcpStream, key: &str, tell: tao::event_loop::EventLoopProxy<Cmd
     // the reading below
     let Ok(write_side) = out.try_clone() else { return };
     let _ = write_side.set_write_timeout(Some(STALLED));
-    let said = ws::Lane::open(write_side, BEHIND, |w: TcpStream| {
-        let _ = w.shutdown(std::net::Shutdown::Both);
+    let Ok(whole) = out.try_clone() else { return };
+    let said = ws::Lane::open(write_side, BEHIND, move || {
+        let _ = whole.shutdown(std::net::Shutdown::Both);
     });
     let _ = tell.send_event(Cmd::DevtoolsOpen { conn, to: Some(page.clone()), out: said.clone() });
+    // A long command comes in pieces, and is put together here
+    let mut partial = ws::Partial::default();
     loop {
-        match ws::read_frame_upto(&mut reader, ONE_COMMAND) {
+        match ws::read_message_upto(&mut reader, ONE_COMMAND, &mut partial) {
             Ok((Op::Text, body)) => {
                 let Ok(text) = String::from_utf8(body) else { continue };
-                if tell.send_event(Cmd::DevtoolsSay { conn, text }).is_err() {
-                    break;
+                // What reaches past the page is answered here and goes no
+                // further. The sessions it names are the page's own: they
+                // are inside the one session this screen speaks through
+                match shikisha_core::devscreen::said(&text, None, &|_| true) {
+                    shikisha_core::devscreen::Said::On => {
+                        if tell.send_event(Cmd::DevtoolsSay { conn, text }).is_err() {
+                            break;
+                        }
+                    }
+                    shikisha_core::devscreen::Said::Instead(answer) => {
+                        let _ = said.send_text(&answer);
+                    }
+                    shikisha_core::devscreen::Said::Dropped => {}
                 }
             }
             Ok((Op::Ping, body)) => {
@@ -343,12 +374,19 @@ mod tests {
 
     #[test]
     fn only_the_screen_with_the_key_is_let_in() {
+        let keys: std::collections::HashMap<String, String> =
+            [(hex("0/page"), "k3y".to_string()), (hex("0/beside"), "0th3r".to_string())].into_iter().collect();
         let path = format!("/devtools/k3y/{}", hex("0/page"));
-        assert_eq!(admitted(&path, SCREEN_ORIGIN, "k3y").as_deref(), Some("0/page"));
-        assert_eq!(admitted(&path, SCREEN_ORIGIN, "other"), None, "a wrong key");
-        assert_eq!(admitted(&path, "http://127.0.0.1:9", "k3y"), None, "a page of the web");
-        assert_eq!(admitted(&path, "", "k3y"), None, "no origin at all");
-        assert_eq!(admitted("/devtools/k3y/", SCREEN_ORIGIN, "k3y"), None, "no page");
-        assert_eq!(admitted("/json/list", SCREEN_ORIGIN, "k3y"), None);
+        assert_eq!(admitted(&path, SCREEN_ORIGIN, &keys).as_deref(), Some("0/page"));
+        assert_eq!(admitted(&format!("/devtools/other/{}", hex("0/page")), SCREEN_ORIGIN, &keys), None, "a wrong key");
+        assert_eq!(admitted(&path, "http://127.0.0.1:9", &keys), None, "a page of the web");
+        assert_eq!(admitted(&path, "", &keys), None, "no origin at all");
+        assert_eq!(admitted("/devtools/k3y/", SCREEN_ORIGIN, &keys), None, "no page");
+        assert_eq!(admitted("/json/list", SCREEN_ORIGIN, &keys), None);
+        // One page's key is not another's, and a page no screen was asked
+        // for has none
+        assert_eq!(admitted(&format!("/devtools/k3y/{}", hex("0/beside")), SCREEN_ORIGIN, &keys), None, "one page's key opened another");
+        assert_eq!(admitted(&format!("/devtools/k3y/{}", hex("0/unasked")), SCREEN_ORIGIN, &keys), None);
+        assert_eq!(admitted(&format!("/devtools/0th3r/{}", hex("0/beside")), SCREEN_ORIGIN, &keys).as_deref(), Some("0/beside"));
     }
 }

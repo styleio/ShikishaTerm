@@ -9136,14 +9136,22 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // asked -- a tab a script opened by itself is there to be found, and
         // does not take the screen from what the person is doing
         for (child, url, by_hand) in shell.mail().take_page_windows() {
-            let (Some(desk), Some(key)) = (desks.get(desk_index), caps.name_of_child(&child)) else {
-                append_hook_log(&format!("page window: dropped one from {child}, a page of no desk on screen"));
+            // A page is known by its desk's place in the list and its own
+            // name. Its desk need not be the one on screen: a page goes on
+            // working behind another desk, and its window is its desk's
+            let Some((on_desk, key)) = child.split_once('/').and_then(|(d, k)| Some((d.parse::<usize>().ok()?, k))) else {
+                append_hook_log(&format!("page window: dropped one from {child}, a page of no desk"));
+                continue;
+            };
+            let Some(desk) = desks.get(on_desk) else {
+                append_hook_log(&format!("page window: dropped one from {child}, whose desk is gone"));
                 continue;
             };
             let url = url.trim().to_string();
-            // Where its tab stands. A page that is nobody's tab -- one a
-            // script opened and placed -- has no row to put another in
-            let Some(folder) = desk.page_tab(&key).map(|ft| desk.folder_of(ft).and_then(|f| f.place()).unwrap_or_default()) else {
+            // Its tab: where the new one stands, and what it is like. A page
+            // that is nobody's tab -- one a script opened and placed -- has
+            // no row to put another in
+            let Some(opener) = desk.page_tab(key) else {
                 append_hook_log(&format!("page window: dropped one from {child}, which is not a tab ({url})"));
                 continue;
             };
@@ -9151,21 +9159,32 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 append_hook_log(&format!("page window: dropped one from {child}, not an address a tab opens ({url})"));
                 continue;
             }
-            // A page may not fill the row: so many in a while, and no more
+            // Pages may not fill the row: so many from one in a while, so
+            // many from all of them (each new page is a page that can open
+            // one more), and no more
             let now = Instant::now();
-            let lately = page_windows_lately.entry(child.clone()).or_default();
-            lately.retain(|at| now.duration_since(*at) < PAGE_WINDOWS_WITHIN);
-            if lately.len() >= PAGE_WINDOWS_MOST {
-                append_hook_log(&format!("page window: dropped one from {child}, which has opened {PAGE_WINDOWS_MOST} in a short while ({url})"));
+            let room = |lately: &mut Vec<Instant>, most: usize| {
+                lately.retain(|at| now.duration_since(*at) < PAGE_WINDOWS_WITHIN);
+                lately.len() < most
+            };
+            if !room(page_windows_lately.entry(String::new()).or_default(), PAGE_WINDOWS_MOST_IN_ALL)
+                || !room(page_windows_lately.entry(child.clone()).or_default(), PAGE_WINDOWS_MOST)
+            {
+                append_hook_log(&format!("page window: dropped one from {child}; too many were opened in a short while ({url})"));
                 continue;
             }
-            match page_in_folder(desk, &folder, &url, &page_name_of(&url)) {
+            let folder = desk.folder_of(opener).and_then(|f| f.place()).unwrap_or_default();
+            match page_in_folder_like(desk, &folder, &url, &page_name_of(&url), Some(opener)) {
                 Ok((id, fresh)) => {
                     if fresh {
-                        lately.push(now);
+                        for who in [String::new(), child.clone()] {
+                            page_windows_lately.entry(who).or_default().push(now);
+                        }
                         watcher.poke();
                     }
-                    if by_hand {
+                    // Only on the desk in view: a tab of another desk is
+                    // there when that desk is looked at
+                    if by_hand && on_desk == desk_index {
                         reveal = Some((id, Instant::now() + Duration::from_secs(if fresh { 20 } else { 10 })));
                     }
                 }
@@ -16337,6 +16356,15 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 }));
                             }
                         }
+                        // What a program that ended badly left switched on in
+                        // the terminal -- the mouse typing at the shell, pastes
+                        // wrapped in markers -- put away
+                        KeyCode::Char('e') => {
+                            if let Some(t) = session_mut(&mut tabs, &surfaces, active) {
+                                t.reset_input_modes();
+                                flash = Some(i18n::t("msg.term_reset"));
+                            }
+                        }
                         KeyCode::Char('w') => {
                             // With nowhere to switch to, opening a list of one
                             // is not an answer -- and saying nothing at all is
@@ -17726,6 +17754,7 @@ fn page_name_of(url: &str) -> String {
 /// how long. A page a person is using opens one now and then; one that asks
 /// without end is not given the row of tabs to fill
 const PAGE_WINDOWS_MOST: usize = 6;
+const PAGE_WINDOWS_MOST_IN_ALL: usize = 12;
 const PAGE_WINDOWS_WITHIN: Duration = Duration::from_secs(60);
 
 /// A browser tab showing `url` in the folder `key` (a place key), written
@@ -17733,15 +17762,44 @@ const PAGE_WINDOWS_WITHIN: Duration = Duration::from_secs(60);
 /// already there for the same address is the answer instead of a second one.
 /// Gives the tab's name and whether it was just made
 fn page_in_folder(desk: &config::Desk, key: &std::path::Path, url: &str, name: &str) -> Result<(String, bool), String> {
+    page_in_folder_like(desk, key, url, name, None)
+}
+
+/// The same, for a page opened from the page of the tab `like`: kept where
+/// that one keeps what it holds, and calling itself what that one does.
+///
+/// A window a page opens is part of what the page is doing -- the sign-in it
+/// hands off to, the next step of a form. Opened in the ordinary profile, a
+/// window of a private tab would leave its cookies where the private tab was
+/// chosen not to, and one of a tab in a profile of its own would sign in as
+/// whoever the ordinary profile is. A private tab's is private too: with a
+/// storage of its own, not the first one's (a private page shares with none)
+fn page_in_folder_like(desk: &config::Desk, key: &std::path::Path, url: &str, name: &str, like: Option<&config::FlatTab>) -> Result<(String, bool), String> {
+    let kept = |ft: &config::FlatTab| (ft.cfg.private, ft.cfg.browser_profile.clone().filter(|_| !ft.cfg.private), ft.cfg.user_agent.clone());
     let have = desk.tabs.iter().find(|ft| {
         desk.folder_of(ft).and_then(|f| f.place()).is_some_and(|p| crate::uistate::same_folder(&p, key))
             && config::browser_url_of(&ft.cfg.command.argv()).as_deref() == Some(url)
+            // One kept somewhere else is not this one already there. A
+            // private one never is: what it held went when it was made
+            && like.is_none_or(|l| !l.cfg.private && kept(ft) == kept(l))
     });
     if let Some(ft) = have {
         return Ok((ft.page_key(), false));
     }
     let (on, cwd) = crate::uistate::place_of(key);
-    let line = serde_json::json!({ "name": name, "command": format!("browser {url}") });
+    let mut line = serde_json::json!({ "name": name, "command": format!("browser {url}") });
+    if let Some(l) = like {
+        let (private, profile, calls_itself) = kept(l);
+        if private {
+            line["private"] = true.into();
+        }
+        if let Some(p) = profile {
+            line["browser_profile"] = p.into();
+        }
+        if let Some(ua) = calls_itself {
+            line["user_agent"] = ua.into();
+        }
+    }
     // A tab in no folder puts its page in none either, rather than in
     // whichever folder this program happens to be started from
     let at = (!cwd.as_os_str().is_empty()).then_some(cwd.as_path());

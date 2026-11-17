@@ -299,6 +299,7 @@ The digits are the tabs themselves: `Ctrl+B 0`–`9` goes to that tab (`0` is IN
 | `Ctrl+B [` | Copy mode (/ searches, n and N walk the matches) |
 | `Ctrl+B c` | Copy the latest answer |
 | `Ctrl+B l` | Lock input |
+| `Ctrl+B e` | Reset this tab's terminal: put away the mouse, paste and key modes a program left on |
 | `Ctrl+B a` | Automation on / off |
 | `Ctrl+B x` | Emergency stop |
 | `Ctrl+B b` | Send the prefix key itself to the program |

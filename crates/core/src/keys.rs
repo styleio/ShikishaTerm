@@ -68,6 +68,7 @@ pub const ACTIONS: &[Action] = &[
     Action { name: "copy_mode", key: '[', also: &[], desc: "keys.copy_mode" },
     Action { name: "copy_answer", key: 'c', also: &[], desc: "keys.copy_answer" },
     Action { name: "lock", key: 'l', also: &[], desc: "keys.lock" },
+    Action { name: "term_reset", key: 'e', also: &[], desc: "keys.term_reset" },
     Action { name: "automation", key: 'a', also: &[], desc: "keys.automation" },
     Action { name: "stop", key: 'x', also: &[], desc: "keys.stop" },
     Action { name: "literal_prefix", key: 'b', also: &[], desc: "keys.literal_prefix" },

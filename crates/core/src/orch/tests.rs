@@ -396,6 +396,64 @@ fn a_report_that_comes_after_its_assignment_was_given_up_on_reaches_the_lead() {
     assert!(!again["mail"].as_array().into_iter().flatten().any(|m| m["kind"] == "note"), "{again}");
 }
 
+/// A worker given up on twice, on two tasks, that reports on the first by
+/// name is heard about the first -- not about the one it was on last
+#[test]
+fn a_late_report_is_about_the_assignment_it_names() {
+    let mut w = World::new();
+    w.ok("lead", "job_open", vec![json!("x")]);
+    w.ok("lead", "task_add", vec![json!("First.")]);
+    w.ok("lead", "task_add", vec![json!("Second.")]);
+    let lose = |w: &mut World, task: &str| {
+        w.set("codex", TabState::Done);
+        w.assign(task, "codex");
+        w.set("codex", TabState::Exited);
+        w.o.last_watch = None;
+        w.o.tick(&w.scene);
+        let inbox = w.ok("lead", "inbox", vec![]);
+        w.ok("lead", "inbox", vec![json!({"dealt": inbox["handover"]})]);
+    };
+    lose(&mut w, "t1");
+    lose(&mut w, "t2");
+    w.set("codex", TabState::Done);
+    let said = w.ok("codex", "report", vec![json!("done"), json!("Did the first."), json!({"assignment": "a1"})]);
+    assert_eq!(said["assignment"], "a1", "{said}");
+    let inbox = w.ok("lead", "inbox", vec![]);
+    let note = inbox["mail"].as_array().unwrap().iter().find(|m| m["kind"] == "note").expect("not handed to the lead").to_string();
+    assert!(note.contains("A late report on a1 (t1)") && note.contains("Did the first."), "{note}");
+    w.ok("lead", "inbox", vec![json!({"dealt": inbox["handover"]})]);
+    // The second is still its own to report on, and an assignment that was
+    // never this tab's is not
+    let said = w.ok("codex", "report", vec![json!("failed"), json!("Could not do the second.")]);
+    assert_eq!(said["assignment"], "a2", "{said}");
+    let (rx, _) = w.send("claude", "report", vec![json!("done"), json!("Not mine."), json!({"assignment": "a1"})]);
+    assert!(rx.try_recv().unwrap().is_err(), "a tab reported on another tab's assignment");
+}
+
+/// A lead that is there again takes back what was said of its being gone,
+/// though the app was started again in between: its going again is said
+#[test]
+fn a_lead_gone_again_after_the_app_restarted_is_said_again() {
+    let mut w = World::new();
+    w.ok("lead", "job_open", vec![json!("ship it")]);
+    let told = |w: &mut World| -> usize {
+        w.o.leaderless_since.insert(1, Instant::now().checked_sub(LEFT + Duration::from_secs(1)).unwrap());
+        w.o.last_watch = None;
+        w.o.tick(&w.scene).into_iter().filter(|e| matches!(e, Effect::Person { .. })).count()
+    };
+    w.set("lead", TabState::Exited);
+    assert_eq!(told(&mut w), 1);
+    // The app starts again: what this run knew of since when is gone, what
+    // was said is kept. The lead is there when it is first looked at
+    w.o.leaderless_since.clear();
+    w.set("lead", TabState::Busy);
+    w.o.last_watch = None;
+    w.o.tick(&w.scene);
+    // ...and goes again
+    w.set("lead", TabState::Exited);
+    assert_eq!(told(&mut w), 1, "what was said before the restart keeps its going again from being said");
+}
+
 #[test]
 fn codex_is_handed_the_paste_alone() {
     let mut w = World::new();

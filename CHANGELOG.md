@@ -9,6 +9,13 @@ once it reaches its first tagged release.
 ## [Unreleased]
 
 ### Added
+- **Reset terminal** (`Ctrl+B` then `e`, or "term_reset" in the command
+  palette). A full-screen program that is killed, or loses its connection,
+  leaves what it switched on in the terminal: the shell then gets
+  `^[[<35;40;12M` typed at it when the mouse moves, pastes arrive with
+  `[200~` around them, and the arrow keys type letters. Reset terminal
+  puts those modes away for the tab in front. The screen and the program
+  running in it are left as they are.
 - **A week of how the machine was doing, in the saved diagnostics.** While
   it runs, the app now notes once a minute how busy the processors are, how
   much memory is left, how late its own parts answer and how much room the
@@ -153,8 +160,17 @@ once it reaches its first tagged release.
   also connect to and drive its pages, the signed-in ones included. The
   app now talks to that browser over a private pipe, and the browser
   opens no port. **Open DevTools beside it** still works: DevTools
-  connects through a door of the app's own that needs a key made at each
-  start and reaches only the page it was opened for.
+  connects through a door of the app's own that needs a key made for that
+  one page.
+- **DevTools opened on a page stays with that page.** DevTools speaks a
+  protocol that can list every page in the browser, attach to any of
+  them, open and close pages, and stop the browser. Opened beside one
+  tab, it could be used to read another tab's cookies. Both in the window
+  and on the server, what reaches past the page is now refused, and each
+  page's DevTools has a key of its own, so the address of one tab's
+  DevTools does not open the next tab's. DevTools' own panels work as
+  before; a script typed into its console that calls `Target.*` to reach
+  other pages is answered with an error.
 
 ### Fixed
 - **A lead is no longer woken every ten minutes about the same idle
@@ -207,10 +223,20 @@ once it reaches its first tagged release.
 - **A link that opens in a new tab, in the server's browser.** On the
   server version, a `target="_blank"` link or `window.open` did nothing
   that anybody could see: the new window was made where no screen shows
-  it and stayed running. The address now opens as a browser tab in the
-  same folder, beside the page that asked. It comes to the front when a
-  press on the page opened it; one a script opened by itself is added
-  without taking the screen. The same address is not opened twice.
+  it and stayed running. For a page that is a tab, the address now opens
+  as a browser tab in the same folder, beside the page that asked, kept
+  like any tab until it is closed. It comes to the front when a press on
+  the page opened it; one a script opened by itself is added without
+  taking the screen. The new tab is private when the tab that asked is,
+  and uses the same browser profile and user agent. A window opened blank
+  and sent to an address a moment later (how many sign-ins start) is
+  followed to that address. The same address is not opened twice, and a
+  page that opens windows without end is stopped at six a minute.
+  **What does not carry over:** the new tab is a page of its own, so a
+  site that hands the result back to the page that opened it
+  (`window.opener`), or posts a form into the new window, does not
+  complete that way on the server version; the window app, which keeps
+  such a window over its tab, is not affected.
 - **The git column follows a commit or checkout typed into a terminal.**
   It read its folder again only when an AI tab there finished work, so
   after `git commit` or `git checkout` in a plain terminal it went on

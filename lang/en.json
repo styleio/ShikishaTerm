@@ -2357,6 +2357,8 @@
   "keys.copy_mode": "Copy mode (/ searches, n and N walk the matches)",
   "keys.copy_answer": "Copy the latest answer",
   "keys.lock": "Lock input",
+  "keys.term_reset": "Reset this tab's terminal: put away the mouse, paste and key modes a program left on",
+  "msg.term_reset": "The terminal's input modes are back to plain: mouse reports, wrapped pastes and special key modes are off.",
   "keys.automation": "Automation on / off",
   "keys.stop": "Emergency stop",
   "keys.literal_prefix": "Send the prefix key itself to the program",

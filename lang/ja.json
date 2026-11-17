@@ -2359,6 +2359,8 @@
   "keys.copy_mode": "コピーモード（/ で検索、n・N で次と前）",
   "keys.copy_answer": "直近の回答をコピー",
   "keys.lock": "入力をロック",
+  "keys.term_reset": "このタブの端末をリセット（プログラムが残したマウス・貼り付け・キーのモードを消す）",
+  "msg.term_reset": "端末の入力モードを素の状態に戻しました。マウスの報告、貼り付けの目印、特殊なキーのモードを切りました。",
   "keys.automation": "自動化のON/OFF",
   "keys.stop": "緊急停止",
   "keys.literal_prefix": "接頭キーそのものをプログラムに送る",

@@ -1083,13 +1083,31 @@ fn take_back(plan: &Plan, added: bool) {
 /// the log says which. A base that is not there at all is git's to refuse, in
 /// the step after this one
 fn refresh(plan: &Plan, argv: &[String]) {
-    static FRESH: std::sync::Mutex<Vec<(String, std::time::Instant)>> = std::sync::Mutex::new(Vec::new());
-    // One at a time: two fetches of one branch into one repository at once
-    // have the second stop on the first one's lock
-    let mut fresh = FRESH.lock().unwrap_or_else(|e| e.into_inner());
-    fresh.retain(|(_, at)| at.elapsed() < REFRESH_KEPT);
+    // When each base was last asked for, by the machine and the command:
+    // asked a moment ago, it is not asked again, whether it answered or
+    // not. Several worktrees made at once -- one per AI -- wait on a server
+    // that does not answer once, not once each
+    type Asked = std::sync::Arc<std::sync::Mutex<Option<std::time::Instant>>>;
+    static ASKED: std::sync::Mutex<Vec<(String, Asked)>> = std::sync::Mutex::new(Vec::new());
     let key = format!("{}\u{1f}{}", plan.host.as_ref().map(|h| h.name.as_str()).unwrap_or_default(), argv.join("\u{1f}"));
-    if fresh.iter().any(|(k, _)| *k == key) {
+    let mine = {
+        // Held only to find this base's own entry, never while a server is
+        // asked: one project's fetch is not waited on by another's
+        let mut all = ASKED.lock().unwrap_or_else(|e| e.into_inner());
+        all.retain(|(_, a)| std::sync::Arc::strong_count(a) > 1 || a.lock().is_ok_and(|at| at.is_some_and(|at| at.elapsed() < REFRESH_KEPT)));
+        match all.iter().find(|(k, _)| *k == key) {
+            Some((_, a)) => std::sync::Arc::clone(a),
+            None => {
+                let a = Asked::default();
+                all.push((key, std::sync::Arc::clone(&a)));
+                a
+            }
+        }
+    };
+    // One at a time for the same base: two fetches of one branch into one
+    // repository at once have the second stop on the first one's lock
+    let mut asked = mine.lock().unwrap_or_else(|e| e.into_inner());
+    if asked.is_some_and(|at| at.elapsed() < REFRESH_KEPT) {
         return;
     }
     let ran = match plan.host {
@@ -1103,14 +1121,22 @@ fn refresh(plan: &Plan, argv: &[String]) {
                 let args: Vec<&str> = argv.iter().skip(3).map(String::as_str).collect();
                 crate::git::run_as(&plan.main, &args, "", REFRESH_LIMIT, &who).map(|_| ())
             }),
-        Some(_) => run_for(plan, argv),
+        // On a server: as git there signs in, and for no longer than here
+        Some(ref host) => crate::config::host_spec(host).and_then(|spec| {
+            let line = for_a_shell(argv);
+            let ran = crate::ssh::exec(&spec, &line, REFRESH_LIMIT.as_millis() as u64)?;
+            match ran.ok() {
+                true => Ok(()),
+                false => bail!(crate::i18n::tp("err.worktree.failed", &[("said", &ran.said()), ("command", &line)])),
+            }
+        }),
     };
-    match ran {
-        Ok(()) => fresh.push((key, std::time::Instant::now())),
-        Err(e) => crate::append_hook_log(&format!(
+    *asked = Some(std::time::Instant::now());
+    if let Err(e) = ran {
+        crate::append_hook_log(&format!(
             "worktree: {} was not brought up to date, and the branch is cut from it as it stands: {e:#}",
             plan.base
-        )),
+        ));
     }
 }
 

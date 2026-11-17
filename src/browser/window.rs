@@ -111,7 +111,16 @@ pub(super) struct Adoptions {
     /// How many windows stand over each pane now, as the loop last counted
     /// them
     standing: std::collections::HashMap<String, usize>,
+    /// Windows that were given a name and are being made: the pane each is
+    /// for, and when it was named. An engine names a window in one call and
+    /// hands it over in another, and several can be named before the first
+    /// is handed over
+    coming: Vec<(String, std::time::Instant)>,
 }
+
+/// How long a window that was named may take to be made before its place is
+/// given up. One that is refused or fails on the way is never handed over
+const WINDOW_COMING: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// How many windows the pages of one pane may have open at once, one over
 /// the other. A sign-in opens one, sometimes a second from the first; a
@@ -127,10 +136,25 @@ impl Adoptions {
     }
 
     /// Whether the pane `opener` may have one more: counting those made and
-    /// not yet taken in
+    /// not yet taken in, and those named and not yet made
     fn room(&self, opener: &str) -> bool {
-        let coming = self.made.iter().filter(|(pane, ..)| pane == opener).count();
-        self.standing.get(opener).copied().unwrap_or(0) + coming < WINDOWS_MOST
+        let made = self.made.iter().filter(|(pane, ..)| pane == opener).count();
+        let coming = self.coming.iter().filter(|(pane, at)| pane == opener && at.elapsed() < WINDOW_COMING).count();
+        self.standing.get(opener).copied().unwrap_or(0) + made + coming < WINDOWS_MOST
+    }
+
+    /// A window for `opener` was named: its place is held
+    fn name(&mut self, opener: &str) {
+        self.coming.retain(|(_, at)| at.elapsed() < WINDOW_COMING);
+        self.coming.push((opener.to_string(), std::time::Instant::now()));
+    }
+
+    /// A window named for `opener` was made, or will not be: its place is
+    /// counted as what it became, or given up
+    fn arrived(&mut self, opener: &str) {
+        if let Some(at) = self.coming.iter().position(|(pane, _)| pane == opener) {
+            self.coming.remove(at);
+        }
     }
 }
 
@@ -171,6 +195,7 @@ impl Popups {
             ));
             return None;
         }
+        ib.name(&self.opener);
         ib.next += 1;
         Some(format!("{}#window{}", self.opener, ib.next))
     }
@@ -221,6 +246,7 @@ impl Popups {
     pub fn made(&self, name: String, page: Page, uri: &str) {
         shikisha_core::append_hook_log(&format!("[browser] '{}' opened a window -> '{name}' ({uri})", self.opener));
         if let Ok(mut ib) = self.inbox.try_borrow_mut() {
+            ib.arrived(&self.opener);
             ib.made.push((self.opener.clone(), name, page));
         }
         let _ = self.wake.send_event(Cmd::Adopt);
@@ -228,6 +254,9 @@ impl Popups {
 
     /// The window could not be made
     pub fn failed(&self, uri: &str, e: &dyn std::fmt::Display) {
+        if let Ok(mut ib) = self.inbox.try_borrow_mut() {
+            ib.arrived(&self.opener);
+        }
         shikisha_core::append_hook_log(&format!(
             "[browser] '{}' asked for a window ({uri}) and it could not be made: {e}",
             self.opener
@@ -1557,6 +1586,18 @@ mod tests {
         assert!(inbox.room("shop"), "a window that closed left no room");
         overlays.remove("shop");
         inbox.count(&overlays);
+        assert!(inbox.room("shop"));
+
+        // Named and not yet made, they hold their places: an engine that
+        // names several before it makes the first does not get past the most
+        for _ in 0..WINDOWS_MOST {
+            assert!(inbox.room("shop"));
+            inbox.name("shop");
+        }
+        assert!(!inbox.room("shop"), "windows named at once went past the most");
+        assert!(inbox.room("docs"));
+        // One that will not be made gives its place up
+        inbox.arrived("shop");
         assert!(inbox.room("shop"));
     }
 }
