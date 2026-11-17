@@ -133,6 +133,7 @@ pub const KEEP_SOCK: &str = "keep.sock";
 /// Sets environment variables: call first thing, on the only thread
 pub unsafe fn adopt_resident_door() {
     let (Ok(door), Ok(key_file)) = (std::env::var(ENV_SOCK), std::env::var(ENV_KEY)) else { return };
+    let door = door_told(door);
     let key = std::fs::read_to_string(&key_file).unwrap_or_default();
     // SAFETY: the caller promises nothing else runs yet
     unsafe {
@@ -157,6 +158,7 @@ pub fn far_cli(args: &[String]) -> i32 {
         eprintln!("[shikisha] This command works in a SHIKISHA-TERM tab; this terminal was not opened by the app.");
         return 1;
     };
+    let sock = door_told(sock);
     let key = std::fs::read_to_string(&key_file).unwrap_or_default();
     // SAFETY: set before anything else runs on this thread; the command is a
     // single-threaded program that has only just started
@@ -214,6 +216,16 @@ fn far_hook(which: &str) -> i32 {
     };
     println!("{}", answer.unwrap_or_else(|| json!({})));
     0
+}
+
+/// The door a tab was told of ([`ENV_SOCK`]), as it is on the machine the
+/// tab is on (see `fardaemon::door_here`). A pipe on Windows is this PC's
+/// alone and is what it was told
+fn door_told(told: String) -> String {
+    match cfg!(unix) {
+        true => crate::fardaemon::door_here(&told),
+        false => told,
+    }
 }
 
 /// Where the `shikisha` command over there finds the bridge, and its tab's key
@@ -1006,8 +1018,14 @@ pub fn remove(at: &crate::elsewhere::Elsewhere) -> Result<()> {
         Some(l) => Some(l),
         None => {
             let home = far_home(at)?;
-            let sock = format!("{home}/run/{}", KEEP_SOCK);
-            let ran = crate::elsewhere::exec(at, &format!("test -S {} && echo held", crate::ssh::sh_quote(&sock)), 30_000)?;
+            // In the one folder there used to be, or in a machine's own
+            // (`fardaemon::own_run`)
+            let home = crate::ssh::sh_quote(&home);
+            let ran = crate::elsewhere::exec(
+                at,
+                &format!("for s in {home}/run/{KEEP_SOCK} {home}/run-*/{KEEP_SOCK}; do test -S \"$s\" && echo held; done"),
+                30_000,
+            )?;
             match ran.out.contains("held") {
                 false => None,
                 true => Some(connect(at).context("the bridge there could not be asked whether another app uses it")?),
@@ -1060,13 +1078,23 @@ pub fn remove(at: &crate::elsewhere::Elsewhere) -> Result<()> {
         &format!(
             "pkill -TERM -f {daemon} 2>/dev/null; i=0; \
              while pgrep -f {daemon} >/dev/null && [ $i -lt 20 ]; do sleep 0.5; i=$((i+1)); done; \
-             if pgrep -f {daemon} >/dev/null; then echo still-running; else rm -rf {home}; fi",
+             if pgrep -f {daemon} >/dev/null; then echo still-running; \
+             elif ls {home}/run-*/keep.key >/dev/null 2>&1; then echo shared; ls {home}/run-*/keep.key; \
+             else rm -rf {home}; fi",
             home = crate::ssh::sh_quote(&home)
         ),
         60_000,
     )?;
     if ran.out.contains("still-running") {
         bail!("the bridge's resident process on {} did not end; its folder is left, to be taken off again", at.address());
+    }
+    // A key still there after this machine's resident process is gone is
+    // another machine's: one that has the same home folder (a home kept on
+    // a file server) and a resident process of its own, whose program and
+    // doors are in this folder too. The folder is not deleted from under it
+    if ran.out.lines().next() == Some("shared") {
+        let keys: Vec<&str> = ran.out.lines().skip(1).collect();
+        bail!(crate::i18n::tp("err.bridge.shared", &[("host", &at.address()), ("files", &keys.join(", "))]));
     }
     // Its terminals went with it: none is to be gone back to
     crate::farterm::forget_machine(&crate::farterm::Place::Far(at.clone()));

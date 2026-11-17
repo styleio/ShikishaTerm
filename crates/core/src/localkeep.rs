@@ -50,7 +50,7 @@ pub fn home() -> Result<PathBuf> {
 }
 
 fn keep_door() -> Result<PathBuf> {
-    Ok(home()?.join("run").join(crate::farlink::KEEP_SOCK))
+    Ok(crate::fardaemon::run_dir(&home()?).join(crate::farlink::KEEP_SOCK))
 }
 
 /// The line to it, when it is up
@@ -67,7 +67,7 @@ pub fn link() -> Option<Arc<Link>> {
 /// app that is there now (local-keeper plan §6)
 pub fn tab_env(tab: &str) -> Vec<(String, String)> {
     let Ok(home) = home() else { return Vec::new() };
-    let door = home.join("run").join(crate::farlink::TABS_SOCK);
+    let door = crate::fardaemon::run_dir(&home).join(crate::farlink::TABS_SOCK);
     #[cfg(windows)]
     let door = crate::keepipe::pipe_name(&door);
     #[cfg(not(windows))]
@@ -169,15 +169,22 @@ fn connect_or(starting: bool) -> Result<Arc<Link>> {
     }
     let home = home()?;
     let door = keep_door()?;
-    if matches!(crate::fardaemon::find(&door), crate::fardaemon::Found::Nobody) {
-        if !starting {
-            bail!("this PC's resident process is not there");
-        }
-        start(&home)?;
-        ENDING.store(NOT_ASKED, std::sync::atomic::Ordering::SeqCst);
-    }
+    // Looked for each time round: one that is there but on its way out names
+    // itself to nobody, and the one to speak to is the one started once it
+    // has gone
     let until = Instant::now() + UP_WAIT;
-    while crate::fardaemon::probe(&door).is_none() {
+    let mut started: Option<Instant> = None;
+    loop {
+        match crate::fardaemon::find(&door) {
+            crate::fardaemon::Found::Named(_) => break,
+            crate::fardaemon::Found::Nobody if !starting => bail!("this PC's resident process is not there"),
+            crate::fardaemon::Found::Nobody if started.is_none_or(|at| at.elapsed() >= crate::fardaemon::START_AGAIN) => {
+                start(&home)?;
+                ENDING.store(NOT_ASKED, std::sync::atomic::Ordering::SeqCst);
+                started = Some(Instant::now());
+            }
+            _ => {}
+        }
         if Instant::now() >= until {
             bail!("this PC's resident process did not open its door");
         }
@@ -371,7 +378,7 @@ mod tests {
             let home = home.clone();
             std::thread::spawn(move || crate::fardaemon::daemon(home));
         }
-        let door = home.join("run").join(crate::farlink::KEEP_SOCK);
+        let door = crate::fardaemon::own_run(&home).join(crate::farlink::KEEP_SOCK);
         let until = Instant::now() + Duration::from_secs(10);
         while crate::fardaemon::probe(&door).is_none() {
             assert!(Instant::now() < until, "the resident process opened its door");

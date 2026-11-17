@@ -176,6 +176,38 @@ once it reaches its first tagged release.
   and reading what that page then holds.
 
 ### Fixed
+- **Two servers that share one home folder no longer end each other's
+  tabs.** Where an account's home is kept on a file server and mounted on
+  several machines, the bridge on each machine kept its doors, its key and
+  its lists in the one shared folder. The second machine to start took the
+  first one's doors for leftovers and deleted them, wrote its own key over
+  the first one's, and read the first one's running tabs as tabs of its
+  own that had ended. Each machine now keeps these in a folder of its own
+  (`run-` and a few letters made from the machine's id), beside the
+  programs they share. A bridge already running in the old folder is used
+  until it ends. Taking the bridge off one such machine while it runs on
+  another is refused, with the reason.
+- **One tab on a server that stops reading no longer freezes the others.**
+  On a machine with the bridge, everything the app said to it was handled
+  by one thread: a program that did not read what was typed into it (it
+  was stopped, or busy), or a tab opening in a folder on a file server
+  that had gone away, held that thread. Every other tab of the app on
+  that machine stood still, and after a minute the app was taken for gone
+  and its connection was cut. What is typed now goes to each tab on a
+  thread of its own, and a tab opens on its own thread.
+- **Connecting to a server just as its bridge was leaving no longer
+  fails.** The bridge's resident process leaves a little after the last
+  app has gone. An app that connected in that moment was let in and then
+  lost its connection at once. The process now decides to leave and stops
+  taking apps in one step, takes its doors away first, and an app that
+  finds it leaving starts a new one.
+- **The first command of a tab on a server waits for the shell's prompt.**
+  The line that goes into the folder and starts the AI was typed the
+  moment the shell was started, while it was still reading the account's
+  start-up files. It showed twice on the screen, and a start-up file that
+  asks a question took the line as its answer, so the AI never started.
+  With the bridge, the line is typed once the shell is at its prompt;
+  over plain SSH, once the server has said something and gone quiet.
 - **A lead is no longer woken every ten minutes about the same idle
   worker.** A worker that ended its turn without reporting was raised to
   its lead again every ten minutes for as long as it sat there, which a

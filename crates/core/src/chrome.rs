@@ -3837,7 +3837,7 @@ mod tests {
         assert!(!title.is_empty());
         assert_eq!(answer.pointer("/result/result/value").and_then(|v| v.as_str()), Some(title.as_str()), "{answer}");
         // Asked one thing, and what came back under its number
-        let mut ask = |s: &mut std::net::TcpStream, said: serde_json::Value| -> serde_json::Value {
+        let ask = |s: &mut std::net::TcpStream, said: serde_json::Value| -> serde_json::Value {
             s.write_all(&crate::ws::client_encode(crate::ws::Op::Text, said.to_string().as_bytes())).unwrap();
             loop {
                 let (_, _, body) = crate::ws::read_server_frame(s).expect("the door did not answer");

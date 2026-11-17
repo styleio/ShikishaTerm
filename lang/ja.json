@@ -3736,6 +3736,7 @@
   "err.bridge.no_room": "{host} に SHIKISHA ブリッジを置く空きがありません。{folder} の空きは {free} MB で、{needs} MB 必要です。サーバー側の空きを増やしてから、もう一度実行してください。",
   "err.bridge.noexec": "{host} は {folder} にあるプログラムの実行を許可していません（このフォルダーのディスクが noexec でマウントされています）。サーバーの管理者が許可するまで、SHIKISHA ブリッジはこのサーバーで動かせません。このサーバーのタブは、ブリッジなしでも使えます。",
   "err.bridge.did_not_run": "SHIKISHA ブリッジを {host} に置きましたが、そこで動きませんでした: {said}",
+  "err.bridge.shared": "{host} の SHIKISHA ブリッジは外しませんでした。{host} のブリッジのフォルダーは、同じホームフォルダーを共有する別のマシンのフォルダーでもあり、そのマシンでブリッジが動いているためです。先にそのマシンからブリッジを外してください。そのようなマシンがもう動いていない場合は、{host} で次のファイルを削除してから、もう一度ブリッジを外してください: {files}",
   "err.bridge.in_use": "{host} の SHIKISHA ブリッジは、いま別の SHIKISHA-TERM（別の PC かサーバー版）{n} 台がつないで使っているので、外しませんでした。その SHIKISHA-TERM が {host} から離れてから外すか、その SHIKISHA-TERM の設定から外してください。",
   "err.bridge.unasked": "{host} の SHIKISHA ブリッジが、ほかの SHIKISHA-TERM がつながっているかを答えなかったため、外していません。1 分後にもう一度尋ねます。",
   "err.hook.cli_too_old": "この PC の {name} はバージョン {has} です。この設定には {needs} 以降が必要です（古いバージョンは設定を正しく読めません）。{name} を更新してから、もう一度オンにしてください",

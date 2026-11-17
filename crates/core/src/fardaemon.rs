@@ -160,6 +160,8 @@ pub struct Core {
     /// When the last app went, while none is connected
     alone_since: Mutex<Option<Instant>>,
     jobs: Mutex<Vec<Arc<dyn Job>>>,
+    /// On its way out: no app is taken in any more (see [`Core::close`])
+    closing: std::sync::atomic::AtomicBool,
 }
 
 impl Core {
@@ -169,7 +171,30 @@ impl Core {
             next_line: AtomicU64::new(0),
             alone_since: Mutex::new(Some(Instant::now())),
             jobs: Mutex::default(),
+            closing: std::sync::atomic::AtomicBool::new(false),
         })
+    }
+
+    /// Stop taking apps in, as the resident process goes. `false` when an
+    /// app came since it was found to have none, and it is not going after
+    /// all (`whoever_is_here` closes over the apps there are: it was told to).
+    ///
+    /// Decided together with who is connected. Decided apart, an app that
+    /// came in the moment between "nobody is left" and the doors being taken
+    /// away was let in by a process already leaving: it was given a line,
+    /// and the line died under it
+    fn close(&self, whoever_is_here: bool) -> bool {
+        let Ok(lines) = self.lines.lock() else { return false };
+        if !lines.is_empty() && !whoever_is_here {
+            return false;
+        }
+        self.closing.store(true, Ordering::SeqCst);
+        true
+    }
+
+    /// Whether it is on its way out
+    fn closing(&self) -> bool {
+        self.closing.load(Ordering::SeqCst)
     }
 
     /// Say a frame to the app on `line`. `false` when it cannot be said
@@ -204,6 +229,11 @@ impl Core {
         self.lines.lock().is_ok_and(|m| m.get(&line).is_some_and(|l| !l.leaving.load(Ordering::SeqCst)))
     }
 
+    /// Whether the app on `line` still has its line, staying or going
+    pub fn connected(&self, line: u64) -> bool {
+        self.lines.lock().is_ok_and(|m| m.contains_key(&line))
+    }
+
     /// The app on `line` said it is going: from now on it is away to every
     /// job that asks, while its line stays for the answers it is owed
     fn leaving(&self, line: u64) {
@@ -232,7 +262,13 @@ impl Core {
             heard: Mutex::new(Instant::now()),
             leaving: std::sync::atomic::AtomicBool::new(false),
         });
-        if let Ok(mut m) = self.lines.lock() {
+        {
+            let mut m = self.lines.lock().ok()?;
+            // Asked under the lock it was decided under: an app is either
+            // counted before the process decides to go, or not let in after
+            if self.closing() {
+                return None;
+            }
             m.insert(id, line);
         }
         if let Ok(mut a) = self.alone_since.lock() {
@@ -367,7 +403,131 @@ pub(crate) fn write_private(file: &Path, text: &str) -> Result<()> {
 
 /// The key the resident process in `home` asks an app's door to show
 pub fn door_key(home: &Path) -> Result<String> {
-    read_private(&home.join("run").join(KEY_FILE))
+    read_private(&run_dir(home).join(KEY_FILE))
+}
+
+/// The folder the doors were in before each machine had its own
+const RUN_ONCE: &str = "run";
+
+/// The folder the resident process on *this machine* keeps its doors, its
+/// key, its lock and what it wrote down in, under the bridge's folder.
+///
+/// One for each machine. An account's home is one folder on many machines
+/// where it is kept on a file server, and with one folder for all of them
+/// each took the other for dead: a door's name can be seen from the other
+/// machine and nothing answers on it there, so the second one to start
+/// deleted the first one's doors, wrote its own key over the first one's,
+/// and read the terminals the first one holds as its own that had ended
+#[cfg(unix)]
+pub fn own_run(home: &Path) -> PathBuf {
+    run_named(home, machine())
+}
+
+/// On Windows the folder is this PC's own already (it is under the
+/// account's local data)
+#[cfg(windows)]
+pub fn own_run(home: &Path) -> PathBuf {
+    home.join(RUN_ONCE)
+}
+
+/// The folder of the machine that calls itself `machine`
+#[cfg_attr(windows, allow(dead_code))]
+fn run_named(home: &Path, machine: &str) -> PathBuf {
+    match machine.is_empty() {
+        true => home.join(RUN_ONCE),
+        false => home.join(format!("{RUN_ONCE}-{machine}")),
+    }
+}
+
+/// Where the doors of the resident process to speak to are: this machine's
+/// own folder -- or the one folder there used to be, while a resident
+/// process started by an earlier build still answers there. One that answers
+/// is on this machine (nothing answers on another machine's door), and it
+/// holds its terminals until it ends, so it is spoken to rather than a second
+/// one started beside it
+pub fn run_dir(home: &Path) -> PathBuf {
+    let (once, own) = (home.join(RUN_ONCE), own_run(home));
+    match once != own && answers(&once.join(KEEP_SOCK)) {
+        true => once,
+        false => own,
+    }
+}
+
+/// Whether anything takes a connection on the door `sock`
+fn answers(sock: &Path) -> bool {
+    match crate::keepipe::connect(&crate::keepipe::door(sock)) {
+        Ok(_) => true,
+        Err(e) => !matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused),
+    }
+}
+
+/// What the resident process wrote down under the name `name`: in this
+/// machine's folder, or where it was written before each machine had one
+pub(crate) fn read_own(home: &Path, name: &str) -> Option<String> {
+    std::fs::read_to_string(own_run(home).join(name)).or_else(|_| std::fs::read_to_string(home.join(name))).ok()
+}
+
+/// The door a program in a tab was told of, as it is on this machine. A tab
+/// is told before the bridge is there, by an app that cannot know which
+/// machine of several the tab is on, so it is told the one name there used
+/// to be, and this machine's own is found from it here
+pub fn door_here(told: &str) -> String {
+    let told_path = Path::new(told);
+    let (Some(dir), Some(name)) = (told_path.parent(), told_path.file_name()) else { return told.to_string() };
+    match (dir.file_name().and_then(|n| n.to_str()), dir.parent()) {
+        (Some(RUN_ONCE), Some(home)) => run_dir(home).join(name).to_string_lossy().into_owned(),
+        _ => told.to_string(),
+    }
+}
+
+/// What this machine is called among the machines that share a home: a few
+/// letters made from the id the system gives the machine, which stays the
+/// same for as long as the system is installed. Empty when the system names
+/// nothing at all
+#[cfg(unix)]
+fn machine() -> &'static str {
+    static MACHINE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    MACHINE.get_or_init(|| {
+        use sha2::Digest as _;
+        let said = machine_said();
+        match said.is_empty() {
+            true => String::new(),
+            // Not the id itself: it is the machine's own, and a folder's
+            // name is seen by whoever lists the folder
+            false => sha2::Sha256::digest(said.as_bytes()).iter().take(6).map(|b| format!("{b:02x}")).collect(),
+        }
+    })
+}
+
+/// The id the system gives this machine, or failing that its name
+#[cfg(unix)]
+fn machine_said() -> String {
+    #[cfg(target_os = "macos")]
+    {
+        let mut buf = [0u8; 64];
+        let mut len = buf.len();
+        // SAFETY: the name ends in NUL, and the buffer is of the length said
+        let got = unsafe { libc::sysctlbyname(c"kern.uuid".as_ptr(), buf.as_mut_ptr().cast(), &mut len, std::ptr::null_mut(), 0) };
+        if got == 0 {
+            let id = String::from_utf8_lossy(&buf[..len.min(buf.len())]).trim_matches(char::from(0)).trim().to_string();
+            if !id.is_empty() {
+                return id;
+            }
+        }
+    }
+    for file in ["/etc/machine-id", "/var/lib/dbus/machine-id"] {
+        if let Some(id) = std::fs::read_to_string(file).ok().map(|t| t.trim().to_string()).filter(|t| !t.is_empty()) {
+            return id;
+        }
+    }
+    let mut buf = [0u8; 256];
+    // SAFETY: the buffer is of the length said, and one short of it is asked
+    // for so that it always ends in NUL
+    if unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len() - 1) } != 0 {
+        return String::new();
+    }
+    let end = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
+    String::from_utf8_lossy(&buf[..end]).trim().to_string()
 }
 
 /// Who is on a socket
@@ -492,7 +652,8 @@ pub fn daemon(home: PathBuf) -> Result<()> {
         libc::signal(libc::SIGTERM, on_term as extern "C" fn(libc::c_int) as libc::sighandler_t);
     }
     crate::farops::set_home(home.clone());
-    let run = home.join("run");
+    // This machine's own folder: nothing below touches another machine's
+    let run = own_run(&home);
     std::fs::create_dir_all(&run)?;
     #[cfg(unix)]
     std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o700))?;
@@ -515,9 +676,10 @@ pub fn daemon(home: PathBuf) -> Result<()> {
         }
         lock
     };
-    if !matches!(find(&keep), Found::Nobody) {
+    if !matches!(find(&keep), Found::Nobody) || run_dir(&home) != run {
         // Somebody else is resident already -- or holds the socket and is slow
-        // to say so, which is the same: the lock goes with the file
+        // to say so, which is the same: the lock goes with the file. So is
+        // one an earlier build started, in the folder there was then
         return Ok(());
     }
     #[cfg(unix)]
@@ -553,7 +715,7 @@ pub fn daemon(home: PathBuf) -> Result<()> {
         j.push(Arc::new(HostJob));
         j.push(tabs_job.clone());
         j.push(Arc::new(OpsJob::default()));
-        j.push(Arc::new(crate::farterms::Terms::at(Some(home.clone()))));
+        j.push(crate::farterms::Terms::shared(Some(home.clone())));
     }
 
     {
@@ -602,23 +764,28 @@ pub fn daemon(home: PathBuf) -> Result<()> {
             log(&format!("line {line} has been silent too long"));
             core.drop_line(line);
         }
-        if done {
-            break;
-        }
         if TOLD_TO_END.load(Ordering::SeqCst) {
             log("told to end; ending what is held");
+            core.close(true);
+            break;
+        }
+        // Going only if no app came since it was found alone
+        if done && core.close(false) {
             break;
         }
     }
-    for job in core.jobs() {
-        job.end();
-    }
+    // The doors go first, before anything that takes time: whoever comes from
+    // here on finds nobody, and starts a resident process of its own rather
+    // than wait on one that is leaving.
     // Only what is still this process's own: a socket another resident process
     // has since bound in its place is left alone
     for (path, ino) in [(&keep, mine[0]), (&tabs, mine[1])] {
         if ino.is_some() && inode(path) == ino {
             let _ = std::fs::remove_file(path);
         }
+    }
+    for job in core.jobs() {
+        job.end();
     }
     // The key too, only while it is still this process's: one that became
     // resident after this one has a key of its own there
@@ -645,6 +812,11 @@ fn inode(_path: &Path) -> Option<u64> {
 /// question of which version is here
 fn door(core: &Arc<Core>, conn: UnixStream, key: &str) {
     if !same_user(&conn) {
+        return;
+    }
+    // On its way out: it names itself to nobody, so the caller goes on
+    // looking and finds the one that comes after
+    if core.closing() {
         return;
     }
     let hi = hello(core);
@@ -763,11 +935,12 @@ impl TabsJob {
 
     /// The same, and whether what changed is in the file
     fn with_book_saved<R>(&self, f: impl FnOnce(&mut crate::farmissed::Book) -> R) -> (R, bool) {
-        let path = self.home.as_ref().map(|h| h.join(crate::farmissed::FILE));
+        let path = self.home.as_ref().map(|h| own_run(h).join(crate::farmissed::FILE));
         let mut held = self.book.lock().unwrap_or_else(|e| e.into_inner());
         let book = held.get_or_insert_with(|| {
-            path.as_ref()
-                .and_then(|p| std::fs::read_to_string(p).ok())
+            self.home
+                .as_ref()
+                .and_then(|h| read_own(h, crate::farmissed::FILE))
                 .and_then(|t| serde_json::from_str(&t).ok())
                 .unwrap_or_default()
         });
@@ -777,7 +950,11 @@ impl TabsJob {
             return (out, true);
         }
         let saved = match &path {
-            Some(p) => write_private(p, &serde_json::to_string(book).unwrap_or_default()),
+            Some(p) => p
+                .parent()
+                .map_or(Ok(()), std::fs::create_dir_all)
+                .map_err(anyhow::Error::from)
+                .and_then(|()| write_private(p, &serde_json::to_string(book).unwrap_or_default())),
             None => Err(anyhow!("no folder of its own")),
         };
         if let Err(e) = &saved {
@@ -1197,25 +1374,33 @@ impl Job for OpsJob {
 /// for as long as its jobs want it to
 pub fn serve_port(home: PathBuf, input: impl std::io::Read, mut output: impl Write + Send + 'static) -> Result<()> {
     hold_program(&home);
-    let run = home.join("run");
-    let keep = run.join(KEEP_SOCK);
     // Started only when nobody is there: one slow to answer is waited for,
-    // never replaced by a second
-    let started = matches!(find(&keep), Found::Nobody);
-    if started {
-        start_daemon(&run)?;
-    }
+    // never replaced by a second. Looked for again each time round: the one
+    // that was there may be on its way out (it names itself to nobody then,
+    // and takes its doors away), and the one to speak to is the one started
+    // after it
     let until = Instant::now() + Duration::from_secs(30);
-    while probe(&keep).is_none() {
+    let mut started: Option<Instant> = None;
+    let (run, keep) = loop {
+        let run = run_dir(&home);
+        let keep = run.join(KEEP_SOCK);
+        match find(&keep) {
+            Found::Named(_) => break (run, keep),
+            Found::Nobody if started.is_none_or(|at| at.elapsed() >= START_AGAIN) => {
+                start_daemon(&run)?;
+                started = Some(Instant::now());
+            }
+            _ => {}
+        }
         if Instant::now() >= until {
-            bail!(if started {
+            bail!(if started.is_some() {
                 "the resident bridge process did not start"
             } else {
                 "the resident bridge process is there but did not name itself in time"
             });
         }
         std::thread::sleep(Duration::from_millis(100));
-    }
+    };
     let conn = crate::keepipe::connect(&keep).context("the resident bridge process did not answer")?;
     let mut reader = BufReader::new(conn.try_clone()?);
     let mut first = String::new();
@@ -1261,6 +1446,10 @@ pub fn serve_port(home: PathBuf, input: impl std::io::Read, mut output: impl Wri
     Ok(())
 }
 
+/// How long a resident process just started is given to open its doors
+/// before another is started (the first may have found one leaving, and left)
+pub(crate) const START_AGAIN: Duration = Duration::from_secs(5);
+
 /// Start the resident process, cut loose from the line that started it: in a
 /// session of its own, so that the line ending does not end it. What it says
 /// goes to `run/keep.log`, the one place to look when it misbehaves
@@ -1282,7 +1471,7 @@ pub fn start_resident(home: &Path, args: &[String]) -> Result<()> {
     const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
-    let run = home.join("run");
+    let run = own_run(&home);
     std::fs::create_dir_all(&run)?;
     let log_file = run.join(LOG_FILE);
     if std::fs::metadata(&log_file).is_ok_and(|m| m.len() > LOG_MOST) {
@@ -1344,6 +1533,60 @@ fn start_daemon(run: &Path) -> Result<()> {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    /// Two machines that share one home each have a folder of their own, so
+    /// neither's doors, key or lists are the other's to delete or read. A
+    /// tab told the one name there used to be finds this machine's door --
+    /// and the door of a resident process an earlier build started, while
+    /// that one still answers
+    #[test]
+    fn machines_that_share_a_home_each_keep_their_own_doors() {
+        let home = std::env::temp_dir().join(format!("sk-fardaemon-shared-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let (here, there) = (own_run(&home), run_named(&home, "0123456789ab"));
+        assert_ne!(here, home.join(RUN_ONCE), "this machine has no name of its own");
+        assert_ne!(here, there);
+        assert_eq!(run_named(&home, ""), home.join(RUN_ONCE));
+        assert_eq!(own_run(&home), here, "the machine's name changed between two looks");
+
+        // The other machine is resident: its door, its key and what it holds
+        // are in the shared home, and nothing answers on its door from here
+        std::fs::create_dir_all(&there).unwrap();
+        let far_door = UnixListener::bind(&there.join(KEEP_SOCK)).unwrap();
+        drop(far_door);
+        std::fs::write(there.join(KEY_FILE), "the other machine's key").unwrap();
+        std::fs::write(there.join("held.json"), "[]").unwrap();
+
+        let h = home.clone();
+        let resident = std::thread::spawn(move || daemon(h));
+        while probe(&here.join(KEEP_SOCK)).is_none() {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert_eq!(std::fs::read_to_string(there.join(KEY_FILE)).unwrap(), "the other machine's key");
+        assert!(there.join(KEEP_SOCK).exists(), "the other machine's door was deleted");
+        assert_ne!(door_key(&home).unwrap(), "the other machine's key");
+
+        // A tab told the old name is taken to this machine's door
+        let told = home.join(RUN_ONCE).join(TABS_SOCK).to_string_lossy().into_owned();
+        assert_eq!(door_here(&told), here.join(TABS_SOCK).to_string_lossy());
+        assert_eq!(door_here("/somewhere/else/tabs.sock"), "/somewhere/else/tabs.sock");
+
+        // One an earlier build started answers in the folder there was then:
+        // it is the one spoken to, and no second one is started beside it
+        let once = home.join(RUN_ONCE);
+        std::fs::create_dir_all(&once).unwrap();
+        let earlier = UnixListener::bind(&once.join(KEEP_SOCK)).unwrap();
+        assert_eq!(run_dir(&home), once);
+        assert_eq!(door_here(&told), told);
+        drop(earlier);
+        assert_eq!(run_dir(&home), here, "a door nothing answers on was taken for a resident process");
+
+        // With no app, it goes by itself after a short while
+        let _ = resident.join();
+        assert!(!here.join(KEY_FILE).exists(), "its own key was left behind");
+        assert!(there.join(KEEP_SOCK).exists() && there.join(KEY_FILE).exists(), "the other machine's things went with this one's");
+        let _ = std::fs::remove_dir_all(&home);
+    }
 
     /// Time this process did not run is nobody's silence: a line that would
     /// be dropped, and a process that would leave for being alone, are both
@@ -1436,7 +1679,7 @@ mod tests {
     fn a_report_made_while_away_is_kept_and_handed_over_when_the_app_is_back() {
         let home = std::env::temp_dir().join(format!("sk-fardaemon-kept-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
-        let run = home.join("run");
+        let run = own_run(&home);
         std::fs::create_dir_all(&run).unwrap();
         let h = home.clone();
         let resident = std::thread::spawn(move || daemon(h));
@@ -1521,7 +1764,7 @@ mod tests {
     fn a_call_after_the_app_went_is_answered_and_written_down() {
         let home = std::env::temp_dir().join(format!("sk-fardaemon-bye-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
-        let run = home.join("run");
+        let run = own_run(&home);
         std::fs::create_dir_all(&run).unwrap();
         let h = home.clone();
         let resident = std::thread::spawn(move || daemon(h));
@@ -1574,7 +1817,7 @@ mod tests {
     fn the_resident_process_holds_its_jobs_and_leaves_when_nothing_is_left() {
         let home = std::env::temp_dir().join(format!("sk-fardaemon-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
-        let run = home.join("run");
+        let run = own_run(&home);
         std::fs::create_dir_all(&run).unwrap();
         // The older bridge's socket, which must come through untouched
         let old = run.join("shikisha.sock");
@@ -1685,7 +1928,7 @@ mod tests {
     fn a_slow_resident_process_is_not_taken_for_a_dead_one() {
         let home = std::env::temp_dir().join(format!("sk-fardaemon-slow-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
-        let run = home.join("run");
+        let run = own_run(&home);
         std::fs::create_dir_all(&run).unwrap();
         // Takes connections and says nothing
         let silent = UnixListener::bind(&run.join(KEEP_SOCK)).unwrap();
@@ -1745,7 +1988,7 @@ mod tests {
         unsafe { std::env::set_var("SHELL", "/bin/bash") };
         let home = std::env::temp_dir().join(format!("sk-farterms-away-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
-        let run = home.join("run");
+        let run = own_run(&home);
         std::fs::create_dir_all(&run).unwrap();
         let h = home.clone();
         let resident = std::thread::spawn(move || daemon(h));
@@ -1824,7 +2067,7 @@ mod tests {
         unsafe { std::env::set_var("SHELL", "/bin/bash") };
         let home = std::env::temp_dir().join(format!("sk-farterms-once-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
-        let run = home.join("run");
+        let run = own_run(&home);
         std::fs::create_dir_all(&run).unwrap();
         let h = home.clone();
         let resident = std::thread::spawn(move || daemon(h));
@@ -1878,7 +2121,7 @@ mod tests {
         unsafe { std::env::set_var("SHELL", "/bin/bash") };
         let home = std::env::temp_dir().join(format!("sk-farterms-hup-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
-        let run = home.join("run");
+        let run = own_run(&home);
         std::fs::create_dir_all(&run).unwrap();
         let h = home.clone();
         let resident = std::thread::spawn(move || daemon(h));
@@ -1904,6 +2147,123 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
+    /// The first line is typed once the shell is at its prompt: a start-up
+    /// file that reads what is typed does not take it, and it shows once
+    #[test]
+    fn the_first_line_waits_for_the_shell_to_come_to_its_prompt() {
+        // SAFETY: tests that read SHELL do not run beside this one
+        unsafe { std::env::set_var("SHELL", "/bin/bash") };
+        let home = std::env::temp_dir().join(format!("sk-farterms-prompt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let run = own_run(&home);
+        std::fs::create_dir_all(&run).unwrap();
+        // The account's start-up file asks something, and takes what is typed
+        // for a second as its answer
+        let account = home.join("account");
+        std::fs::create_dir_all(&account).unwrap();
+        std::fs::write(account.join(".bash_profile"), "read -t 1 taken\necho \"profile-took:[$taken]\"\nPS1='ready> '\n").unwrap();
+        let h = home.clone();
+        let resident = std::thread::spawn(move || daemon(h));
+        while probe(&run.join(KEEP_SOCK)).is_none() {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let mut pc = App::open(&run);
+        term(
+            &mut pc,
+            json!({ "do": "open", "ref": 1, "tab": "t1", "rows": 24, "cols": 80, "then": "echo first-$((40+2))-line",
+                "env": { "HOME": account.to_string_lossy() } }),
+        );
+        let id = term_said(&mut pc, |m| m["did"] == "opened").expect("not opened")["term"].as_u64().unwrap();
+        let at = term_said(&mut pc, |m| m["did"] == "attached").expect("not attached");
+        let mut outs = Vec::new();
+        while !screen_of(&at, &outs).contains("first-42-line") {
+            match term_said(&mut pc, |m| m["did"] == "out" && m["term"] == id) {
+                Some(out) => outs.push(out),
+                None => panic!("the first line never ran: {}", screen_of(&at, &outs)),
+            }
+        }
+        let screen = screen_of(&at, &outs);
+        assert!(screen.contains("profile-took:[]"), "the start-up file took the first line: {screen}");
+        assert_eq!(screen.matches("echo first-").count(), 1, "the first line shows twice: {screen}");
+        term(&mut pc, json!({ "do": "stop", "term": id, "owner": at["owner"] }));
+        drop(pc);
+        let _ = resident.join();
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// A resident process on its way out takes no app in, and one that
+    /// finds an app came since it was alone does not go
+    #[test]
+    fn an_app_is_counted_before_the_process_goes_or_not_let_in_after() {
+        let core = Core::new();
+        let (a, _a) = std::os::unix::net::UnixStream::pair().unwrap();
+        let line = core.add(a).expect("an app was not let in");
+        assert!(!core.close(false), "it went from under an app that had come");
+        assert!(!core.closing());
+        core.drop_line(line);
+        assert!(core.close(false));
+        let (b, _b) = std::os::unix::net::UnixStream::pair().unwrap();
+        assert!(core.add(b).is_none(), "an app was let in by a process on its way out");
+        assert!(core.lines().is_empty());
+        // Told to end, it goes whoever is there
+        let core = Core::new();
+        let (c, _c) = std::os::unix::net::UnixStream::pair().unwrap();
+        core.add(c).unwrap();
+        assert!(core.close(true));
+    }
+
+    /// A terminal whose program takes nothing of what it is typed does not
+    /// hold up the app's other terminals: the app is still heard, and
+    /// another terminal still opens and answers
+    #[test]
+    fn a_program_that_does_not_read_holds_up_nothing_but_itself() {
+        // SAFETY: tests that read SHELL do not run beside this one
+        unsafe { std::env::set_var("SHELL", "/bin/bash") };
+        let home = std::env::temp_dir().join(format!("sk-farterms-full-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let run = own_run(&home);
+        std::fs::create_dir_all(&run).unwrap();
+        let h = home.clone();
+        let resident = std::thread::spawn(move || daemon(h));
+        while probe(&run.join(KEEP_SOCK)).is_none() {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let mut pc = App::open(&run);
+        term(&mut pc, json!({ "do": "open", "ref": 1, "tab": "deaf", "rows": 24, "cols": 80, "then": "echo sleeping-now; exec sleep 600" }));
+        let deaf = term_said(&mut pc, |m| m["did"] == "opened").expect("not opened")["term"].as_u64().unwrap();
+        let at = term_said(&mut pc, |m| m["did"] == "attached").expect("not attached");
+        let owner = at["owner"].as_u64().unwrap();
+        let mut outs = Vec::new();
+        while screen_of(&at, &outs).matches("sleeping-now").count() < 2 {
+            outs.push(term_said(&mut pc, |m| m["did"] == "out" && m["term"] == deaf).expect("it never slept"));
+        }
+        // Far more lines than a terminal holds for a program that reads none
+        use base64::Engine as _;
+        let lines = base64::engine::general_purpose::STANDARD.encode("a line nobody reads\n".repeat(3000));
+        let started = Instant::now();
+        for _ in 0..40 {
+            term(&mut pc, json!({ "do": "in", "term": deaf, "owner": owner, "b": lines }));
+        }
+        // The app is still heard: asked for the list, it is answered...
+        term(&mut pc, json!({ "do": "list", "ref": 2 }));
+        assert!(term_said(&mut pc, |m| m["did"] == "list" && m["ref"] == 2).is_some(), "the app was not heard behind the full terminal");
+        // ...and another terminal opens and says what it is typed
+        term(&mut pc, json!({ "do": "open", "ref": 3, "tab": "other", "rows": 24, "cols": 80, "then": "echo still-here" }));
+        let other = term_said(&mut pc, |m| m["did"] == "opened" && m["ref"] == 3).expect("another terminal did not open")["term"].as_u64().unwrap();
+        let at = term_said(&mut pc, |m| m["did"] == "attached" && m["term"] == other).expect("not attached");
+        let mut outs = Vec::new();
+        while screen_of(&at, &outs).matches("still-here").count() < 2 {
+            outs.push(term_said(&mut pc, |m| m["did"] == "out" && m["term"] == other).expect("the other terminal stood still"));
+        }
+        assert!(started.elapsed() < Duration::from_secs(20), "it took {:?}", started.elapsed());
+        for (id, own) in [(deaf, owner), (other, at["owner"].as_u64().unwrap())] {
+            term(&mut pc, json!({ "do": "stop", "term": id, "owner": own }));
+        }
+        drop(pc);
+        let _ = resident.join();
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
     /// The terminals job (far-keep plan §4.4): a terminal opened by one app,
     /// taken by another with its state, the first told and refused, asked
     /// about by the wrong tab or generation answered "unknown", stopped with
@@ -1915,7 +2275,7 @@ mod tests {
         unsafe { std::env::set_var("SHELL", "/bin/bash") };
         let home = std::env::temp_dir().join(format!("sk-farterms-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
-        let run = home.join("run");
+        let run = own_run(&home);
         std::fs::create_dir_all(&run).unwrap();
         let h = home.clone();
         let resident = std::thread::spawn(move || daemon(h));

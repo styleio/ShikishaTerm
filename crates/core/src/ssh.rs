@@ -926,10 +926,13 @@ async fn open_shell(
     // Typed, so it is on screen like anything else typed, and so that
     // nothing else has to know it happened. The folder first, and the
     // program in it only if the folder is there: a program started
-    // somewhere else would work on the wrong files
-    if let Some(line) = typed_first(cwd.as_deref(), then.as_deref()) {
-        let _ = writing.data(line.as_bytes()).await;
-    }
+    // somewhere else would work on the wrong files.
+    // Typed once the shell has come to its prompt, as far as that can be
+    // told from here ([`prompt_reached`]), and before anything a person types
+    let mut first = typed_first(cwd.as_deref(), then.as_deref());
+    // How much the far end has said so far
+    let heard = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let heard_by_reader = Arc::clone(&heard);
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<ToShell>();
     // What is typed, in the order it was typed, on a task that holds the
     // connection for as long as the terminal is open. It ends when the tab
@@ -938,8 +941,37 @@ async fn open_shell(
     // is refused rather than said to have arrived
     tokio::spawn(async move {
         let _held = lease;
-        while let Some(said) = rx.recv().await {
+        let opened = std::time::Instant::now();
+        let (mut so_far, mut still_since) = (0u64, opened);
+        // What a person typed before the first line went: after it, in order
+        let mut early: Vec<Vec<u8>> = Vec::new();
+        loop {
+            let said = match first.is_some() {
+                false => rx.recv().await,
+                true => {
+                    let now = heard.load(Ordering::SeqCst);
+                    if now != so_far {
+                        (so_far, still_since) = (now, std::time::Instant::now());
+                    }
+                    if prompt_reached(so_far > 0, still_since.elapsed(), opened.elapsed()) {
+                        let mut gone = false;
+                        for data in first.take().map(String::into_bytes).into_iter().chain(early.drain(..)) {
+                            gone = gone || writing.data(&data[..]).await.is_err();
+                        }
+                        if gone {
+                            break;
+                        }
+                        continue;
+                    }
+                    match tokio::time::timeout(std::time::Duration::from_millis(40), rx.recv()).await {
+                        Ok(said) => said,
+                        Err(_) => continue,
+                    }
+                }
+            };
+            let Some(said) = said else { break };
             match said {
+                ToShell::Data(data) if first.is_some() => early.push(data),
                 ToShell::Data(data) => {
                     if let Err(e) = writing.data(&data[..]).await {
                         crate::append_hook_log(&format!("ssh: could not send: {e}"));
@@ -981,6 +1013,7 @@ async fn open_shell(
                 }
                 _ => continue,
             };
+            heard_by_reader.fetch_add(chunk.len() as u64, Ordering::SeqCst);
             if out.send(chunk).is_err() {
                 ended = true;
                 break;
@@ -995,6 +1028,28 @@ async fn open_shell(
         }
     });
     Ok(tx)
+}
+
+/// How long a shell over there has to have said nothing, after saying
+/// something, to be taken for one waiting at its prompt
+const PROMPT_QUIET: std::time::Duration = std::time::Duration::from_millis(300);
+/// How long a shell that says nothing at all is waited for
+const PROMPT_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Whether a shell opened over SSH has, as far as can be told from this end,
+/// come to its prompt: it said something and has gone quiet, or it has had
+/// long enough.
+///
+/// Its first line was typed the moment it was asked for, while it was still
+/// reading the account's start-up files: the line showed twice (as the
+/// terminal echoed it, then as the shell found it waiting), and a start-up
+/// file that reads what is typed took it. Only what the far end says can be
+/// seen from here -- the machine's bridge, where there is one, looks at the
+/// terminal itself (`farterms`) -- so a greeting followed by a slow start-up
+/// file is still taken for a prompt, and the line is typed ahead as it
+/// always was
+fn prompt_reached(heard_any: bool, quiet_for: std::time::Duration, open_for: std::time::Duration) -> bool {
+    (heard_any && quiet_for >= PROMPT_QUIET) || open_for >= PROMPT_WAIT
 }
 
 /// The words for a job that ran out of time: not answering at all is one
@@ -1742,6 +1797,32 @@ mod tests {
             .expect("resize");
         assert_eq!(pty.get_size().expect("size").cols, 120);
         killer.kill().expect("kill");
+
+        // The first line goes once the far end has greeted and gone quiet,
+        // and ahead of what a person types before then
+        let (pty, mut killer, _) = shell(&spec, 24, 80, None, Some("first-line".into())).expect("the terminal did not open");
+        let mut reader = pty.try_clone_reader().expect("reader");
+        let mut writer = pty.take_writer().expect("writer");
+        writer.write_all(b"typed-early").expect("typing");
+        writer.flush().expect("flush");
+        let mut seen = String::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while std::time::Instant::now() < deadline && !seen.contains("echo:typed-early") {
+            match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => seen.push_str(&String::from_utf8_lossy(&buf[..n])),
+                Err(_) => break,
+            }
+        }
+        let at = |what: &str| seen.find(what).unwrap_or_else(|| panic!("{what} did not arrive: {seen:?}"));
+        assert!(at("welcome") < at("echo:first-line"), "the first line went before the far end said anything: {seen:?}");
+        assert!(at("echo:first-line") < at("echo:typed-early"), "what was typed went ahead of the first line: {seen:?}");
+        killer.kill().expect("kill");
+
+        assert!(!prompt_reached(false, PROMPT_QUIET * 4, PROMPT_QUIET * 4), "a shell that said nothing was typed into");
+        assert!(!prompt_reached(true, PROMPT_QUIET / 2, PROMPT_QUIET * 4), "a shell still talking was typed into");
+        assert!(prompt_reached(true, PROMPT_QUIET, PROMPT_QUIET));
+        assert!(prompt_reached(false, std::time::Duration::ZERO, PROMPT_WAIT), "a shell that says nothing is never typed into");
     }
 
     /// A command on the far side comes back whole: what it printed, what it

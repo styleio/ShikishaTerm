@@ -139,7 +139,7 @@ fn unb64(v: &Value) -> Vec<u8> {
 /// nobody owns it, and kept either way so an owner who attaches carries on
 /// with it: the keyboard it asked for, its title, where it says it is
 struct Held {
-    writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    writer: Typed,
     /// Whether this job answers the program's questions: nobody owns it
     answering: bool,
     keyboard: Vec<u8>,
@@ -152,9 +152,68 @@ impl Held {
         if !self.answering {
             return;
         }
-        if let Ok(mut w) = self.writer.lock() {
-            let _ = w.write_all(bytes);
-            let _ = w.flush();
+        self.writer.put(bytes.to_vec());
+    }
+}
+
+/// The most that waits to be typed into one terminal's program. A program
+/// that takes nothing of what it is typed is not going to take more
+const TYPED_MOST: u64 = 8 * 1024 * 1024;
+
+/// What is typed into a terminal's program, in the order given, by a thread
+/// of the terminal's own.
+///
+/// A program takes what it is typed when it reads, and one that does not
+/// read -- stopped, busy, waiting on something else -- leaves the terminal
+/// full, so that the next thing typed waits. Typed by whoever had it to type,
+/// that wait was the app's whole line: one thread reads everything an app
+/// says, so every other terminal of that app stood still behind the one, and
+/// the app, not heard from, was taken for gone and its line cut. And an
+/// answer to the program's own question (`Held::reply`) waited while holding
+/// the terminal's picture, which held up whoever came to take the terminal
+#[derive(Clone)]
+struct Typed {
+    queue: Sender<Vec<u8>>,
+    /// How many bytes wait in the queue, not yet typed
+    waiting: Arc<AtomicU64>,
+    /// Whether it has been said that the program is not taking what it is typed
+    said: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Typed {
+    fn into(mut program: Box<dyn Write + Send>) -> Self {
+        let (queue, typed) = channel::<Vec<u8>>();
+        let waiting = Arc::new(AtomicU64::new(0));
+        let left = Arc::clone(&waiting);
+        std::thread::spawn(move || {
+            for bytes in typed {
+                let gone = program.write_all(&bytes).and_then(|()| program.flush()).is_err();
+                left.fetch_sub(bytes.len() as u64, Ordering::SeqCst);
+                if gone {
+                    break;
+                }
+            }
+        });
+        Self { queue, waiting, said: Arc::default() }
+    }
+
+    /// Queue `bytes` to be typed. Never waits. Dropped when the program has
+    /// left too much untaken already
+    fn put(&self, bytes: Vec<u8>) {
+        let n = bytes.len() as u64;
+        if n == 0 {
+            return;
+        }
+        if self.waiting.fetch_add(n, Ordering::SeqCst) + n > TYPED_MOST {
+            self.waiting.fetch_sub(n, Ordering::SeqCst);
+            if !self.said.swap(true, Ordering::SeqCst) {
+                crate::fardaemon::log("a terminal's program is not taking what it is typed; what is typed from here on is dropped until it does");
+            }
+            return;
+        }
+        self.said.store(false, Ordering::SeqCst);
+        if self.queue.send(bytes).is_err() {
+            self.waiting.fetch_sub(n, Ordering::SeqCst);
         }
     }
 }
@@ -240,7 +299,7 @@ struct Term {
     /// app that lost its note of it finds it again by (far-keep plan §7.4)
     cwd: String,
     seen: Mutex<Seen>,
-    writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    writer: Typed,
     /// The pseudo terminal. Let go of once the program ended on Windows, where
     /// a pseudo console's output stays open after its program is gone until
     /// the console itself is closed -- the reader would wait on it forever
@@ -313,6 +372,85 @@ impl Term {
         #[cfg(not(unix))]
         let _ = first;
     }
+}
+
+/// How long a shell that shows no sign of being at its prompt is waited for
+/// before its first line is typed anyway
+#[cfg(unix)]
+const PROMPT_WAIT: Duration = Duration::from_secs(10);
+/// How long a shell has to have said nothing, after saying something, to be
+/// taken for one waiting at its prompt though the terminal does not show it.
+///
+/// A shell that edits its line shows it is at its prompt by the terminal's
+/// mode, and silence says little about it: the machine's greeting followed
+/// by a start-up file that waits for an answer is silent too, and what is
+/// typed then is taken for the answer. So such a shell is given long, for
+/// the one set not to edit (`set +o emacs`, a dumb terminal). A shell with
+/// no line editor (sh) shows nothing else, and is given a short while
+#[cfg(unix)]
+fn quiet_at_prompt(shell: &str) -> Duration {
+    let name = shell.rsplit('/').next().unwrap_or(shell).trim_start_matches('-');
+    match ["bash", "zsh", "fish"].contains(&name) {
+        true => Duration::from_secs(3),
+        false => Duration::from_millis(500),
+    }
+}
+
+/// Wait until the shell just started in `term` is at its prompt.
+///
+/// The first line was typed the moment the shell was started, while it was
+/// still reading the account's start-up files. Whatever those ran that reads
+/// what is typed -- a question, a passphrase, a second shell that throws away
+/// what waits -- took the line, and the tab's program never started; and
+/// where nothing took it, it showed twice (once as the terminal echoed it,
+/// once as the shell found it waiting).
+///
+/// At its prompt, a shell that edits its line (bash, zsh, fish) has the
+/// terminal out of line-at-a-time mode and is itself in front; otherwise it
+/// is taken to be there once it has said something and gone quiet for
+/// `quiet` ([`quiet_at_prompt`])
+#[cfg(unix)]
+fn wait_for_prompt(term: &Term, quiet: Duration) {
+    let started = Instant::now();
+    let (mut said, mut still_since) = (0u64, Instant::now());
+    while started.elapsed() < PROMPT_WAIT {
+        if term.ended.lock().is_ok_and(|e| e.is_some()) || term.stopped.load(Ordering::SeqCst) {
+            return;
+        }
+        if at_prompt(term) {
+            return;
+        }
+        let now = term.seen.lock().map(|s| s.seq).unwrap_or(said);
+        if now != said {
+            (said, still_since) = (now, Instant::now());
+        }
+        if said > 0 && still_since.elapsed() >= quiet {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    crate::fardaemon::log("a shell did not come to its prompt in time; its first line is typed all the same");
+}
+
+/// Whether the shell of `term` is editing a line now: in front on its
+/// terminal, with the terminal taking keys one at a time
+#[cfg(unix)]
+fn at_prompt(term: &Term) -> bool {
+    let Ok(master) = term.master.lock() else { return false };
+    let Some(master) = master.as_ref() else { return false };
+    let Some(fd) = master.as_raw_fd() else { return false };
+    // SAFETY: the descriptor is the terminal's, open while `master` is held,
+    // and the structure is the one the call fills
+    let mut modes: libc::termios = unsafe { std::mem::zeroed() };
+    if unsafe { libc::tcgetattr(fd, &mut modes) } != 0 {
+        return false;
+    }
+    let editing = modes.c_lflag & libc::ICANON == 0;
+    let in_front = match (term.session, master.process_group_leader()) {
+        (Some(shell), Some(front)) => i64::from(shell) == i64::from(front),
+        _ => true,
+    };
+    editing && in_front
 }
 
 /// How long a stopped terminal's program is given to go on its hangup
@@ -547,11 +685,26 @@ pub struct Terms {
     ended_written: AtomicU64,
     /// The resident process's own folder, where the held list is written
     home: Option<std::path::PathBuf>,
+    /// Itself, for the threads that open terminals
+    me: std::sync::OnceLock<std::sync::Weak<Terms>>,
+    /// The tabs a terminal is being opened for now, each with the lock that
+    /// lets one open at a time through
+    opening: Mutex<HashMap<(String, String), Arc<Mutex<()>>>>,
+    /// How many terminals are being opened for the app on each line
+    opening_for: Mutex<HashMap<u64, usize>>,
 }
 
 impl Terms {
     pub fn new() -> Self {
         Self::at(crate::farops::home().ok().cloned())
+    }
+
+    /// The job as the resident process holds it: able to open a terminal
+    /// apart from the thread that hears the app ([`Terms::open_apart`])
+    pub fn shared(home: Option<std::path::PathBuf>) -> Arc<Self> {
+        let terms = Arc::new(Self::at(home));
+        let _ = terms.me.set(Arc::downgrade(&terms));
+        terms
     }
 
     /// The job of the resident process whose folder is `home`. Told its
@@ -560,7 +713,7 @@ impl Terms {
     pub fn at(home: Option<std::path::PathBuf>) -> Self {
         let before = home
             .as_ref()
-            .and_then(|h| std::fs::read_to_string(h.join(HELD_FILE)).ok())
+            .and_then(|h| crate::fardaemon::read_own(h, HELD_FILE))
             .and_then(|t| serde_json::from_str(&t).ok())
             .unwrap_or_default();
         Self {
@@ -571,6 +724,9 @@ impl Terms {
             ended_written: AtomicU64::new(0),
             awake: Mutex::default(),
             home,
+            me: std::sync::OnceLock::new(),
+            opening: Mutex::default(),
+            opening_for: Mutex::default(),
         }
     }
 
@@ -628,7 +784,13 @@ impl Terms {
             }
         }
         let text = serde_json::to_string(&all).unwrap_or_default();
-        if let Err(e) = crate::fardaemon::write_private(&home.join(HELD_FILE), &text) {
+        // In this machine's own folder: a session is a number of this
+        // machine's, and means nothing on another that shares the home
+        let run = crate::fardaemon::own_run(home);
+        let written = std::fs::create_dir_all(&run)
+            .map_err(anyhow::Error::from)
+            .and_then(|()| crate::fardaemon::write_private(&run.join(HELD_FILE), &text));
+        if let Err(e) = written {
             crate::fardaemon::log(&format!("the terminals held could not be written down: {e:#}"));
         }
     }
@@ -658,13 +820,57 @@ impl Terms {
             .map(|(id, t)| (*id, Arc::clone(t)))
     }
 
+    /// Open a terminal on a thread of its own, and answer from there.
+    ///
+    /// Starting a program can take as long as its folder takes to answer --
+    /// one on a file server that has gone away takes tens of seconds to say
+    /// so -- and done on the thread that hears the app, nothing else the app
+    /// said was heard meanwhile: every terminal of that app stood still, and
+    /// the app, not heard from for a minute, was taken for gone
+    fn open_apart(&self, core: &Arc<Core>, line: u64, m: &Value) {
+        let Some(me) = self.me.get().and_then(std::sync::Weak::upgrade) else {
+            // Not held by a resident process (a test of the job alone)
+            if let Some(a) = self.open(core, line, m) {
+                Self::say(core, line, self.reply(m, a));
+            }
+            return;
+        };
+        if let Ok(mut n) = self.opening_for.lock() {
+            *n.entry(line).or_default() += 1;
+        }
+        let (core, m) = (Arc::clone(core), m.clone());
+        std::thread::spawn(move || {
+            if let Some(a) = me.open(&core, line, &m) {
+                Self::say(&core, line, me.reply(&m, a));
+            }
+            if let Ok(mut n) = me.opening_for.lock() {
+                match n.get_mut(&line) {
+                    Some(left) if *left > 1 => *left -= 1,
+                    _ => {
+                        n.remove(&line);
+                    }
+                }
+            }
+            // The app went while this was being opened: it was let go of
+            // before it owned this terminal, so it is let go of again
+            if !core.connected(line) {
+                me.line_gone(&core, line);
+            }
+        });
+    }
+
     /// Open a terminal and attach to it. "opened" goes through the
     /// terminal's queue before its state does, so the app knows the id first
     fn open(&self, core: &Arc<Core>, line: u64, m: &Value) -> Option<Value> {
-        // One open at a time: two asked at once for one tab must not both
-        // find nothing and both start
-        static OPENING: Mutex<()> = Mutex::new(());
-        let _one = OPENING.lock().unwrap_or_else(|e| e.into_inner());
+        // One open at a time for one tab: two asked at once must not both
+        // find nothing and both start. Another tab's does not wait on it
+        let tab = (m["tab"].as_str().unwrap_or_default().to_string(), m["cwd"].as_str().unwrap_or_default().to_string());
+        let one = {
+            let mut opening = self.opening.lock().unwrap_or_else(|e| e.into_inner());
+            opening.retain(|_, lock| Arc::strong_count(lock) > 1);
+            Arc::clone(opening.entry(tab).or_default())
+        };
+        let _one = one.lock().unwrap_or_else(|e| e.into_inner());
         // A tab that already has a terminal running here gets that one, not
         // a second: the app may have lost its note of it (a write that failed,
         // a crash between opening and writing it down) and asks again as if
@@ -726,9 +932,9 @@ impl Terms {
         drop(pty.slave);
         #[cfg(windows)]
         let job = crate::job::Job::new().filter(|j| session.is_some_and(|p| j.take(p)));
-        let writer: Arc<Mutex<Box<dyn Write + Send>>> = Arc::new(Mutex::new(pty.master.take_writer()?));
+        let writer = Typed::into(pty.master.take_writer()?);
         let mut reader = pty.master.try_clone_reader()?;
-        let held = Held { writer: Arc::clone(&writer), answering: true, keyboard: Vec::new(), title: String::new(), cwd: String::new() };
+        let held = Held { writer: writer.clone(), answering: true, keyboard: Vec::new(), title: String::new(), cwd: String::new() };
         let (queue, out) = channel::<(u64, Frame)>();
         let queued = Arc::new(AtomicU64::new(0));
         let id = self.next.fetch_add(1, Ordering::SeqCst) + 1;
@@ -838,11 +1044,19 @@ impl Terms {
                 }
             });
         }
-        if let Some(then) = m["then"].as_str().filter(|t| !t.is_empty())
-            && let Ok(mut w) = term.writer.lock()
-        {
-            let _ = w.write_all(format!("{then}\n").as_bytes());
-            let _ = w.flush();
+        if let Some(then) = m["then"].as_str().filter(|t| !t.is_empty()) {
+            let line = format!("{then}\n").into_bytes();
+            #[cfg(unix)]
+            {
+                let term = Arc::clone(&term);
+                let shell = m["argv"].get(0).and_then(|a| a.as_str()).map(str::to_string).unwrap_or_else(login_shell);
+                std::thread::spawn(move || {
+                    wait_for_prompt(&term, quiet_at_prompt(&shell));
+                    term.writer.put(line);
+                });
+            }
+            #[cfg(not(unix))]
+            term.writer.put(line);
         }
         Ok(id)
     }
@@ -996,15 +1210,15 @@ impl Job for Terms {
             return false;
         }
         let answer = match m["do"].as_str().unwrap_or_default() {
-            "open" => self.open(core, line, m),
+            "open" => {
+                self.open_apart(core, line, m);
+                None
+            }
             // Attached: the state goes through the terminal's queue
             "attach" => Some(self.attach(core, line, m)).filter(|a| a["did"] != "attaching"),
             "in" => match self.owned(line, m) {
                 Ok(term) => {
-                    if let Ok(mut w) = term.writer.lock() {
-                        let _ = w.write_all(&unb64(&m["b"]));
-                        let _ = w.flush();
-                    }
+                    term.writer.put(unb64(&m["b"]));
                     None
                 }
                 Err(no) => Some(no),
@@ -1106,6 +1320,11 @@ impl Job for Terms {
             Self::say(core, line, self.reply(m, a));
         }
         true
+    }
+
+    /// A terminal being opened for the app on `line` is still owed to it
+    fn holds(&self, line: u64) -> bool {
+        self.opening_for.lock().is_ok_and(|n| n.contains_key(&line))
     }
 
     /// The app on `line` went: the terminals it owned have no owner, and
