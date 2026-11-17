@@ -31,15 +31,19 @@ jobs:
       # just sits on its splash and the log says nothing -- no test here would
       # have caught it, because the page is only a string until a browser runs
       # it. Chrome and node are on this runner already.
-      - name: The board comes up when it is handed a state
-        run: |
-          node --test tools/debug/chrome.test.mjs
-          node tools/check-board.mjs
+      - name: The browser the checks drive is found and spoken to
+        run: node --test tools/debug/chrome.test.mjs
 
-      - name: Conversation replies and repeated settings saves keep their identities
-        run: |
-          node tools/check-conversations.mjs
-          node tools/check-settings-save.mjs
+      - name: The board comes up when it is handed a state
+        run: node tools/check-board.mjs
+
+      # One step each: with two commands in one step on this runner, the
+      # step ends as the last one did, and a failure of the first is not seen
+      - name: Conversation replies keep their identities
+        run: node tools/check-conversations.mjs
+
+      - name: Repeated settings saves keep their identities
+        run: node tools/check-settings-save.mjs
 
       - name: Remote authentication survives delayed replies
         run: node --test tools/check-remote-auth.mjs

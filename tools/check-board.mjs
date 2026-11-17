@@ -103,16 +103,20 @@ for (const side of ['window', 'remote']) {
     // The page binds a message to the tab in its view before either transport
     // sees it. An explicitly captured identity survives a later view change.
     try {
-      const sent = await chrome.run(`(() => {
+      // What goes over the wire leaves one request at a time, in order: the
+      // sends are waited for, so that each has left -- bound to the tab it was
+      // bound to when it was sent -- before the page's own fetch is put back
+      const sent = await chrome.run(`(async () => {
         const state = S, ipc = window.ipc, fetch = window.fetch, out = [];
         try {
           S = {...S, active: 2, tabs: [{index: 2, uid: "original-tab"}]};
           window.ipc = {postMessage: text => out.push(JSON.parse(text))};
           window.fetch = (_, opts) => {out.push(JSON.parse(opts.body)); return Promise.resolve({});};
-          send({kind: "say", tab: 2, text: "first"});
+          const going = [send({kind: "say", tab: 2, text: "first"})];
           S.tabs = [{index: 2, uid: "replacement-tab"}];
-          send({kind: "say", tab: 2, uid: "original-tab", text: "captured"});
-          send({kind: "say", tab: 9, text: "missing"});
+          going.push(send({kind: "say", tab: 2, uid: "original-tab", text: "captured"}));
+          going.push(send({kind: "say", tab: 9, text: "missing"}));
+          await Promise.all(going);
           return out;
         } finally { S = state; window.ipc = ipc; window.fetch = fetch; }
       })()`);

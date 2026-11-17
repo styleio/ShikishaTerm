@@ -14,6 +14,12 @@ const conference = between('const CF = {', '// A pause this long')
 const history = between('let cvAll = false;', '// Every road that opened the search')
   + between('function allFindNow(', '// The conference, this conversation, or every conversation.')
   + between('window.__vaultWhere = function', 'function resumeRows(');
+// What the conversation code calls that lives elsewhere on the page: the
+// reader's own answers taken off the conversation line (none are asked for
+// here), and the folder of the tab in front
+const beside = 'const rdAsked = new Map();\n'
+  + between('function rdTake(', '// One page, written down as one string')
+  + between('function activeFolder()', '// Panels available on this surface.');
 const tab = uid => ({index:1, uid, id:'coder', name:'Coder', kind:'pty', ai:'codex', readable:true, state:'DONE', activity:[]});
 const row = (text, at=1) => ({k:'say', who:'you', record:'record', at, text});
 function viewer() {
@@ -25,7 +31,7 @@ function viewer() {
     S:{desk_id:'work', desk_uid:'desk-a', active:1, tabs:[tab('tab-a')]}, cvFromAll:false,
   });
   context.window = context;
-  vm.runInContext(core + '\n' + follow + '\n' + conference + '\n' + history, context);
+  vm.runInContext(beside + '\n' + core + '\n' + follow + '\n' + conference + '\n' + history, context);
   return {context, sent, run:code=>vm.runInContext(code,context),
     reply(request, extra={}) { context.__convo({panel:request.panel,act:request.act,req:request.args.req,ok:true,rows:[],older:null,...extra}); }};
 }
