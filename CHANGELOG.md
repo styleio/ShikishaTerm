@@ -179,6 +179,37 @@ once it reaches its first tagged release.
   checked.
 
 ### Fixed
+- **AIs left running on a server outlive the logout on more servers.** On
+  a Linux server where your account's own service manager stays up
+  without a login (`loginctl enable-linger`), the bridge's resident
+  process is now started under that manager, out of reach of the login
+  it was started from. On a server set to end an account's programs at
+  logout (`KillUserProcesses=yes`) without that, the app now says so when
+  it connects, with the one command that fixes it; before, the AIs
+  simply stopped when the PC disconnected.
+- **A server connection that is up but no longer answers is made again.**
+  When the bridge's resident process on a server was stopped or stuck
+  while the SSH connection itself stayed up, every tab on that server
+  showed a screen that no longer moved, for as long as the app ran. A
+  bridge that has said nothing for 40 seconds is now asked whether it is
+  there, and a connection nothing answers on within 20 seconds is let go
+  of and made again.
+- **Tabs on a server come back as soon as the PC wakes.** After the PC
+  slept, a tab whose connection had gone could wait up to a minute before
+  the server was asked again, because the tries made while asleep had
+  already stretched the wait. Waking is now noticed, and the server is
+  asked at once.
+- **A server given a second kind of host key is not reported as
+  changed.** The app remembers one key for each server. A server first
+  met by its RSA key and later given an Ed25519 key beside it showed the
+  newer one, and the app said the server's key had changed. The app now
+  remembers which kind of key a server is known by and asks for that kind
+  first, as `ssh` does.
+- **An SSH key path that is not a file no longer hangs every
+  connection.** With the key in the settings pointing at a named pipe or
+  a device, reading it never ended, on the one thread all SSH connections
+  are made on. Only a plain file of up to 1 MB is read now, and the error
+  says what the path is instead.
 - **Two servers that share one home folder no longer end each other's
   tabs.** Where an account's home is kept on a file server and mounted on
   several machines, the bridge on each machine kept its doors, its key and

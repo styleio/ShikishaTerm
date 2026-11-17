@@ -1965,15 +1965,20 @@ pub fn restart_surface(
 /// Soon at first -- a router that dropped one connection usually takes the
 /// next -- and then less often, up to once a minute, for as long as a tab is
 /// waiting for it (`wanted`). Its route is sent back once a command runs
-/// there, and the tabs waiting on it are opened again on the loop
+/// there, and the tabs waiting on it are opened again on the loop.
+///
+/// Asked at once, and soon again, when this PC wakes: the tries before it
+/// slept were spent on a network that was not there, and left the next one
+/// as much as a minute away from a server that answers the moment the PC
+/// is back
 fn server_answers(
     route: String,
     spec: crate::ssh::Spec,
     wanted: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
     tx: std::sync::mpsc::Sender<String>,
 ) {
-    const WAITS: [u64; 5] = [3, 10, 20, 30, 60];
-    for n in 0.. {
+    let mut tried = 0;
+    loop {
         if !wanted.lock().unwrap_or_else(|e| e.into_inner()).contains(&route) {
             return;
         }
@@ -1981,8 +1986,37 @@ fn server_answers(
             let _ = tx.send(route);
             return;
         }
-        std::thread::sleep(Duration::from_secs(WAITS[n.min(WAITS.len() - 1)]));
+        // Waited out a second at a time: a second that took far longer is
+        // this PC not having run
+        let wait = Duration::from_secs(asked_again_after(tried));
+        tried += 1;
+        let from = Instant::now();
+        while from.elapsed() < wait {
+            let second = Instant::now();
+            std::thread::sleep(Duration::from_secs(1));
+            if woke(second.elapsed()) {
+                append_hook_log(&format!("this PC was asleep; {route} is asked again now"));
+                tried = 0;
+                break;
+            }
+            if !wanted.lock().unwrap_or_else(|e| e.into_inner()).contains(&route) {
+                return;
+            }
+        }
     }
+}
+
+/// How many seconds a server that did not answer is left before it is asked
+/// again, having been asked `tried` times already
+fn asked_again_after(tried: usize) -> u64 {
+    const WAITS: [u64; 5] = [3, 10, 20, 30, 60];
+    WAITS[tried.min(WAITS.len() - 1)]
+}
+
+/// Whether a wait of one second that took `took` is this PC having slept
+/// through it, rather than a busy moment
+fn woke(took: Duration) -> bool {
+    took >= Duration::from_secs(10)
 }
 
 /// Whether a reload's message says no more than that the settings were read

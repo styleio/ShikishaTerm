@@ -1724,7 +1724,7 @@ impl Pages {
                         }
                         book.windows.kept.insert(
                             target.to_string(),
-                            Kept { url: url.to_string(), browser: key.clone(), since: std::time::Instant::now(), context: asked.context },
+                            Kept { browser: key.clone(), since: std::time::Instant::now(), context: asked.context },
                         );
                         book.mail.push(shikisha_shared::Ev::PageWindow {
                             from: Some(asked.page),
@@ -1984,10 +1984,8 @@ struct Blank {
 }
 
 /// A window a page opened, said to the loop and waiting for the tab made
-/// for it: where it was going when it was said, the browser it is in, and
-/// since when it has waited
+/// for it: the browser it is in, and since when it has waited
 struct Kept {
-    url: String,
     browser: String,
     since: std::time::Instant,
     /// The private storage it was opened in, when its opener is in one. It

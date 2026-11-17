@@ -671,7 +671,7 @@ async fn close_idle() {
 fn conn_key(spec: &Spec) -> String {
     use std::hash::BuildHasher;
     static SALT: OnceLock<std::collections::hash_map::RandomState> = OnceLock::new();
-    let key_file = spec.key.as_ref().map(|p| std::fs::read(p).unwrap_or_default());
+    let key_file = spec.key.as_ref().map(|p| key_text(p).unwrap_or_default());
     let with = SALT.get_or_init(Default::default).hash_one((
         secret(&spec.password_key),
         &spec.key,
@@ -680,6 +680,67 @@ fn conn_key(spec: &Spec) -> String {
         spec.jump.as_deref().map(conn_key),
     ));
     format!("{}#{with:016x}", spec.route())
+}
+
+/// The most a key file is read: a private key is a few thousand letters
+const KEY_FILE_MOST: u64 = 1024 * 1024;
+
+/// What is in the key file at `path`, read without waiting and without end.
+///
+/// The settings name a path, and a path need not be a file. Opened and read
+/// as one, a named pipe held the thread every connection is made on until
+/// somebody wrote to it -- which is until the app was started again -- and
+/// a device (`/dev/zero`) was read for as long as there was memory. So it is
+/// opened without waiting, what was opened is asked what it is, and only a
+/// plain file of a key's size is read
+fn key_text(path: &str) -> Result<String, String> {
+    use std::io::Read as _;
+    let mut open = std::fs::OpenOptions::new();
+    open.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        open.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = open.open(path).map_err(|e| format!("{path}: {e}"))?;
+    let about = file.metadata().map_err(|e| format!("{path}: {e}"))?;
+    if !about.is_file() {
+        return Err(format!("{path} is not a file"));
+    }
+    if about.len() > KEY_FILE_MOST {
+        return Err(format!("{path} is too large to be a key ({} bytes)", about.len()));
+    }
+    let mut text = String::new();
+    file.take(KEY_FILE_MOST + 1).read_to_string(&mut text).map_err(|e| format!("{path}: {e}"))?;
+    Ok(text)
+}
+
+/// The name a server's kind of key is remembered under, beside its
+/// fingerprint (which is under the machine's own name)
+fn kind_name(machine: &str) -> String {
+    format!("{machine} kind")
+}
+
+/// The kinds of host key this app takes, in the order it asks for them: the
+/// kind remembered for the server first, the rest as they come.
+///
+/// A server may hold several keys, of several kinds, and shows the one the
+/// caller asks for first. Asked in one fixed order, a server that was first
+/// met by its RSA key and was later given a newer kind beside it showed the
+/// newer one, and that was a key other than the one remembered: "the key
+/// has changed", on a server where nothing had -- the one warning that is
+/// to be read, shown for nothing. Asked for the kind it is known by, it
+/// shows the key it is known by, as it does to `ssh`
+fn key_kinds(known: Option<&str>) -> Vec<russh::keys::Algorithm> {
+    let all = russh::Preferred::DEFAULT.key.to_vec();
+    let Some(known) = known else { return all };
+    let (mut first, rest): (Vec<_>, Vec<_>) = all.into_iter().partition(|kind| match kind {
+        // One kind of key, whichever way it signs
+        russh::keys::Algorithm::Rsa { .. } => known == "ssh-rsa" || known.starts_with("rsa-"),
+        other => other.as_str() == known,
+    });
+    first.extend(rest);
+    first
 }
 
 /// A connection to this server, signed in, for as long as the lease is held.
@@ -799,11 +860,17 @@ async fn connect(spec: &Spec) -> Result<Open> {
             .filter(|n| *n > 0)
             .map(std::time::Duration::from_secs),
         keepalive_max: KEEPALIVE_MISSES,
+        // The kind of key this server is known by is asked for first
+        preferred: russh::Preferred {
+            key: std::borrow::Cow::Owned(key_kinds(known_hosts().get(&kind_name(&name)).map(String::as_str))),
+            ..Default::default()
+        },
         ..Default::default()
     });
     let seen = remembered(spec);
     let met = Arc::new(Mutex::new(None::<String>));
-    let handler = Client { expected: seen.clone(), met: Arc::clone(&met) };
+    let met_kind = Arc::new(Mutex::new(None::<String>));
+    let handler = Client { expected: seen.clone(), met: Arc::clone(&met), kind: Arc::clone(&met_kind) };
     // Through a bastion, the way in is a channel on that bastion's own
     // connection rather than a socket this machine opened. It is made first,
     // and on its own, so that "the bastion would not have us" is said in the
@@ -868,6 +935,12 @@ async fn connect(spec: &Spec) -> Result<Open> {
     {
         remember_host(&name, &fp)?;
     }
+    // ...and the kind of key it is, to be asked for first from now on
+    if let Some(kind) = met_kind.lock().ok().and_then(|k| k.clone())
+        && known_hosts().get(&kind_name(&name)) != Some(&kind)
+    {
+        remember_host(&kind_name(&name), &kind)?;
+    }
     // It answered with the key we know, so any question about it is over
     key_settled(&name);
 
@@ -886,8 +959,9 @@ async fn connect(spec: &Spec) -> Result<Open> {
             .success(),
         (Some(path), _) => {
             let phrase = secret(&spec.passphrase_key);
-            let key = russh::keys::load_secret_key(path, phrase.as_deref())
-                .map_err(|e| anyhow!(crate::i18n::tp("err.ssh.key", &[("e", &e.to_string())])))?;
+            let key = key_text(path)
+                .and_then(|text| russh::keys::decode_secret_key(&text, phrase.as_deref()).map_err(|e| e.to_string()))
+                .map_err(|e| anyhow!(crate::i18n::tp("err.ssh.key", &[("e", &e)])))?;
             let alg = handle.best_supported_rsa_hash().await.ok().flatten().flatten();
             handle
                 .authenticate_publickey(
@@ -1262,6 +1336,8 @@ async fn write_whole(sftp: &russh_sftp::client::SftpSession, to: &str, bytes: &[
 struct Client {
     expected: Option<String>,
     met: Arc<Mutex<Option<String>>>,
+    /// The kind of key that answered (`ssh-ed25519`, `ssh-rsa`, ...)
+    kind: Arc<Mutex<Option<String>>>,
 }
 
 impl russh::client::Handler for Client {
@@ -1271,16 +1347,19 @@ impl russh::client::Handler for Client {
         &mut self,
         key: &russh::keys::PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
-        let fp = match key {
+        let (fp, kind) = match key {
             russh::keys::PublicKeyOrCertificate::PublicKey { key, .. } => {
-                key.fingerprint(Default::default()).to_string()
+                (key.fingerprint(Default::default()).to_string(), key.algorithm().as_str().to_string())
             }
             russh::keys::PublicKeyOrCertificate::Certificate(c) => {
-                c.public_key().fingerprint(Default::default()).to_string()
+                (c.public_key().fingerprint(Default::default()).to_string(), c.public_key().algorithm().as_str().to_string())
             }
         };
         if let Ok(mut m) = self.met.lock() {
             *m = Some(fp.clone());
+        }
+        if let Ok(mut k) = self.kind.lock() {
+            *k = Some(kind);
         }
         Ok(match &self.expected {
             None => false,
@@ -2255,6 +2334,54 @@ mod tests {
             let back = format!("echo:{}\r\n", String::from_utf8_lossy(data));
             session.data(channel, russh::keys::ssh_encoding::bytes::Bytes::from(back.into_bytes()))?;
             Ok(())
+        }
+    }
+
+    /// The kind of key a server is known by is asked for first, so a server
+    /// given a newer kind of key beside it still shows the one it is known by
+    #[test]
+    fn the_kind_of_key_a_server_is_known_by_is_asked_for_first() {
+        use russh::keys::Algorithm;
+        let all = russh::Preferred::DEFAULT.key.to_vec();
+        assert_eq!(key_kinds(None), all);
+        assert_eq!(key_kinds(Some("something-new")), all, "a kind this app does not take changed the order");
+        let rsa = key_kinds(Some("ssh-rsa"));
+        assert!(matches!(rsa[0], Algorithm::Rsa { .. }), "{rsa:?}");
+        assert_eq!(rsa.len(), all.len());
+        assert!(all.iter().all(|kind| rsa.contains(kind)), "a kind was lost: {rsa:?}");
+        let last_rsa = rsa.iter().rposition(|k| matches!(k, Algorithm::Rsa { .. })).unwrap();
+        assert!(rsa[..=last_rsa].iter().all(|k| matches!(k, Algorithm::Rsa { .. })), "the ways an RSA key signs are not together: {rsa:?}");
+        let ecdsa = key_kinds(Some("ecdsa-sha2-nistp384"));
+        assert_eq!(ecdsa[0].as_str(), "ecdsa-sha2-nistp384");
+        assert_eq!(key_kinds(Some("ssh-ed25519"))[0], Algorithm::Ed25519);
+    }
+
+    /// A key file is read only when it is a plain file of a key's size: a
+    /// path that is something else is said to be, and nothing waits on it
+    #[test]
+    fn a_key_file_that_is_no_file_is_refused_without_waiting() {
+        let dir = crate::test_temp("ssh-key-file");
+        std::fs::create_dir_all(&dir).unwrap();
+        let key = dir.join("id_test");
+        std::fs::write(&key, "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----\n").unwrap();
+        assert!(key_text(&key.to_string_lossy()).unwrap().starts_with("-----BEGIN"));
+        assert!(key_text(&dir.to_string_lossy()).is_err(), "a folder was read as a key");
+        assert!(key_text(&dir.join("not-there").to_string_lossy()).is_err());
+        let big = dir.join("big");
+        std::fs::write(&big, vec![b'a'; KEY_FILE_MOST as usize + 1]).unwrap();
+        assert!(key_text(&big.to_string_lossy()).unwrap_err().contains("too large"));
+        #[cfg(unix)]
+        {
+            let pipe = dir.join("pipe");
+            let name = std::ffi::CString::new(pipe.to_string_lossy().as_bytes()).unwrap();
+            // SAFETY: a path that ends in NUL, and a mode
+            assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+            let started = std::time::Instant::now();
+            assert!(key_text(&pipe.to_string_lossy()).unwrap_err().contains("not a file"));
+            assert!(started.elapsed() < std::time::Duration::from_secs(2), "a pipe nobody writes to was waited on");
+            let started = std::time::Instant::now();
+            assert!(key_text("/dev/zero").unwrap_err().contains("not a file"));
+            assert!(started.elapsed() < std::time::Duration::from_secs(2));
         }
     }
 

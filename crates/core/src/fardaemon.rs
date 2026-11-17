@@ -616,7 +616,117 @@ fn hello(core: &Core) -> Frame {
         rev: crate::build_rev().into(),
         jobs: core.jobs().iter().map(|j| j.name().to_string()).collect(),
         program: own_program(),
+        ends_at_logout: ends_at_logout(),
     }
+}
+
+// ── Outliving the login ───────────────────────────────────────────────────
+//
+// The resident process is started over a login (SSH), and is to go on after
+// that login is over. A session of its own (`setsid`) takes it out of the
+// login's terminal and its hangup, and on most machines that is all there is
+// to it. On a Linux machine with systemd, the login is also a *scope* that
+// every process started in it belongs to, session of its own or not:
+//
+//   - where the machine is set to end an account's programs at logout
+//     (`KillUserProcesses=yes`), everything in that scope is killed when the
+//     login ends -- the resident process, and every terminal it holds
+//   - where the account's own manager stays up without a login ("lingering",
+//     `loginctl enable-linger`), a process can be started in a scope of that
+//     manager's instead, out of the login's reach whatever the machine's
+//     setting. Only then: without lingering the manager itself goes at the
+//     last logout, and takes its scopes with it -- which would end a
+//     resident process that the plain way keeps
+//
+// So: started in a scope of the account's manager where the account lingers,
+// the plain way otherwise; and where the plain way will not outlive the
+// login, the app is told (`Frame::Hello`), with what makes it.
+
+/// What the machine's login manager is set to, as its settings files say:
+/// whether an account's programs are ended when it logs out. The last
+/// setting read is the one in force; none at all is taken for "no", which
+/// is what the systems this runs on are built to
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn kills_at_logout(settings: &[String]) -> bool {
+    settings
+        .iter()
+        .flat_map(|text| text.lines())
+        .filter_map(|line| line.trim().strip_prefix("KillUserProcesses"))
+        .filter_map(|rest| rest.trim_start().strip_prefix('='))
+        .next_back()
+        .is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "yes" | "true" | "1" | "on"))
+}
+
+/// Whether a process whose groups are `cgroup` (`/proc/self/cgroup`) is in
+/// the scope of a login
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn in_login_scope(cgroup: &str) -> bool {
+    cgroup.lines().any(|line| line.rsplit('/').next().is_some_and(|last| last.starts_with("session-") && last.ends_with(".scope")))
+}
+
+/// The login manager's settings files, in the order they are read: the
+/// main one, then the pieces dropped in beside it, by name -- a piece in
+/// `/etc` standing in for one of the same name the system shipped
+#[cfg(target_os = "linux")]
+fn login_settings() -> Vec<String> {
+    let mut pieces: std::collections::BTreeMap<std::ffi::OsString, PathBuf> = Default::default();
+    for dir in ["/usr/lib/systemd/logind.conf.d", "/run/systemd/logind.conf.d", "/etc/systemd/logind.conf.d"] {
+        for file in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            if file.path().extension().is_some_and(|e| e == "conf") {
+                pieces.insert(file.file_name(), file.path());
+            }
+        }
+    }
+    std::iter::once(PathBuf::from("/etc/systemd/logind.conf")).chain(pieces.into_values()).filter_map(|p| std::fs::read_to_string(p).ok()).collect()
+}
+
+/// Whether what this process holds ends when its account logs out: it is
+/// in a login's scope, on a machine that ends an account's programs then
+fn ends_at_logout() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        static ENDS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ENDS.get_or_init(|| {
+            let ends = std::fs::read_to_string("/proc/self/cgroup").is_ok_and(|c| in_login_scope(&c)) && kills_at_logout(&login_settings());
+            if ends {
+                log("this machine ends an account's programs at logout, and this process is in the login's scope: it will not outlive the login (loginctl enable-linger lets it)");
+            }
+            ends
+        })
+    }
+    #[cfg(not(target_os = "linux"))]
+    false
+}
+
+/// Where the account's own manager is reached, when it is up and stays up
+/// without a login: the folder its bus is in
+#[cfg(target_os = "linux")]
+fn lingering_manager() -> Option<PathBuf> {
+    use std::os::unix::fs::FileTypeExt as _;
+    // SAFETY: only reads this process's own user id, and the account's
+    // entry, which is copied before anything else could ask for one
+    let (uid, name) = unsafe {
+        let uid = libc::getuid();
+        let pw = libc::getpwuid(uid);
+        if pw.is_null() || (*pw).pw_name.is_null() {
+            return None;
+        }
+        (uid, std::ffi::CStr::from_ptr((*pw).pw_name).to_string_lossy().into_owned())
+    };
+    let runtime = PathBuf::from(format!("/run/user/{uid}"));
+    let bus = std::fs::metadata(runtime.join("bus")).is_ok_and(|m| m.file_type().is_socket());
+    (bus && Path::new("/var/lib/systemd/linger").join(name).exists()).then_some(runtime)
+}
+
+/// The command that starts `program` in a scope of the account's manager,
+/// reached in `runtime`. The manager is named outright: what a login's
+/// environment says of it may be somebody else's
+#[cfg(target_os = "linux")]
+fn in_own_scope(runtime: &Path, program: &Path, args: &[&str]) -> std::process::Command {
+    let mut cmd = std::process::Command::new("systemd-run");
+    cmd.args(["--user", "--scope", "--quiet", "--collect", "--"]).arg(program).args(args);
+    cmd.env("XDG_RUNTIME_DIR", runtime).env("DBUS_SESSION_BUS_ADDRESS", format!("unix:path={}", runtime.join("bus").display()));
+    cmd
 }
 
 // ── The resident process ──────────────────────────────────────────────────
@@ -1515,19 +1625,42 @@ fn start_daemon(run: &Path) -> Result<()> {
     }
     let log = std::fs::OpenOptions::new().create(true).append(true).mode(0o600).open(&log_file)?;
     let exe = std::env::current_exe()?;
-    let mut cmd = std::process::Command::new(&exe);
-    cmd.arg("daemon")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::from(log));
-    // SAFETY: setsid is async-signal-safe and touches nothing of the parent
-    unsafe {
-        cmd.pre_exec(|| {
-            libc::setsid();
-            Ok(())
-        });
+    let loose = |mut cmd: std::process::Command, log: std::fs::File| -> std::io::Result<std::process::Child> {
+        cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::from(log));
+        // SAFETY: setsid is async-signal-safe and touches nothing of the parent
+        unsafe {
+            cmd.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            });
+        }
+        cmd.spawn()
+    };
+    // Out of the login's reach, where that can be had (see "Outliving the
+    // login"). The command that does it becomes the resident process, so one
+    // that ends at once and badly is the command having failed -- the
+    // manager not answering after all -- and the plain way is taken
+    #[cfg(target_os = "linux")]
+    if let Some(runtime) = lingering_manager()
+        && let Ok(mut child) = loose(in_own_scope(&runtime, &exe, &["daemon"]), log.try_clone()?)
+    {
+        let until = Instant::now() + Duration::from_millis(700);
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) if !status.success() => {
+                    crate::fardaemon::log(&format!("could not be started in a scope of its own ({status}); started in the login's"));
+                    break;
+                }
+                Ok(Some(_)) => return Ok(()),
+                Ok(None) if Instant::now() >= until => return Ok(()),
+                Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+                Err(_) => return Ok(()),
+            }
+        }
     }
-    cmd.spawn().map(|_| ()).map_err(|e| anyhow!("could not start {}: {e}", exe.display()))
+    let mut cmd = std::process::Command::new(&exe);
+    cmd.arg("daemon");
+    loose(cmd, log).map(|_| ()).map_err(|e| anyhow!("could not start {}: {e}", exe.display()))
 }
 
 #[cfg(all(test, unix))]
@@ -2145,6 +2278,59 @@ mod tests {
         drop(pc);
         let _ = resident.join();
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// Whether what the resident process holds ends at logout is read from
+    /// the machine's own settings and from where the process stands; and a
+    /// process started in a scope of the account's manager is out of the
+    /// login's
+    #[test]
+    fn what_ends_at_logout_is_read_from_the_machine() {
+        let says = |texts: &[&str]| kills_at_logout(&texts.iter().map(|t| t.to_string()).collect::<Vec<_>>());
+        assert!(!says(&[]), "a machine that says nothing is taken to end them");
+        assert!(!says(&["[Login]\n#KillUserProcesses=yes\n"]), "a line that is commented out was read");
+        assert!(says(&["[Login]\nKillUserProcesses=yes\n"]));
+        assert!(says(&["[Login]\n KillUserProcesses = True \n"]));
+        assert!(!says(&["[Login]\nKillUserProcesses=yes\n", "[Login]\nKillUserProcesses=no\n"]), "the piece read last does not win");
+        assert!(says(&["[Login]\nKillUserProcesses=no\n", "[Login]\nKillUserProcesses=yes\n"]));
+        assert!(!says(&["[Login]\nKillUserProcessesNot=yes\n"]));
+
+        assert!(in_login_scope("0::/user.slice/user-1000.slice/session-42.scope\n"));
+        assert!(in_login_scope("12:pids:/user.slice/user-1000.slice/session-c3.scope\n1:name=systemd:/user.slice/user-1000.slice/session-c3.scope\n"));
+        assert!(!in_login_scope("0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-r0123.scope\n"));
+        assert!(!in_login_scope("0::/system.slice/shikisha.service\n"));
+        assert!(!in_login_scope("0::/init.scope\n"));
+
+        // Started in a scope of the account's manager, where one answers on
+        // this machine: it is in the manager's, not in the login's
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::fs::FileTypeExt as _;
+            // SAFETY: only reads this process's own user id
+            let runtime = PathBuf::from(format!("/run/user/{}", unsafe { libc::getuid() }));
+            let answers = std::fs::metadata(runtime.join("bus")).is_ok_and(|m| m.file_type().is_socket())
+                && std::process::Command::new("systemd-run").arg("--version").output().is_ok_and(|o| o.status.success());
+            if answers {
+                let mut child = in_own_scope(&runtime, Path::new("sleep"), &["20"])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                    .expect("the command that starts it in a scope could not be run");
+                let until = Instant::now() + Duration::from_secs(10);
+                let mut groups = String::new();
+                while Instant::now() < until {
+                    groups = std::fs::read_to_string(format!("/proc/{}/cgroup", child.id())).unwrap_or_default();
+                    if groups.contains(".service/") && groups.contains(".scope") {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                let _ = child.kill();
+                let _ = child.wait();
+                assert!(groups.contains("user@") && groups.contains(".scope"), "not in a scope of the account's manager: {groups}");
+                assert!(!in_login_scope(&groups), "still in the login's scope: {groups}");
+            }
+        }
     }
 
     /// The first line is typed once the shell is at its prompt: a start-up

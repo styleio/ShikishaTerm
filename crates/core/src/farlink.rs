@@ -60,6 +60,12 @@ pub enum Frame {
         /// build of the same version from its own
         #[serde(default, skip_serializing_if = "String::is_empty")]
         program: String,
+        /// The machine ends an account's programs when the account logs
+        /// out, and the resident process is not out of that reach: what it
+        /// holds ends when the line that started it does (`fardaemon`,
+        /// "outliving the login")
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        ends_at_logout: bool,
     },
     /// A `shikisha` command over there connected (`c` names the connection)
     Open { c: u64 },
@@ -107,6 +113,10 @@ impl Frame {
 
 /// How often this PC says it is still there
 const TICK: Duration = Duration::from_secs(15);
+/// How long the bridge may say nothing before it is asked whether it is
+/// still there, and how long it is given to answer
+const QUIET_IS_ASKED: Duration = Duration::from_secs(40);
+const ANSWER_WITHIN: Duration = Duration::from_secs(20);
 
 /// The folder the bridge lives in on its machine, below the account's home.
 /// Everything of it is here, so taking it off is one folder
@@ -261,6 +271,10 @@ pub struct Link {
     job_listeners: Mutex<HashMap<String, Sender<Value>>>,
     /// Its folder over there (`$HOME/.local/share/shikisha/bridge`)
     pub home: String,
+    /// It said that what it holds ends when its account logs out
+    pub ends_at_logout: AtomicBool,
+    /// When it last said anything at all
+    heard: Mutex<Instant>,
 }
 
 impl Link {
@@ -275,6 +289,21 @@ impl Link {
 
     pub fn is_up(&self) -> bool {
         self.up.load(Ordering::SeqCst)
+    }
+
+    /// Whether the bridge still answers: asked something it answers at
+    /// once, and heard from -- with anything at all -- within `within`.
+    ///
+    /// A line can stay up with nobody answering on it: the connection is
+    /// the server's own (SSH answers its keepalives), while the resident
+    /// process behind it is stopped, or stuck. Every tab on that machine
+    /// then showed a screen that no longer moved and took keys that went
+    /// nowhere, for as long as the app ran, where a line seen to be dead
+    /// is made again
+    fn answers(&self, within: Duration) -> bool {
+        let asked = Instant::now();
+        let _ = self.call("ping", Value::Null, within);
+        self.heard.lock().is_ok_and(|heard| *heard >= asked)
     }
 
     /// Ask the bridge to do something over there, and wait for its answer
@@ -318,9 +347,11 @@ impl Link {
     fn listen(self: &Arc<Self>, input: impl Read) {
         for line in BufReader::new(input).lines() {
             let Ok(line) = line else { break };
+            *self.heard.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
             let Ok(frame) = serde_json::from_str::<Frame>(&line) else { continue };
             match frame {
-                Frame::Hello { version, jobs, program, .. } => {
+                Frame::Hello { version, jobs, program, ends_at_logout, .. } => {
+                    self.ends_at_logout.store(ends_at_logout, Ordering::SeqCst);
                     // A resident process of another build of this version,
                     // still holding what it holds: it is used as it is, for
                     // the jobs it names, and said in the log
@@ -533,6 +564,17 @@ pub fn connect(at: &crate::elsewhere::Elsewhere) -> Result<Arc<Link>> {
     let socket = stream.try_clone().ok();
     let link = link_over(&at.machine_key(), &at.address(), Box::new(stream), input, socket, None, home)?;
     hear_missed(at, &link);
+    // Said once for each machine while the app runs: the AIs left running
+    // there will not outlive this line, and what makes them
+    if link.ends_at_logout.load(Ordering::SeqCst) {
+        static TOLD: Mutex<Vec<String>> = Mutex::new(Vec::new());
+        let mut told = TOLD.lock().unwrap_or_else(|e| e.into_inner());
+        if !told.contains(&at.machine_key()) {
+            told.push(at.machine_key());
+            crate::append_hook_log(&format!("bridge: {} ends an account's programs at logout; what is left running there will not outlive the line", at.address()));
+            crate::caps::tell(crate::i18n::tp("msg.bridge.ends_at_logout", &[("host", &at.address())]));
+        }
+    }
     Ok(link)
 }
 
@@ -561,6 +603,8 @@ pub(crate) fn link_over(
         jobs: Mutex::new(Vec::new()),
         job_listeners: Mutex::default(),
         home,
+        ends_at_logout: AtomicBool::new(false),
+        heard: Mutex::new(Instant::now()),
     });
     {
         let l = Arc::clone(&link);
@@ -571,10 +615,28 @@ pub(crate) fn link_over(
     // Said until the line goes down; the bridge exits once it stops hearing it
     {
         let l = Arc::clone(&link);
+        let l_address = address.to_string();
         std::thread::Builder::new().name(format!("bridge tick {address}")).spawn(move || {
+            let address = l_address;
             loop {
+                let slept = Instant::now();
                 std::thread::sleep(TICK);
                 if !l.is_up() || !l.say(&Frame::Tick) {
+                    break;
+                }
+                // Quiet for a while: asked whether it is still there. Not
+                // judged on a round this PC did not run through (it slept):
+                // the answer may be waiting to be read
+                let quiet = l.heard.lock().map(|h| h.elapsed()).unwrap_or_default();
+                if quiet < QUIET_IS_ASKED || slept.elapsed() > TICK * 2 {
+                    continue;
+                }
+                let asked = Instant::now();
+                if !l.answers(ANSWER_WITHIN) && asked.elapsed() < ANSWER_WITHIN * 2 && l.is_up() {
+                    crate::append_hook_log(&format!(
+                        "bridge: the line to {address} is up and nothing answers on it; let go of, to be made again"
+                    ));
+                    l.close();
                     break;
                 }
             }
@@ -1499,7 +1561,7 @@ mod tests {
     #[test]
     fn a_frame_is_one_line_of_json() {
         for f in [
-            Frame::Hello { version: "1".into(), rev: "x".into(), jobs: vec!["ops".into()], program: "shikisha-bridge-1-abc".into() },
+            Frame::Hello { version: "1".into(), rev: "x".into(), jobs: vec!["ops".into()], program: "shikisha-bridge-1-abc".into(), ends_at_logout: false },
             Frame::Open { c: 3 },
             Frame::Line { c: 3, l: "{\"id\":\"1\"}".into() },
             Frame::Close { c: 3 },
@@ -1554,6 +1616,8 @@ mod tests {
             jobs: Mutex::new(Vec::new()),
             job_listeners: Mutex::default(),
             home: String::new(),
+            ends_at_logout: AtomicBool::new(false),
+        heard: Mutex::new(Instant::now()),
         });
         let (mut reader, closed) = link.carry(1);
         let (_stays, line_ended) = link.carry(2);
@@ -1596,7 +1660,7 @@ mod tests {
         // Over there: answers operations the way the bridge does
         std::thread::spawn(move || {
             let mut out = there;
-            let _ = out.write_all(Frame::Hello { version: "t".into(), rev: "t".into(), jobs: Vec::new(), program: String::new() }.line().as_bytes());
+            let _ = out.write_all(Frame::Hello { version: "t".into(), rev: "t".into(), jobs: Vec::new(), program: String::new(), ends_at_logout: false }.line().as_bytes());
             for line in BufReader::new(far_in).lines() {
                 let Ok(line) = line else { break };
                 if let Ok(Frame::Op { id, op, p }) = serde_json::from_str::<Frame>(&line) {
@@ -1621,6 +1685,8 @@ mod tests {
             jobs: Mutex::new(Vec::new()),
             job_listeners: Mutex::default(),
             home: String::new(),
+            ends_at_logout: AtomicBool::new(false),
+        heard: Mutex::new(Instant::now()),
         });
         let l = Arc::clone(&link);
         std::thread::spawn(move || l.listen(input));
@@ -1631,5 +1697,47 @@ mod tests {
         assert!(link.is_up());
         assert_eq!(link.call("ping", Value::Null, Duration::from_secs(5)).unwrap()["version"], env!("CARGO_PKG_VERSION"));
         assert!(link.call("teleport", Value::Null, Duration::from_secs(5)).unwrap_err().contains("older version"));
+        // It answers: asked whether it is still there, it is
+        assert!(link.answers(Duration::from_secs(5)));
+    }
+
+    /// A line that is up with nobody answering on it is seen for what it is
+    #[test]
+    fn a_line_nothing_answers_on_is_not_taken_for_a_live_one() {
+        let (here, there) = crate::ssh::socket_pair().unwrap();
+        // Over there: names itself, and then takes everything and says nothing
+        let far_in = there.try_clone().unwrap();
+        std::thread::spawn(move || {
+            let mut out = there;
+            let _ = out.write_all(Frame::Hello { version: "t".into(), rev: "t".into(), jobs: Vec::new(), program: String::new(), ends_at_logout: false }.line().as_bytes());
+            for _ in BufReader::new(far_in).lines() {}
+        });
+        let input = here.try_clone().unwrap();
+        let link = Arc::new(Link {
+            out: Mutex::new(Box::new(here)),
+            socket: None,
+            closer: None,
+            waiting: Mutex::default(),
+            conns: Mutex::default(),
+            next: AtomicU64::new(0),
+            up: AtomicBool::new(false),
+            version: Mutex::new(None),
+            jobs: Mutex::new(Vec::new()),
+            job_listeners: Mutex::default(),
+            home: String::new(),
+            ends_at_logout: AtomicBool::new(false),
+            heard: Mutex::new(Instant::now()),
+        });
+        let l = Arc::clone(&link);
+        std::thread::spawn(move || l.listen(input));
+        let end = Instant::now() + Duration::from_secs(5);
+        while !link.is_up() && Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(link.is_up());
+        let asked = Instant::now();
+        assert!(!link.answers(Duration::from_millis(300)), "a line nothing answers on was taken for a live one");
+        assert!(asked.elapsed() < Duration::from_secs(3));
+        assert!(link.is_up(), "asking is not what lets go of it");
     }
 }
