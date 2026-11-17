@@ -179,6 +179,11 @@ once it reaches its first tagged release.
   checked.
 
 ### Fixed
+- **Approving this app's hooks in Codex no longer starts Codex's
+  plugins.** The approval is asked of a Codex started for a moment and
+  ended again. With plugins switched on, that Codex began fetching them
+  as it started and was ended in the middle. It is now started with its
+  plugins off.
 - **A side chat in Codex no longer marks the tab as finished.** A side
   thread begun inside a conversation (Codex's `/side`) reports through
   the same hooks as the conversation it is in. Its start was taken for

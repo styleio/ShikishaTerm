@@ -994,7 +994,16 @@ impl AppServer {
     fn start(codex_home: &Path) -> Result<Self> {
         use std::process::{Command, Stdio};
         let path = crate::tab::resolve_command("codex").unwrap_or_else(|| PathBuf::from("codex"));
-        let argv = crate::tab::launch_argv(&[path.to_string_lossy().into_owned(), "app-server".into()]);
+        // Without its plugins: this one is asked a single thing and ended a
+        // moment later, and a Codex with plugins switched on begins fetching
+        // them as it starts -- work that was cut off half done each time, or
+        // left running after the one that started it was gone
+        let argv = crate::tab::launch_argv(&[
+            path.to_string_lossy().into_owned(),
+            "-c".into(),
+            "features.plugins=false".into(),
+            "app-server".into(),
+        ]);
         let mut cmd = Command::new(&argv[0]);
         cmd.args(&argv[1..])
             .env("CODEX_HOME", codex_home)
