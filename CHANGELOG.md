@@ -186,6 +186,11 @@ once it reaches its first tagged release.
   file managers) is now sent the arrows, Home and End in that mode's
   spelling. Sent the ordinary one, some of them took an arrow for Escape
   and a letter.
+- **A program that asks for the terminal's colours is answered.** An AI's
+  CLI set to follow the terminal's theme asks its terminal for the text
+  and background colours as it starts. The question went unanswered, so
+  the CLI waited and then guessed, and on a light theme drew itself for a
+  dark one. The tab now answers with the colours of the theme in use.
 - **Closing a tab on a Mac or Linux hangs up before it kills.** The
   programs in a closed tab were killed outright, so a shell lost the
   history of that session and an AI's CLI had no chance to put its

@@ -77,6 +77,45 @@ pub struct Scheme {
     pub bright_white: Option<String>,
 }
 
+/// The colours a terminal here is drawn in, as a program in it is told
+/// when it asks: the text's, the background's and the caret's, each as red,
+/// green and blue.
+///
+/// Read from the settings, and kept for a moment: a program asks as it
+/// starts, several at once when a desk opens, and the answer changes only
+/// when somebody changes the theme
+pub fn terminal_colours() -> [(u8, u8, u8); 3] {
+    type Kept = Option<(std::time::Instant, [(u8, u8, u8); 3])>;
+    static KEPT: std::sync::Mutex<Kept> = std::sync::Mutex::new(None);
+    let mut kept = KEPT.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((at, colours)) = *kept
+        && at.elapsed() < std::time::Duration::from_secs(2)
+    {
+        return colours;
+    }
+    let scheme = crate::config::load().map(|c| c.appearance).unwrap_or_default().scheme();
+    let colours = colours_of(&scheme);
+    *kept = Some((std::time::Instant::now(), colours));
+    colours
+}
+
+/// A scheme's text, background and caret as red, green and blue
+fn colours_of(scheme: &Scheme) -> [(u8, u8, u8); 3] {
+    let of = |said: String, fallback: &str| rgb_of(&said).or_else(|| rgb_of(fallback)).unwrap_or((0, 0, 0));
+    [of(scheme.fg(), DEFAULT_FG), of(scheme.bg(), DEFAULT_BG), of(scheme.caret(), DEFAULT_FG)]
+}
+
+/// A colour written `#rgb` or `#rrggbb` (an alpha after it is left out)
+fn rgb_of(hex: &str) -> Option<(u8, u8, u8)> {
+    let h = hex.trim().strip_prefix('#')?;
+    let part = |at: usize, len: usize| u8::from_str_radix(h.get(at..at + len)?, 16).ok();
+    match h.len() {
+        3 | 4 => Some((part(0, 1)? * 17, part(1, 1)? * 17, part(2, 1)? * 17)),
+        6 | 8 => Some((part(0, 2)?, part(2, 2)?, part(4, 2)?)),
+        _ => None,
+    }
+}
+
 /// The app's own colours, and the scheme every other one falls back to.
 ///
 /// Muted on purpose and leaning toward the logo's blue: a row of pure
@@ -149,6 +188,11 @@ impl Scheme {
             .filter(|s| is_colour(s))
             .unwrap_or(DEFAULT_FG)
             .to_string()
+    }
+
+    /// The colour the caret is drawn in: the scheme's own, or else the text's
+    fn caret(&self) -> String {
+        self.cursor.as_deref().map(str::trim).filter(|s| is_colour(s)).map(str::to_string).unwrap_or_else(|| self.fg())
     }
 
     /// Everything the page needs, as one block of CSS variables.
@@ -511,6 +555,23 @@ pub fn resolve(setting: Option<&serde_json::Value>) -> Scheme {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A scheme's colours are read as red, green and blue however they are
+    /// written, and one that leaves a colour out answers with ours
+    #[test]
+    fn a_schemes_colours_are_read_however_they_are_written() {
+        assert_eq!(rgb_of("#0d1117"), Some((0x0d, 0x11, 0x17)));
+        assert_eq!(rgb_of(" #FFF "), Some((255, 255, 255)));
+        assert_eq!(rgb_of("#0d1117cc"), Some((0x0d, 0x11, 0x17)));
+        assert_eq!(rgb_of("#abcd"), Some((0xaa, 0xbb, 0xcc)));
+        assert_eq!(rgb_of("red"), None);
+        assert_eq!(rgb_of("#12345"), None);
+        let light = Scheme { background: Some("#ffffff".into()), foreground: Some("#1b1f24".into()), ..Default::default() };
+        assert_eq!(colours_of(&light), [(0x1b, 0x1f, 0x24), (255, 255, 255), (0x1b, 0x1f, 0x24)], "the caret is the text's colour when the scheme names none");
+        let ours = colours_of(&Scheme::default());
+        assert_eq!(ours[0], rgb_of(DEFAULT_FG).unwrap());
+        assert_eq!(ours[1], rgb_of(DEFAULT_BG).unwrap());
+    }
 
     /// Every colour token the app writes out has its role written down in
     /// the style guide, in both languages. A token nobody can look up is a

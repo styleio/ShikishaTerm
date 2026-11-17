@@ -693,6 +693,37 @@ fn note_of(params: &[&[u8]]) -> Option<(String, String)> {
     }
 }
 
+/// The answer to a program asking what colours its terminal is drawn in
+/// (`OSC 10 ; ?` the text, `11` the background, `12` the caret), or
+/// `None` when that is not what was asked.
+///
+/// An AI's CLI set to follow the terminal's theme asks this as it starts
+/// and picks its own colours by the answer -- dark words for a light
+/// screen, the shade behind a message. Unanswered, it waits out its
+/// patience and then guesses: a light screen drawn for a dark one, or the
+/// shading left out. One sequence may ask for several in a row
+/// (`OSC 10 ; ? ; ?` is the text and then the background), and each is
+/// answered as its own
+fn colours_asked(params: &[&[u8]], colours: &[(u8, u8, u8); 3]) -> Option<Vec<u8>> {
+    let first: usize = std::str::from_utf8(params.first()?).ok()?.parse().ok()?;
+    if !(10..=12).contains(&first) || params.len() < 2 {
+        return None;
+    }
+    let mut out = Vec::new();
+    for (n, asked) in params[1..].iter().enumerate() {
+        let which = first + n;
+        // Setting a colour, or one past the three there are: not answered
+        if *asked != b"?" || which > 12 {
+            continue;
+        }
+        let (r, g, b) = colours[which - 10];
+        // Sixteen bits a part, as the answer has always been written: the
+        // eight there are, twice
+        out.extend_from_slice(format!("\x1b]{which};rgb:{r:02x}{r:02x}/{g:02x}{g:02x}/{b:02x}{b:02x}\x1b\\").as_bytes());
+    }
+    (!out.is_empty()).then_some(out)
+}
+
 impl QueryResponder {
     /// Keep the window title where state detection can read it, bounded.
     fn store_title(&self, title: &[u8]) {
@@ -753,6 +784,14 @@ impl vt100::Callbacks for QueryResponder {
         // being cleared, arrives here in pieces instead
         if let Some(title) = title_of(params) {
             self.store_title(title.as_bytes());
+            return;
+        }
+        // Asked what colours it is drawn in: answered, like the other
+        // questions a program puts to its terminal (see `unhandled_csi`)
+        if matches!(params.first(), Some(&(b"10" | b"11" | b"12"))) {
+            if let Some(answer) = colours_asked(params, &crate::theme::terminal_colours()) {
+                self.reply(&answer);
+            }
             return;
         }
         // The machine a shell names in its OSC 7 address -- the one way a
@@ -2202,6 +2241,28 @@ mod tests {
             answers, "\x1b[?1u\x1b[?1u",
             "it says it will do even what it cannot: {answers:?}"
         );
+    }
+
+    /// A program asking what colours its terminal is drawn in is told, in
+    /// the spelling the answer has always had -- and only when it asks
+    #[test]
+    fn a_program_asking_for_the_terminals_colours_is_answered() {
+        let colours = [(0xe6, 0xed, 0xf3), (0x0d, 0x11, 0x17), (0xff, 0x00, 0x80)];
+        let asked = |params: &[&[u8]]| super::colours_asked(params, &colours).map(|b| String::from_utf8(b).unwrap());
+        assert_eq!(asked(&[b"10", b"?"]).as_deref(), Some("\x1b]10;rgb:e6e6/eded/f3f3\x1b\\"));
+        assert_eq!(asked(&[b"11", b"?"]).as_deref(), Some("\x1b]11;rgb:0d0d/1111/1717\x1b\\"));
+        assert_eq!(asked(&[b"12", b"?"]).as_deref(), Some("\x1b]12;rgb:ffff/0000/8080\x1b\\"));
+        // Several asked for in one go: each answered as its own
+        assert_eq!(
+            asked(&[b"10", b"?", b"?"]).as_deref(),
+            Some("\x1b]10;rgb:e6e6/eded/f3f3\x1b\\\x1b]11;rgb:0d0d/1111/1717\x1b\\")
+        );
+        // Setting one is not asking, and nothing past the caret is ours
+        assert_eq!(asked(&[b"11", b"#000000"]), None);
+        assert_eq!(asked(&[b"12", b"?", b"?"]).as_deref(), Some("\x1b]12;rgb:ffff/0000/8080\x1b\\"));
+        assert_eq!(asked(&[b"10"]), None);
+        assert_eq!(asked(&[b"13", b"?"]), None);
+        assert_eq!(asked(&[b"9", b"?"]), None);
     }
 
     /// The whole path, in the bytes a CLI really sends: parser -> callback ->
