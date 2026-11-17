@@ -186,6 +186,11 @@ once it reaches its first tagged release.
   file managers) is now sent the arrows, Home and End in that mode's
   spelling. Sent the ordinary one, some of them took an arrow for Escape
   and a letter.
+- **Closing a tab on a Mac or Linux hangs up before it kills.** The
+  programs in a closed tab were killed outright, so a shell lost the
+  history of that session and an AI's CLI had no chance to put its
+  session away. They are now sent the hangup a closing terminal sends,
+  given up to 0.3 seconds, and only what is still running then is killed.
 - **DevTools that stop reading are let go.** What a page said to its
   DevTools was kept in memory until DevTools read it. With DevTools left
   open in a tab that had gone to sleep, a busy page could fill memory

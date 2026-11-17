@@ -28,6 +28,13 @@ use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
 // those -- and it is the same limit the Windows version falls back to when a
 // job cannot be made.
 
+/// How long a tab's programs are given to go on a hangup before what is
+/// left of them is killed. Waited out on the thread that closes the tab,
+/// and only while something is still there: a shell is gone in a few
+/// milliseconds
+#[cfg(unix)]
+const HANGUP_GRACE: std::time::Duration = std::time::Duration::from_millis(300);
+
 #[cfg(unix)]
 pub struct Job {
     /// The group everything this tab started belongs to. `None` until the
@@ -44,12 +51,30 @@ impl Job {
     }
 
     /// Stop members even while their terminal is kept to report its exit.
+    ///
+    /// Asked first, killed second. What a terminal going away has always
+    /// meant to the programs in it is a hangup, and they are written for
+    /// it: a shell writes its history, an editor keeps what was typed, an
+    /// AI's CLI puts its session away. Killed outright, none of them gets
+    /// to. So the group is hung up on and given a moment, and only what is
+    /// still there after it -- a program that ignores the hangup, one that
+    /// is stuck -- is killed
     pub fn terminate(&self) {
-        if let Some(g) = self.group.lock().unwrap_or_else(|e| e.into_inner()).take() {
-            // SAFETY: a group id and signal. Take it once so a later Drop
-            // cannot signal a group that has reused the old process id.
-            unsafe { libc::killpg(g, libc::SIGKILL) };
+        // Taken once, so a later Drop cannot signal a group that has
+        // reused the old process id
+        let Some(g) = self.group.lock().unwrap_or_else(|e| e.into_inner()).take() else { return };
+        // SAFETY: a group id and a signal, here and below. The second wakes
+        // a stopped program (Ctrl+Z) so that it hears the first
+        unsafe {
+            libc::killpg(g, libc::SIGHUP);
+            libc::killpg(g, libc::SIGCONT);
         }
+        let until = std::time::Instant::now() + HANGUP_GRACE;
+        // Nobody left in the group answers "no such process"
+        while unsafe { libc::killpg(g, 0) } == 0 && std::time::Instant::now() < until {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        unsafe { libc::killpg(g, libc::SIGKILL) };
     }
 
     /// How many processes the group holds right now. A group nothing has
@@ -517,6 +542,49 @@ mod unix_tests {
     /// The count the BACKGROUND state is built on, checked against a real
     /// group holding real processes: a shell, then the shell and the child it
     /// keeps, then nothing once the group is ended
+    /// A tab that closes hangs up on its programs before it kills them:
+    /// one that tidies up on a hangup gets to, and one that ignores the
+    /// hangup is ended all the same
+    #[test]
+    fn a_closing_tab_hangs_up_first_and_kills_what_stays() {
+        let dir = crate::test_temp("job-hangup");
+        std::fs::create_dir_all(&dir).unwrap();
+        let (said, ready) = (dir.join("said"), dir.join("ready"));
+        let _ = std::fs::remove_file(&said);
+        let _ = std::fs::remove_file(&ready);
+        let wait_for = |what: &str, done: &dyn Fn() -> bool| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while !done() {
+                assert!(std::time::Instant::now() < deadline, "{what}");
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        };
+
+        // Tidies up when hung up on
+        let job = Job::new().expect("a group cannot be made");
+        let line = format!("trap 'echo bye > \"{}\"; exit 0' HUP; : > \"{}\"; while :; do sleep 0.05; done", said.display(), ready.display());
+        let mut polite = alone("sh", &["-c", &line]);
+        assert!(job.take(polite.id()));
+        wait_for("the program never started", &|| ready.exists());
+        job.terminate();
+        let _ = polite.wait();
+        assert_eq!(std::fs::read_to_string(&said).unwrap_or_default().trim(), "bye", "killed before it could act on the hangup");
+
+        // Ignores the hangup: ended anyway, and not waited on for long
+        let _ = std::fs::remove_file(&ready);
+        let job = Job::new().expect("a group cannot be made");
+        let line = format!("trap '' HUP; : > \"{}\"; while :; do sleep 0.05; done", ready.display());
+        let mut deaf = alone("sh", &["-c", &line]);
+        assert!(job.take(deaf.id()));
+        wait_for("the program never started", &|| ready.exists());
+        let started = std::time::Instant::now();
+        job.terminate();
+        assert!(started.elapsed() < std::time::Duration::from_secs(2), "closing a tab waited {:?} on a program that will not go", started.elapsed());
+        let ended = deaf.wait().expect("it cannot be waited for");
+        assert!(!ended.success(), "a program that ignores the hangup outlived its tab");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn the_group_counts_what_is_actually_alive_in_it() {
         let job = Job::new().expect("a group cannot be made");
