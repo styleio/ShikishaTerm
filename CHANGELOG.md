@@ -179,6 +179,12 @@ once it reaches its first tagged release.
   checked.
 
 ### Fixed
+- **A side chat in Codex no longer marks the tab as finished.** A side
+  thread begun inside a conversation (Codex's `/side`) reports through
+  the same hooks as the conversation it is in. Its start was taken for
+  the tab moving to another conversation, and its end for the tab's turn
+  ending while the main turn was still running. What a side thread
+  reports is now left out.
 - **Looking at the git column no longer fills the repository with loose
   objects.** To tell whether a branch has already gone into its base
   (squash merges included), the app asks git what merging it would give.

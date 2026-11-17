@@ -1309,6 +1309,22 @@ pub fn running_of(v: &serde_json::Value) -> Option<Running> {
     Some(out)
 }
 
+/// The conversations that are a side thread of another, begun inside it
+/// and not instead of it. A CLI says so as one begins: `source` is `fork`,
+/// and it keeps no record of the thread (`transcript_path` is there and
+/// empty) -- a fork that is kept is a conversation of its own, which the tab
+/// has gone over to.
+/// What such a thread reports is not the tab's: its start is not the tab
+/// taking up another conversation, and its end is not the tab's turn ending
+static SIDE_THREADS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+/// How many side threads are remembered
+const SIDE_THREADS_MOST: usize = 256;
+
+/// Whether the conversation `id` is a side thread heard of before
+fn is_side_thread(id: &str) -> bool {
+    SIDE_THREADS.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|s| s == id)
+}
+
 /// `kind` is what the hook entry asked for: `session`, or `state:<STATE>`.
 pub fn report_of(kind: &str, v: &serde_json::Value) -> Report {
     // The same fact goes by several names across the CLIs that report it, and a
@@ -1319,6 +1335,27 @@ pub fn report_of(kind: &str, v: &serde_json::Value) -> Report {
         .find_map(|k| v.get(*k).and_then(|x| x.as_str()))
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string());
+    // A side thread of the tab's conversation, begun or carrying on: none
+    // of it is the tab's to act on. Taken for the tab's, a side question
+    // asked while the main turn ran put the tab down as finished when the
+    // side answer came, and the conversation the tab would be taken up
+    // again in was the side one
+    if let Some(id) = id.as_deref() {
+        let kept_nowhere = v.get("transcript_path").is_some_and(serde_json::Value::is_null);
+        if kind == "session" && kept_nowhere && v.get("source").and_then(|s| s.as_str()) == Some("fork") {
+            let mut side = SIDE_THREADS.lock().unwrap_or_else(|e| e.into_inner());
+            if !side.iter().any(|s| s == id) {
+                if side.len() >= SIDE_THREADS_MOST {
+                    side.remove(0);
+                }
+                side.push(id.to_string());
+            }
+            return Report::default();
+        }
+        if is_side_thread(id) {
+            return Report::default();
+        }
+    }
     if let Some(way) = kind.strip_prefix("helper:") {
         let helper = Helper::of(way).zip(helper_id(v)).map(|(h, id)| (id, h == Helper::Up));
         return Report { helper, ..Default::default() };
@@ -2804,6 +2841,32 @@ mod tests {
         assert!(!is_a_hooks_event(&serde_json::json!({"session_id": "s"})));
         assert!(!is_a_hooks_event(&serde_json::json!(["hook_event_name"])));
         assert!(!is_a_hooks_event(&serde_json::json!({"hook_event_name": 3})));
+    }
+
+    /// A side thread begun inside a conversation is not the tab's
+    /// conversation, and what it reports is not the tab's state
+    #[test]
+    fn a_side_thread_is_not_the_tabs_conversation() {
+        let main = serde_json::json!({"session_id": "main-thread-1", "source": "startup"});
+        assert_eq!(report_of("session", &main).id.as_deref(), Some("main-thread-1"));
+        // The side thread begins: not taken for the tab's conversation
+        let side = serde_json::json!({"session_id": "side-thread-1", "source": "fork", "transcript_path": null});
+        assert_eq!(report_of("session", &side), Report::default(), "a side thread was taken for the tab's conversation");
+        // A fork that is kept is a conversation of its own: the tab's, now
+        let kept = serde_json::json!({"session_id": "kept-fork-1", "source": "fork", "transcript_path": "/home/ada/.codex/sessions/x.jsonl"});
+        assert_eq!(report_of("session", &kept).id.as_deref(), Some("kept-fork-1"));
+        let unsaid = serde_json::json!({"session_id": "kept-fork-2", "source": "fork"});
+        assert_eq!(report_of("session", &unsaid).id.as_deref(), Some("kept-fork-2"));
+        // ...and its turn ending is not the tab's turn ending
+        let ended = serde_json::json!({"session_id": "side-thread-1", "hook_event_name": "Stop"});
+        assert_eq!(report_of("state:DONE", &ended), Report::default(), "a side thread's end put the tab down as finished");
+        assert_eq!(report_of("state:QUESTION", &ended), Report::default());
+        // The main thread goes on being heard
+        let main_ended = serde_json::json!({"session_id": "main-thread-1", "hook_event_name": "Stop"});
+        assert_eq!(report_of("state:DONE", &main_ended).state.as_deref(), Some("DONE"));
+        // A conversation taken up again under an id of its own is the tab's
+        let resumed = serde_json::json!({"session_id": "main-thread-2", "source": "resume"});
+        assert_eq!(report_of("session", &resumed).id.as_deref(), Some("main-thread-2"));
     }
 
     /// A conversation begun afresh has nothing beside it; one taken up again
