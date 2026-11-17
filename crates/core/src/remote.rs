@@ -601,9 +601,75 @@ type FrameClients = Arc<Mutex<Vec<FrameClient>>>;
 /// let in: taking one device's key away has to find the pictures that device
 /// is already being sent, and nothing else about a sender says whose it is
 struct FrameClient {
-    tx: Sender<Vec<u8>>,
+    next: Arc<NextFrame>,
     session: String,
 }
+
+/// The picture a viewer is sent next: only ever the newest.
+///
+/// Each frame is the whole picture, so one not yet sent is worth nothing
+/// once a newer one exists. Kept as a queue, a phone on a line slower than
+/// the pictures are made was owed every frame since it fell behind -- held
+/// in memory without end, and shown, when the line recovered, as a film of
+/// what the page had looked like minutes ago
+#[derive(Default)]
+struct NextFrame {
+    frame: Mutex<Option<Vec<u8>>>,
+    there: std::sync::Condvar,
+    /// The line is gone: nothing more is kept for it
+    gone: std::sync::atomic::AtomicBool,
+}
+
+impl NextFrame {
+    /// The newest picture, in place of whatever was waiting. False when
+    /// the line is gone
+    fn put(&self, jpeg: Vec<u8>) -> bool {
+        if self.gone.load(Ordering::SeqCst) {
+            return false;
+        }
+        *self.frame.lock().unwrap_or_else(|e| e.into_inner()) = Some(jpeg);
+        self.there.notify_one();
+        true
+    }
+
+    /// Wait for a picture. `None` once the line is let go of
+    fn take(&self) -> Option<Vec<u8>> {
+        let mut frame = self.frame.lock().unwrap_or_else(|e| e.into_inner());
+        loop {
+            if self.gone.load(Ordering::SeqCst) {
+                return None;
+            }
+            if let Some(jpeg) = frame.take() {
+                return Some(jpeg);
+            }
+            frame = self.there.wait(frame).unwrap_or_else(|e| e.into_inner());
+        }
+    }
+
+    /// Let the line go: whoever waits on it stops waiting
+    fn end(&self) {
+        self.gone.store(true, Ordering::SeqCst);
+        // Under the lock, so a waiter between its check and its wait is not
+        // missed
+        let _held = self.frame.lock().unwrap_or_else(|e| e.into_inner());
+        self.there.notify_all();
+    }
+}
+
+impl Drop for FrameClient {
+    /// Taken off the list -- its session cut, the board stopped -- its
+    /// writer is told, so the socket is closed and not left waiting
+    fn drop(&mut self) {
+        self.next.end();
+    }
+}
+
+/// How many state messages a viewer may be behind before its line is let
+/// go. The pace already backs off when a line falls behind (`max_pending`),
+/// so one this far behind is not slow, it is stopped: a phone gone into a
+/// pocket with the page open. What waits for it would be kept without end.
+/// Its page takes the whole state afresh when it connects again
+const STATE_BEHIND_MOST: usize = 300;
 /// Viewers watching the screen as video rather than as a run of JPEGs.
 ///
 /// Kept beside the JPEG viewers rather than replacing them: a browser that
@@ -1858,7 +1924,7 @@ impl RemoteUi {
         {
             let mut clients = self.frame_clients.lock().unwrap();
             // A line whose session has ended since it opened gets nothing more
-            clients.retain(|c| self.gate.granted(&c.session) && c.tx.send(jpeg.clone()).is_ok());
+            clients.retain(|c| self.gate.granted(&c.session) && c.next.put(jpeg.clone()));
         }
         // And to whoever is watching the same screen as video. The picture
         // arriving here at all is what says the page drew something, which is
@@ -2013,6 +2079,11 @@ impl RemoteUi {
             }
             if panes_only && !c.panes {
                 return true;
+            }
+            // Too far behind to be merely slow: let go, to come back afresh
+            if c.pending.load(Ordering::SeqCst) >= STATE_BEHIND_MOST {
+                crate::append_hook_log(&format!("a viewer {STATE_BEHIND_MOST} state messages behind was let go; its page connects again"));
+                return false;
             }
             // Counted before the send, so the writer thread -- which may drain
             // it before this line returns -- can only ever take the count back
@@ -3398,17 +3469,19 @@ fn handle(
                     .map_err(Into::into);
             }
             let stream = crate::ws::upgrade(req, &key);
-            let (ftx, frx) = channel::<Vec<u8>>();
-            frame_clients.lock().unwrap().push(FrameClient { tx: ftx, session: session.clone() });
+            let next: Arc<NextFrame> = Default::default();
+            frame_clients.lock().unwrap().push(FrameClient { next: Arc::clone(&next), session: session.clone() });
             // New viewer. Tell the main loop "emit one frame of the current screen"
             keyframe_wanted.store(true, Ordering::SeqCst);
             std::thread::spawn(move || {
                 let mut w = crate::ws::WsWriter::new(stream);
-                while let Ok(jpeg) = frx.recv() {
+                while let Some(jpeg) = next.take() {
                     if w.send_binary(&jpeg).is_err() {
                         break;
                     }
                 }
+                // Gone from this end too, so no more pictures are kept for it
+                next.end();
                 let _ = w.send_close();
             });
         }
@@ -4067,6 +4140,37 @@ fn proxy_settings(
 
 #[cfg(test)]
 mod tests {
+    /// A viewer of the picture is owed the newest frame and no other: one
+    /// that falls behind is not kept a film of what it missed
+    #[test]
+    fn a_viewer_behind_is_sent_only_the_newest_picture() {
+        use super::*;
+        let next: Arc<NextFrame> = Default::default();
+        // Three made while nothing was taken: the last is what is there
+        for n in 1u8..=3 {
+            assert!(next.put(vec![n; 4]));
+        }
+        assert_eq!(next.take(), Some(vec![3; 4]));
+        // Nothing waiting: the taker waits, and is woken by the next one
+        let taker = {
+            let next = Arc::clone(&next);
+            std::thread::spawn(move || next.take())
+        };
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(next.put(vec![9]));
+        assert_eq!(taker.join().unwrap(), Some(vec![9]));
+        // Let go of: whoever waits stops, and nothing more is kept
+        let taker = {
+            let next = Arc::clone(&next);
+            std::thread::spawn(move || next.take())
+        };
+        std::thread::sleep(Duration::from_millis(50));
+        drop(FrameClient { next: Arc::clone(&next), session: String::new() });
+        assert_eq!(taker.join().unwrap(), None, "a writer went on waiting for a line that was let go");
+        assert!(!next.put(vec![1]), "a picture was kept for a line that is gone");
+        assert!(next.frame.lock().unwrap().is_none());
+    }
+
     #[test]
     fn cookies_do_not_authorize_other_origins_or_websocket_handshakes() {
         use super::*;

@@ -219,6 +219,14 @@ once it reaches its first tagged release.
   history of that session and an AI's CLI had no chance to put its
   session away. They are now sent the hangup a closing terminal sends,
   given up to 0.3 seconds, and only what is still running then is killed.
+- **A phone on a slow line no longer has everything it missed kept for
+  it.** Pictures of a page being relayed, and the board's state, were
+  queued for each phone without limit. A phone that fell behind (in a
+  pocket, on a bad signal) made the app hold all of it, and when the line
+  came back it was shown the page as it had been minutes before. A phone
+  is now sent only the newest picture, and one more than 300 state
+  messages behind is disconnected; its page connects again and takes the
+  board as it is now.
 - **DevTools that stop reading are let go.** What a page said to its
   DevTools was kept in memory until DevTools read it. With DevTools left
   open in a tab that had gone to sleep, a busy page could fill memory
