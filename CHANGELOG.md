@@ -179,6 +179,13 @@ once it reaches its first tagged release.
   checked.
 
 ### Fixed
+- **A browser tab whose page crashed comes back, on the server
+  version.** When the process drawing a page died (out of memory, a
+  fault in the page), the tab stood as it was last seen: its picture did
+  not change, and everything a script asked of it waited out its
+  deadline. The page is now loaded again. One that dies three times in a
+  minute is left down, and the log says so. (In the window app the
+  browser shows its own error page, as before.)
 - **Approving this app's hooks in Codex no longer starts Codex's
   plugins.** The approval is asked of a Codex started for a moment and
   ended again. With plugins switched on, that Codex began fetching them

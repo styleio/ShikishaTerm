@@ -1445,7 +1445,13 @@ struct Seen {
     fetching: std::collections::HashMap<String, Fetching>,
     /// The windows the pages have opened (see [`Windows`])
     windows: Windows,
+    /// When each page's process died, lately
+    crashed: std::collections::HashMap<String, Vec<std::time::Instant>>,
 }
+
+/// How many times in how long a page whose process died is loaded again
+const PAGE_DIED_MOST: usize = 3;
+const PAGE_DIED_WITHIN: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// One download on its way, as this side keeps track of it.
 ///
@@ -1787,6 +1793,28 @@ impl Pages {
                 "Page.windowOpen" => {
                     if ev.params.get("userGesture").and_then(|g| g.as_bool()).unwrap_or(false) {
                         book.windows.pressed.insert(page, std::time::Instant::now());
+                    }
+                }
+                // The process that draws the page died (out of memory, a
+                // fault in the page's own code). The page then stands as it
+                // was last seen and does nothing: a picture of it is the old
+                // picture, and everything asked of it waits out its deadline.
+                // It is loaded again, which starts a process for it -- but
+                // not over and over: a page that dies as it loads is left
+                // down, and said, rather than started again without end
+                "Inspector.targetCrashed" => {
+                    let lately = book.crashed.entry(page.clone()).or_default();
+                    lately.retain(|at| at.elapsed() < PAGE_DIED_WITHIN);
+                    lately.push(std::time::Instant::now());
+                    match lately.len() <= PAGE_DIED_MOST {
+                        true => {
+                            crate::append_hook_log(&format!("chrome: the process of the page '{page}' died; the page is loaded again"));
+                            speaker.tell(Some(&session), "Page.reload", serde_json::json!({}));
+                        }
+                        false => crate::append_hook_log(&format!(
+                            "chrome: the process of the page '{page}' died {} times in a minute; it is left as it is -- reload the tab to start it again",
+                            lately.len()
+                        )),
                     }
                 }
                 "Page.javascriptDialogClosed" => {
@@ -2788,6 +2816,7 @@ impl shikisha_shared::BrowserHost for Pages {
         book.targets.remove(&page.target);
         book.cast.remove(name);
         book.auth.remove(name);
+        book.crashed.remove(name);
         self.refs.lock().unwrap_or_else(|e| e.into_inner()).remove(&Some(name.to_string()));
         Ok(())
     }
@@ -4000,6 +4029,37 @@ mod tests {
 
         // The page that asked goes on
         assert_eq!(pages.eval(Some(name), "return 1 + 1", 5_000).unwrap(), "2");
+    }
+
+    /// A page whose process died is loaded again, and answers again
+    #[test]
+    #[ignore = "needs a browser on this machine"]
+    fn a_page_whose_process_died_is_loaded_again() {
+        use crate::pageops::Speaks as _;
+        use shikisha_shared::{BrowserHost, BrowserProfile};
+
+        assert!(found().is_some(), "this machine has no browser");
+        let site = serve();
+        let store = std::env::temp_dir().join(format!("shikisha-pages-{}", crate::random_hex(8)));
+        let pages = Pages::under(store, true);
+        let name = "dies";
+        pages.open_child(name, &site, (0, 0, 900, 700), BrowserProfile::shared_default()).expect("the page does not open");
+        let loaded = |pages: &Pages| {
+            waited(pages, |ev| match ev {
+                shikisha_shared::Ev::Ready { from: Some(n), complete: true, .. } if n == name => Some(()),
+                _ => None,
+            })
+        };
+        loaded(&pages).expect("the page does not report that loading finished");
+        pages.eval(Some(name), "window.before = 'the first process'; return 1", 5_000).unwrap();
+        // The page's process is ended the way a fault in it ends it. The
+        // browser does not answer this: the process it would answer from is gone
+        let (chrome, session) = pages.at(Some(name)).unwrap();
+        chrome.speaker().tell(Some(&session), "Page.crash", serde_json::json!({}));
+        loaded(&pages).expect("a page whose process died was not loaded again");
+        assert_eq!(pages.eval(Some(name), "return window.before || 'a new process'", 10_000).unwrap(), "\"a new process\"");
+        assert!(pages.href(Some(name), 5_000).unwrap().starts_with(&site));
+        pages.close_child(name).unwrap();
     }
 
     /// The browser answers on no port of its own, and a page's DevTools
