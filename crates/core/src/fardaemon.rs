@@ -453,12 +453,12 @@ pub fn run_dir(home: &Path) -> PathBuf {
     }
 }
 
-/// Whether anything takes a connection on the door `sock`
+/// Whether anything takes a connection on the door `sock`. Only a
+/// connection that is made says so: one that fails for a reason of this
+/// process's own (no more files may be opened just now) says nothing about
+/// who is behind the door, and is not taken for somebody being there
 fn answers(sock: &Path) -> bool {
-    match crate::keepipe::connect(&crate::keepipe::door(sock)) {
-        Ok(_) => true,
-        Err(e) => !matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused),
-    }
+    crate::keepipe::connect(&crate::keepipe::door(sock)).is_ok()
 }
 
 /// What the resident process wrote down under the name `name`: in this
