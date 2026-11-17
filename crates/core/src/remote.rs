@@ -681,7 +681,84 @@ type Casts = Arc<Mutex<Vec<crate::vcast::Cast>>>;
 
 /// Destinations for state pushes — the terminal screen and UI, sent over a
 /// WebSocket instead of the phone polling. One text sender per connected viewer.
-type StateClients = Arc<Mutex<Vec<StateClient>>>;
+type StateClients = Arc<Mutex<States>>;
+
+/// The viewers on the state socket, and what was lately said to them that
+/// is said only once.
+///
+/// Most of what goes down the state socket is the state itself -- the UI,
+/// the screen, the panes -- and a viewer that connects is handed all of it
+/// afresh. The rest is said once, when it happens: the answer to something
+/// a panel asked for (a commit made, a list read, a file saved). A phone
+/// whose line dropped between asking and the answer -- a lift, a tunnel,
+/// the Wi-Fi giving way to the mobile network -- came back to a panel that
+/// went on waiting for an answer that had been said to nobody. So those are
+/// numbered and kept a short while, and a page coming back says the last
+/// number it heard and is told what came after it
+#[derive(Default)]
+struct States {
+    lines: Vec<StateClient>,
+    /// What was said once, lately: its number, when, and the message
+    said: std::collections::VecDeque<(u64, Instant, String)>,
+    /// The number of the last one said
+    last: u64,
+}
+
+impl std::ops::Deref for States {
+    type Target = Vec<StateClient>;
+    fn deref(&self) -> &Self::Target {
+        &self.lines
+    }
+}
+
+impl std::ops::DerefMut for States {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.lines
+    }
+}
+
+/// How long, how many and how much of what was said once is kept for a
+/// page that comes back
+const SAID_KEPT_FOR: Duration = Duration::from_secs(90);
+const SAID_KEPT_MOST: usize = 200;
+const SAID_KEPT_BYTES: usize = 8 * 1024 * 1024;
+
+impl States {
+    /// Whether `msg` is the state itself, handed afresh to whoever connects,
+    /// rather than something said once
+    fn is_state(msg: &str) -> bool {
+        ["{\"ui\":", "{\"screen_html\":", "{\"rows\":", "{\"beat\":", "{\"cut\":", "{\"moved\":", "{\"panes\":"].iter().any(|head| msg.starts_with(head))
+    }
+
+    /// `msg` as it is said: numbered and kept when it is said once
+    fn stamp(&mut self, msg: String) -> String {
+        if Self::is_state(&msg) || !msg.starts_with('{') || msg.len() < 2 {
+            return msg;
+        }
+        // Numbers go on from the clock, so a board started again never
+        // hands out one a page has already heard
+        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+        self.last = (self.last + 1).max(now_ms);
+        let rest = &msg[1..];
+        let numbered = match rest.trim_start().starts_with('}') {
+            true => format!("{{\"n\":{}{rest}", self.last),
+            false => format!("{{\"n\":{},{rest}", self.last),
+        };
+        self.said.push_back((self.last, Instant::now(), numbered.clone()));
+        let mut bytes: usize = self.said.iter().map(|(_, _, m)| m.len()).sum();
+        while self.said.front().is_some_and(|(_, at, _)| self.said.len() > SAID_KEPT_MOST || bytes > SAID_KEPT_BYTES || at.elapsed() > SAID_KEPT_FOR) {
+            if let Some((_, _, gone)) = self.said.pop_front() {
+                bytes -= gone.len();
+            }
+        }
+        numbered
+    }
+
+    /// What was said once after number `since`, still kept, in order
+    fn after(&self, since: u64) -> Vec<String> {
+        self.said.iter().filter(|(n, at, _)| *n > since && at.elapsed() <= SAID_KEPT_FOR).map(|(_, _, m)| m.clone()).collect()
+    }
+}
 
 /// One viewer on the state socket, and how many pushes it has not written yet.
 ///
@@ -1556,7 +1633,7 @@ impl RemoteUi {
         let pipes: Pipes = Arc::new(Mutex::new(std::collections::HashMap::new()));
         let page_line: PageLine = Arc::new(Mutex::new(None));
         let pages_open: PagesOpen = Arc::new(Mutex::new(std::collections::HashMap::new()));
-        let state_clients: StateClients = Arc::new(Mutex::new(Vec::new()));
+        let state_clients: StateClients = Default::default();
         let last_poll: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
         let keyframe_wanted = Arc::new(AtomicBool::new(false));
         // 0 while nothing is being watched. The loop that decides what is on
@@ -2071,6 +2148,12 @@ impl RemoteUi {
 
     fn push_to(&self, msg: String, panes_only: bool) {
         let mut clients = self.state_clients.lock().unwrap();
+        // Numbered and kept when it is said once (see [`States`]), whether
+        // or not anybody is on the line just now
+        let msg = match panes_only {
+            true => msg,
+            false => clients.stamp(msg),
+        };
         clients.retain(|c| {
             // A line whose session has ended since it opened is told so and let
             // go, whatever this message was: it is not that viewer's any more
@@ -3400,6 +3483,14 @@ fn handle(
             // The page coming back on its own after its line dropped, not a
             // person opening the board: it says so (see below)
             let came_back = asked("again=1");
+            // ...and the last thing said once that it heard, to be told what
+            // was said after it while its line was down
+            let heard = req
+                .url()
+                .split_once('?')
+                .and_then(|(_, q)| q.split('&').find_map(|kv| kv.strip_prefix("since=")))
+                .and_then(|n| n.parse::<u64>().ok())
+                .filter(|_| came_back);
             let stream = crate::ws::upgrade(req, &key);
             let (stx, srx) = channel::<String>();
             let pending = Arc::new(AtomicUsize::new(0));
@@ -3429,12 +3520,21 @@ fn handle(
                     }
                 }
             }
-            state_clients.lock().unwrap().push(StateClient {
-                tx: stx,
-                pending: Arc::clone(&pending),
-                session: session.clone(),
-                panes: wants_panes,
-            });
+            {
+                // Told what it missed and put on the list in one step: what
+                // is said from here on reaches it as it is said, once
+                let mut lines = state_clients.lock().unwrap();
+                for missed in heard.map(|n| lines.after(n)).unwrap_or_default() {
+                    pending.fetch_add(1, Ordering::SeqCst);
+                    let _ = stx.send(missed);
+                }
+                lines.push(StateClient {
+                    tx: stx,
+                    pending: Arc::clone(&pending),
+                    session: session.clone(),
+                    panes: wants_panes,
+                });
+            }
             // A person opening the board on a phone is at work there, and the
             // terminals are cut to the phone. A page that only reconnected
             // (the Wi-Fi blinked while the phone lay on the desk) is nobody
@@ -3757,6 +3857,12 @@ fn handle(
                 && gate.admits(&session, &ev) {
                     let _ = tx.send(gate.command(&session, ev));
                     took = true;
+                    // Done from a browser at a desk: the person is at the
+                    // board, wherever the app itself runs (`away`)
+                    let calls_itself = req.headers().iter().find(|h| h.field.equiv("User-Agent")).map(|h| h.value.as_str().to_string()).unwrap_or_default();
+                    if crate::away::is_a_desk(&calls_itself) {
+                        crate::away::seen_at_a_desk();
+                    }
                 }
             req.respond(json_response(serde_json::json!({"ok": took})))?;
         }
@@ -6515,6 +6621,32 @@ mod tests {
             Some("{\"ui\":\"after\"}"),
             "the pane picture is sent to the phone"
         );
+
+        // An answer said once carries a number. The phone's line drops, an
+        // answer is said while it is down, and the phone coming back -- saying
+        // the last number it heard -- is told that answer, after the state
+        ui.push_state("{\"git\":{\"first\":1}}".to_string());
+        let first = read_text(&mut phone_line).expect("the answer did not arrive");
+        let said: serde_json::Value = serde_json::from_str(&first).unwrap();
+        assert_eq!(said["git"]["first"], 1, "{first}");
+        let n = said["n"].as_u64().expect("an answer said once carries no number");
+        drop(phone_line);
+        ui.push_state("{\"git\":{\"second\":2}}".to_string());
+        ui.push_state("{\"ui\":\"while away\"}".to_string());
+        let mut back = open(&phone.cookie, &format!("&again=1&since={n}"));
+        assert!(read_text(&mut back).is_some_and(|m| m.starts_with("{\"ui\"")));
+        assert!(read_text(&mut back).is_some_and(|m| m.starts_with("{\"screen_html\"")));
+        let missed: serde_json::Value = serde_json::from_str(&read_text(&mut back).expect("what was said while the line was down is lost")).unwrap();
+        assert_eq!(missed["git"]["second"], 2, "{missed}");
+        assert!(missed["n"].as_u64().is_some_and(|m| m > n));
+        // Not told twice, and a page that says no number is told nothing old
+        ui.push_state("{\"git\":{\"third\":3}}".to_string());
+        assert!(read_text(&mut back).is_some_and(|m| m.contains("\"third\"")), "an answer was told twice");
+        let mut fresh = open(&phone.cookie, "&again=1");
+        assert!(read_text(&mut fresh).is_some_and(|m| m.starts_with("{\"ui\"")));
+        assert!(read_text(&mut fresh).is_some_and(|m| m.starts_with("{\"screen_html\"")));
+        ui.push_state("{\"git\":{\"fourth\":4}}".to_string());
+        assert!(read_text(&mut fresh).is_some_and(|m| m.contains("\"fourth\"")), "a page that named no number was told old answers");
         ui.shutdown();
     }
 

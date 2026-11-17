@@ -179,6 +179,30 @@ once it reaches its first tagged release.
   checked.
 
 ### Fixed
+- **Keys typed quickly on a phone arrive in the order they were typed.**
+  Everything the phone's page sends to the PC was a request of its own,
+  and two on their way at once arrived in whichever order the network
+  delivered them: letters could swap, and the Enter after a line could
+  overtake the line. They now leave one at a time, in order. One that
+  gets no answer is given up on after 15 seconds so the rest still go.
+- **A panel on the phone no longer waits for ever after the connection
+  blinks.** The answer to something a panel asked for (a commit, a list,
+  a saved file) is said once. A phone whose connection dropped between
+  asking and the answer came back to a panel still waiting. The PC now
+  keeps what it said once for 90 seconds, and a page that reconnects is
+  told what it missed.
+- **A phone page nobody is looking at lets go of its connection.** With
+  the page left open in a pocket, the PC went on drawing every screen for
+  it and sending it over the phone's network, and kept its terminals cut
+  to the phone's width. A page hidden for a minute now disconnects, and
+  connects again the moment it is looked at.
+- **"Only while I am away" works when you use the board from another
+  computer.** Whether you are away was read from the keyboard and screen
+  lock of the machine the app runs on. On a server there is neither, so
+  the phone was told everything while you worked on the board from a
+  laptop. Doing something on the board from a desktop browser now counts
+  as being there for three minutes, on the server version and when the
+  PC's own screen is locked.
 - **AIs left running on a server outlive the logout on more servers.** On
   a Linux server where your account's own service manager stays up
   without a login (`loginctl enable-linger`), the bridge's resident

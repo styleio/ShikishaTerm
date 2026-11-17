@@ -17,8 +17,32 @@ use std::time::Duration;
 /// that somebody who went to make tea hears about it
 pub const IDLE: Duration = Duration::from_secs(180);
 
+/// When the person last did something on this board from a browser at a
+/// desk -- another computer's, or this one's -- as against from a phone
+static AT_A_DESK: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+
+/// The person just did something on the board from a browser at a desk.
+///
+/// The machine the app runs on is not always the one the person sits at: a
+/// server has no keyboard to be idle and no screen to be locked, and "away"
+/// was all it could ever answer -- so the phone of somebody working the
+/// board from their laptop, all day, was told everything, with "only while
+/// away" ticked. Somebody working the board from a desk is not away from it
+pub fn seen_at_a_desk() {
+    *AT_A_DESK.lock().unwrap_or_else(|e| e.into_inner()) = Some(std::time::Instant::now());
+}
+
+/// Whether what a browser calls itself (its `User-Agent`) is a browser at a
+/// desk: not a phone's or a tablet's
+pub fn is_a_desk(calls_itself: &str) -> bool {
+    !calls_itself.is_empty() && !["Mobi", "Android", "iPhone", "iPad", "iPod"].iter().any(|word| calls_itself.contains(word))
+}
+
 /// Whether the person is away from this PC now
 pub fn person_away() -> bool {
+    if AT_A_DESK.lock().unwrap_or_else(|e| e.into_inner()).is_some_and(|at| at.elapsed() < IDLE) {
+        return false;
+    }
     match (locked(), idle()) {
         (Some(true), _) => true,
         (_, Some(idle)) => idle >= IDLE,
@@ -103,5 +127,23 @@ mod tests {
         #[cfg(windows)]
         assert!(super::idle().is_some(), "Windows did not say how long since the last input");
         let _ = super::locked();
+    }
+
+    /// Somebody working the board from a browser at a desk is not away,
+    /// whatever the machine the app runs on can say; a phone is not a desk
+    #[test]
+    fn somebody_at_a_desk_is_not_away() {
+        assert!(super::is_a_desk("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"));
+        assert!(super::is_a_desk("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15"));
+        assert!(!super::is_a_desk("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1"));
+        assert!(!super::is_a_desk("Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36"));
+        assert!(!super::is_a_desk(""), "a caller that names nothing was taken for a desk");
+        super::seen_at_a_desk();
+        assert!(!super::person_away(), "somebody at a desk was counted as away");
+        *super::AT_A_DESK.lock().unwrap() = std::time::Instant::now().checked_sub(super::IDLE + std::time::Duration::from_secs(1));
+        if super::idle().is_none() && super::locked().is_none() {
+            assert!(super::person_away(), "somebody who left the desk a while ago is still counted there");
+        }
+        *super::AT_A_DESK.lock().unwrap() = None;
     }
 }

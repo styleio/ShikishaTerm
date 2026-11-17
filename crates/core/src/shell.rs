@@ -5257,11 +5257,30 @@ const typingIME = e => e.isComposing || e.keyCode === 229;
 // (it is asleep, the phone just woke, the line dropped) and one the PC
 // refused are both "not taken", and whoever sent words that way gets them
 // back instead of losing them
-const overTheWire = o => fetch("api/intent?t=" + encodeURIComponent(TOKEN),
-  {method:"POST", body:JSON.stringify(o)})
-  .then(r => r.ok ? r.json().then(j => ({ok: !(j && j.ok === false), heard: true}), () => ({ok: true, heard: true}))
-                  : {ok: false, heard: true})
-  .catch(() => ({ok: false, heard: false}));
+//
+// One at a time, in the order they were sent. Each is a request of its own,
+// and two on their way at once arrive in whichever order the network likes:
+// keys typed quickly on a phone reached the terminal out of order, and the
+// Enter sent after a line could overtake the line. So the next one leaves
+// when the one before it has been answered -- or has been given up on, so
+// that one request that hangs does not hold every key behind it for ever
+const WIRE_MOST_MS = 15000;
+let wireBefore = Promise.resolve();
+const overTheWire = o => {
+  const go = () => {
+    const stop = typeof AbortController === "function" ? new AbortController() : null;
+    const late = setTimeout(() => { if (stop) stop.abort(); }, WIRE_MOST_MS);
+    const done = v => { clearTimeout(late); return v; };
+    return fetch("api/intent?t=" + encodeURIComponent(TOKEN),
+        {method:"POST", body:JSON.stringify(o), signal: stop ? stop.signal : undefined})
+      .then(r => r.ok ? r.json().then(j => ({ok: !(j && j.ok === false), heard: true}), () => ({ok: true, heard: true}))
+                      : {ok: false, heard: true})
+      .then(done, () => done({ok: false, heard: false}));
+  };
+  const said = wireBefore.then(go);
+  wireBefore = said.then(() => {}, () => {});
+  return said;
+};
 const toThisWindow = o => window.ipc.postMessage(JSON.stringify(o));
 const send = o => {
   if (o && o.kind === "say" && !o.uid) {
@@ -24489,6 +24508,9 @@ if (REMOTE) {
     if (d.cut) { cutNow(); return; }
     if (d.moved) { goMoved(d.moved); return; }
     if (moving) return;
+    // What is said once carries a number: the last one heard is said to
+    // the PC when this page's line comes back, for what was said meanwhile
+    if (typeof d.n === "number" && d.n > lastSaid) lastSaid = d.n;
     connected();
     if (d.ui) window.__state(typeof d.ui === "string" ? d.ui : JSON.stringify(d.ui));
     // The rows that moved, when the shape of the screen is unchanged. Scrolling
@@ -24538,7 +24560,7 @@ if (REMOTE) {
   // twice as long as the last, up to half a minute. And a page nobody is
   // looking at does not knock at all -- it connects the moment it is looked
   // at again (see the visibility listener below)
-  let stateTries = 0, stateWaits = false;
+  let stateTries = 0, stateWaits = false, lastSaid = 0;
   const STATE_AGAIN_MS = 1500, STATE_AGAIN_MOST_MS = 30000;
   const stateAgain = () => {
     if (remoteCut || moving) return;
@@ -24559,7 +24581,7 @@ if (REMOTE) {
       // is not a person arriving, and does not take the terminals' width
       // from whoever is at the PC
       sws = new WebSocket(proto + "//" + location.host + "/ws-state?t=" + encodeURIComponent(TOKEN) +
-        "&panes=1" + (beenUp ? "&again=1" : ""));
+        "&panes=1" + (beenUp ? "&again=1&since=" + lastSaid : ""));
     } catch (e) { stateAgain(); return; }
     const line = sws;
     line.onopen = () => { if (sws !== line) return; wsUp = true; beenUp = true; stateTries = 0; heard = Date.now(); connected(); edLineBack(); };
@@ -24583,10 +24605,25 @@ if (REMOTE) {
     connectState();
   };
   setInterval(stillThere, 2000);
-  // Coming back to the page (the phone was in a pocket) asks at once, and
-  // connects at once when the line dropped while nobody was looking
+  // A page nobody has looked at for a minute lets go of the line. Held, the
+  // PC went on drawing every screen for a phone in a pocket and sending it
+  // over the phone's network, and went on fitting its terminals to a phone
+  // nobody was holding. Coming back to the page (the phone was in a pocket)
+  // connects at once -- as it does when the line dropped while nobody was
+  // looking -- and otherwise asks at once whether the line is still there
+  const HIDDEN_HOLDS_MS = 60000;
+  let hiddenSince = 0;
   document.addEventListener("visibilitychange", () => {
-    if (document.hidden) return;
+    clearTimeout(hiddenSince);
+    if (document.hidden) {
+      hiddenSince = setTimeout(() => {
+        if (!document.hidden || !sws || remoteCut || moving) return;
+        const unseen = sws;
+        sws = null; wsUp = false; stateWaits = true;
+        try { unseen.close(); } catch (x) {}
+      }, HIDDEN_HOLDS_MS);
+      return;
+    }
     if (stateWaits) { stateWaits = false; stateTries = 0; connectState(); }
     else stillThere();
   });
@@ -24624,6 +24661,9 @@ if (REMOTE) {
   let pulling = false, pullAfter = 0;
   const pull = async () => {
     if (pulling || wsUp || remoteCut || moving || MOVE_CODE || Date.now() < pullAfter) return;
+    // A page nobody is looking at, which let go of the line for that: it
+    // does not ask this way either, until it is looked at again
+    if (stateWaits && document.hidden) return;
     pulling = true;
     try {
       const r = await fetch("api/state?t=" + encodeURIComponent(TOKEN) + (beenUp ? "&again=1" : ""), {cache:"no-store"});

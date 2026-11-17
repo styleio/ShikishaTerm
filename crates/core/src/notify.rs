@@ -263,7 +263,7 @@ pub fn send_blocking_about(
     // one, becomes where a tap goes rather than text nobody can tap.
     if let Destination::Phone { only_away } = dest {
         if *only_away && !crate::away::person_away() {
-            crate::append_hook_log("phone: not told -- the person is at this PC");
+            crate::append_hook_log("phone: not told -- the person is at this PC, or working the board from a browser at a desk");
             return Ok(());
         }
         let mut lines = text.lines();

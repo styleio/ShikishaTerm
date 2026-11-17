@@ -23,6 +23,8 @@ function viewer(answers = ['correct']) {
     T, TOKEN: '', MOVE_CODE: '', wsUp: false, remoteCut: false, moving: null, downSince: 0,
     // Whether the state line has been up before (a poll after that says so)
     beenUp: false,
+    // A page in view, which has not let go of its line for being hidden
+    stateWaits: false, document: {hidden: false},
     Date: {now: () => now}, encodeURIComponent,
     fetch: (url, options) => new Promise((resolve, reject) => requests.push({url, options, resolve, reject})),
     prompt: message => { prompts.push(message); return answers.shift() ?? null; },
@@ -148,4 +150,37 @@ test('a failed state request can recover on the next poll', async () => {
   await v.reply(1, 200);
   assert.equal(v.states.length, 1);
   assert.deepEqual(v.prompts, []);
+});
+
+// What the page sends to the PC leaves one at a time, in the order it was
+// sent, whatever order the network would have delivered it in -- and a
+// request that never comes back does not hold the rest for ever
+test('what a phone sends reaches the PC in the order it was sent', async () => {
+  const from = source.indexOf('const WIRE_MOST_MS');
+  const to = source.indexOf('const toThisWindow', from);
+  assert.ok(from >= 0 && to > from, 'the real sending code was not found');
+  const arrived = [], timers = [];
+  const waits = {a: 60, b: 5, c: 30, d: 1};
+  const context = vm.createContext({
+    TOKEN: 't', encodeURIComponent, clearTimeout, AbortController, Promise, JSON,
+    setTimeout: (fn, ms) => { timers.push({fn, ms}); return setTimeout(() => {}, 0); },
+    fetch: (url, options) => new Promise((resolve, reject) => {
+      const said = JSON.parse(options.body);
+      if (said.k === 'lost') { options.signal.addEventListener('abort', () => reject(new Error('aborted'))); return; }
+      setTimeout(() => { arrived.push(said.k); resolve({ok: true, json: async () => ({ok: true})}); }, waits[said.k]);
+    }),
+  });
+  vm.runInContext(source.slice(from, to) + ';globalThis.overTheWire = overTheWire;', context);
+  const answers = await Promise.all(['a', 'b', 'c', 'd'].map(k => context.overTheWire({k})));
+  assert.equal(arrived.join(''), 'abcd');
+  assert.ok(answers.every(a => a.ok && a.heard));
+  // One that never comes back is given up on, and the next still goes
+  const lost = context.overTheWire({k: 'lost'});
+  const after = context.overTheWire({k: 'd'});
+  await flush();
+  const giveUp = timers.filter(t => t.ms === 15000).pop();
+  assert.ok(giveUp, 'a request is waited on without end');
+  giveUp.fn();
+  assert.deepEqual({...(await lost)}, {ok: false, heard: false});
+  assert.equal((await after).ok, true);
 });
