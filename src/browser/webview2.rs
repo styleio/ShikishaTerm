@@ -438,7 +438,7 @@ fn adopt_windows(popups: Popups, window: std::rc::Rc<tao::window::Window>) -> Wi
                 NewWindowResponse::Create { webview: raw }
             }
             Err(e) => {
-                popups.failed(&uri, &e);
+                popups.failed(&name, &uri, &e);
                 NewWindowResponse::Deny
             }
         }

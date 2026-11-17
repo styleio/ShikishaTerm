@@ -40,6 +40,8 @@ pub struct Job {
     /// The group everything this tab started belongs to. `None` until the
     /// first process is taken
     group: std::sync::Mutex<Option<i32>>,
+    /// When the group was hung up on, once it has been
+    hung_up: std::sync::Mutex<Option<std::time::Instant>>,
 }
 
 #[cfg(unix)]
@@ -47,7 +49,27 @@ impl Job {
     /// A group to put a tab's processes in. Nothing can fail here yet: the
     /// group is the first process's own id, learned when it is taken
     pub fn new() -> Option<Job> {
-        Some(Job { group: std::sync::Mutex::new(None) })
+        Some(Job { group: std::sync::Mutex::new(None), hung_up: std::sync::Mutex::new(None) })
+    }
+
+    /// Hang up on the group, once, and say when that was. Nothing is waited
+    /// for here: many tabs closing together are all hung up on first, and
+    /// the one moment they are given is counted from then -- waited out for
+    /// each in turn, twenty tabs whose programs would not go took six
+    /// seconds, with the last not even told until the others were done
+    pub fn hang_up(&self) -> Option<std::time::Instant> {
+        let group = (*self.group.lock().unwrap_or_else(|e| e.into_inner()))?;
+        let mut at = self.hung_up.lock().unwrap_or_else(|e| e.into_inner());
+        if at.is_none() {
+            // SAFETY: a group id and a signal. The second wakes a stopped
+            // program (Ctrl+Z) so that it hears the first
+            unsafe {
+                libc::killpg(group, libc::SIGHUP);
+                libc::killpg(group, libc::SIGCONT);
+            }
+            *at = Some(std::time::Instant::now());
+        }
+        *at
     }
 
     /// Stop members even while their terminal is kept to report its exit.
@@ -60,16 +82,13 @@ impl Job {
     /// still there after it -- a program that ignores the hangup, one that
     /// is stuck -- is killed
     pub fn terminate(&self) {
+        let hung_up = self.hang_up();
         // Taken once, so a later Drop cannot signal a group that has
         // reused the old process id
         let Some(g) = self.group.lock().unwrap_or_else(|e| e.into_inner()).take() else { return };
-        // SAFETY: a group id and a signal, here and below. The second wakes
-        // a stopped program (Ctrl+Z) so that it hears the first
-        unsafe {
-            libc::killpg(g, libc::SIGHUP);
-            libc::killpg(g, libc::SIGCONT);
-        }
-        let until = std::time::Instant::now() + HANGUP_GRACE;
+        // From when it was hung up on, which may be a moment ago
+        let until = hung_up.unwrap_or_else(std::time::Instant::now) + HANGUP_GRACE;
+        // SAFETY: a group id and a signal, here and below
         // Nobody left in the group answers "no such process"
         while unsafe { libc::killpg(g, 0) } == 0 && std::time::Instant::now() < until {
             std::thread::sleep(std::time::Duration::from_millis(10));
@@ -582,6 +601,31 @@ mod unix_tests {
         assert!(started.elapsed() < std::time::Duration::from_secs(2), "closing a tab waited {:?} on a program that will not go", started.elapsed());
         let ended = deaf.wait().expect("it cannot be waited for");
         assert!(!ended.success(), "a program that ignores the hangup outlived its tab");
+
+        // Several closing together are all hung up on first, and wait out
+        // one moment between them, not one each
+        let jobs: Vec<(Job, std::process::Child)> = (0..4)
+            .map(|n| {
+                let ready = dir.join(format!("ready{n}"));
+                let line = format!("trap '' HUP; : > \"{}\"; while :; do sleep 0.05; done", ready.display());
+                let child = alone("sh", &["-c", &line]);
+                let job = Job::new().expect("a group cannot be made");
+                assert!(job.take(child.id()));
+                wait_for("the program never started", &|| ready.exists());
+                (job, child)
+            })
+            .collect();
+        let started = std::time::Instant::now();
+        for (job, _) in &jobs {
+            job.hang_up();
+        }
+        for (job, _) in &jobs {
+            job.terminate();
+        }
+        assert!(started.elapsed() < HANGUP_GRACE * 2, "four tabs closing together waited {:?}", started.elapsed());
+        for (_, mut child) in jobs {
+            assert!(!child.wait().expect("it cannot be waited for").success());
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

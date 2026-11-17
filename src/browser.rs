@@ -1121,6 +1121,10 @@ impl Browser {
     }
 
     pub fn close_child(&self, name: &str) -> Result<()> {
+        // The key to its DevTools goes with the page
+        if let Some(bridge) = self.devtools.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            bridge.forget(name);
+        }
         self.send(Cmd::RemoveChild {
             name: name.to_string(),
         })

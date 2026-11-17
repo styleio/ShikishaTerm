@@ -22131,6 +22131,8 @@ impl CloseRequest {
 /// Remove only the incarnations that were closed. Serial numbers are unique
 /// across desks, so switching desks cannot retarget an outstanding close.
 fn end_tabs(tabs: &mut Vec<Tab>, ending: &[u64]) -> Vec<usize> {
+    // All told first: what they are given to go is one moment between them
+    tabs.iter().filter(|t| ending.contains(&t.serial())).for_each(|t| t.closing_soon());
     let mut removed = Vec::new();
     let mut at = 0;
     tabs.retain_mut(|t| {

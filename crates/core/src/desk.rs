@@ -713,13 +713,13 @@ pub fn reseat_desks(
         let mut cached = std::mem::take(slot);
         match paired.get(i).copied().flatten().and_then(|j| reseated.get_mut(j)) {
             Some(home) => *home = cached,
-            None => cached.iter_mut().for_each(Tab::kill),
+            None => Tab::kill_all(cached.iter_mut()),
         }
     }
     *parked = reseated;
     let viewed = paired.get(viewing).copied().flatten();
     if viewed.is_none() {
-        tabs.iter_mut().for_each(Tab::kill);
+        Tab::kill_all(tabs.iter_mut());
         *tabs = parked.first_mut().map(std::mem::take).unwrap_or_default();
     }
     viewed

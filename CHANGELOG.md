@@ -164,13 +164,16 @@ once it reaches its first tagged release.
   one page.
 - **DevTools opened on a page stays with that page.** DevTools speaks a
   protocol that can list every page in the browser, attach to any of
-  them, open and close pages, and stop the browser. Opened beside one
-  tab, it could be used to read another tab's cookies. Both in the window
-  and on the server, what reaches past the page is now refused, and each
-  page's DevTools has a key of its own, so the address of one tab's
-  DevTools does not open the next tab's. DevTools' own panels work as
-  before; a script typed into its console that calls `Target.*` to reach
-  other pages is answered with an error.
+  them, open and close pages, stop the browser, read every site's cookies
+  at once and change what any site is allowed. Both in the window and on
+  the server, those are now refused: DevTools can no longer attach to or
+  drive another tab, the browser-wide commands are answered with an
+  error, and a request for cookies is answered for the inspected page
+  only. Each page's DevTools has a key of its own, so the address of one
+  tab's DevTools does not open the next tab's. DevTools' own panels work
+  as before. What stays possible is what inspecting a page means: DevTools
+  can do anything to its own page, including sending it to another site
+  and reading what that page then holds.
 
 ### Fixed
 - **A lead is no longer woken every ten minutes about the same idle
@@ -213,7 +216,9 @@ once it reaches its first tagged release.
   CLI set to follow the terminal's theme asks its terminal for the text
   and background colours as it starts. The question went unanswered, so
   the CLI waited and then guessed, and on a light theme drew itself for a
-  dark one. The tab now answers with the colours of the theme in use.
+  dark one. The tab now answers with the colours of the theme in use: in
+  tabs on a Mac, on Linux and on a server. In a tab on this Windows PC
+  the question is taken by Windows before it reaches the app, as before.
 - **Closing a tab on a Mac or Linux hangs up before it kills.** The
   programs in a closed tab were killed outright, so a shell lost the
   history of that session and an AI's CLI had no chance to put its
@@ -276,16 +281,16 @@ once it reaches its first tagged release.
   as a browser tab in the same folder, beside the page that asked, kept
   like any tab until it is closed. It comes to the front when a press on
   the page opened it; one a script opened by itself is added without
-  taking the screen. The new tab is private when the tab that asked is,
-  and uses the same browser profile and user agent. A window opened blank
-  and sent to an address a moment later (how many sign-ins start) is
-  followed to that address. The same address is not opened twice, and a
-  page that opens windows without end is stopped at six a minute.
-  **What does not carry over:** the new tab is a page of its own, so a
-  site that hands the result back to the page that opened it
-  (`window.opener`), or posts a form into the new window, does not
-  complete that way on the server version; the window app, which keeps
-  such a window over its tab, is not affected.
+  taking the screen. The new tab is the window itself, taken as it
+  stands: it is not fetched a second time, it is still the window its
+  opener opened (so a sign-in that hands its result back to the page that
+  started it completes), and what was posted into it is there. It shares
+  its opener's storage, private or not, and uses the same browser profile
+  and user agent. A window opened blank and sent to an address a moment
+  later (how many sign-ins start) is followed to that address. The same
+  address is not opened twice, and a page that opens windows without end
+  is stopped at six a minute. When the app is started again, the tab is
+  opened afresh at its address, like any tab.
 - **The git column follows a commit or checkout typed into a terminal.**
   It read its folder again only when an AI tab there finished work, so
   after `git commit` or `git checkout` in a plain terminal it went on

@@ -5432,6 +5432,24 @@ impl Tab {
         let _ = self.killer.kill();
     }
 
+    /// Tell this tab's programs it is about to close, without waiting on
+    /// them: for many tabs closing together, each told first and then
+    /// closed ([`Tab::kill`]), so that the moment they are given to go is
+    /// one moment for all of them
+    pub fn closing_soon(&self) {
+        #[cfg(unix)]
+        if let Some(job) = &self.job {
+            job.hang_up();
+        }
+    }
+
+    /// Close several tabs together (see [`Tab::closing_soon`])
+    pub fn kill_all<'a>(tabs: impl Iterator<Item = &'a mut Tab>) {
+        let mut tabs: Vec<&mut Tab> = tabs.collect();
+        tabs.iter().for_each(|t| t.closing_soon());
+        tabs.iter_mut().for_each(|t| t.kill());
+    }
+
     /// Whether this tab's AI goes on running while the app is away: its
     /// terminal is held by the bridge on a machine set to keep it (far-keep
     /// plan §4.3)

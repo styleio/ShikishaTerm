@@ -1215,7 +1215,7 @@ mod hooks {
                         page.place(popups.seat.get());
                         popups.made(name, page, &uri);
                     }
-                    Err(e) => popups.failed(&uri, &e),
+                    Err(e) => popups.failed(&name, &uri, &e),
                 }
             }
 

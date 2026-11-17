@@ -111,11 +111,11 @@ pub(super) struct Adoptions {
     /// How many windows stand over each pane now, as the loop last counted
     /// them
     standing: std::collections::HashMap<String, usize>,
-    /// Windows that were given a name and are being made: the pane each is
-    /// for, and when it was named. An engine names a window in one call and
-    /// hands it over in another, and several can be named before the first
-    /// is handed over
-    coming: Vec<(String, std::time::Instant)>,
+    /// Windows that were given a name and are being made: the name, the
+    /// pane it is for, and when it was named. An engine names a window in
+    /// one call and hands it over in another, and several can be named
+    /// before the first is handed over
+    coming: Vec<(String, String, std::time::Instant)>,
 }
 
 /// How long a window that was named may take to be made before its place is
@@ -139,22 +139,28 @@ impl Adoptions {
     /// not yet taken in, and those named and not yet made
     fn room(&self, opener: &str) -> bool {
         let made = self.made.iter().filter(|(pane, ..)| pane == opener).count();
-        let coming = self.coming.iter().filter(|(pane, at)| pane == opener && at.elapsed() < WINDOW_COMING).count();
+        let coming = self.coming.iter().filter(|(_, pane, at)| pane == opener && at.elapsed() < WINDOW_COMING).count();
         self.standing.get(opener).copied().unwrap_or(0) + made + coming < WINDOWS_MOST
     }
 
-    /// A window for `opener` was named: its place is held
-    fn name(&mut self, opener: &str) {
-        self.coming.retain(|(_, at)| at.elapsed() < WINDOW_COMING);
-        self.coming.push((opener.to_string(), std::time::Instant::now()));
+    /// The window `name` was named for `opener`: its place is held
+    fn name(&mut self, name: &str, opener: &str) {
+        self.coming.retain(|(_, _, at)| at.elapsed() < WINDOW_COMING);
+        self.coming.push((name.to_string(), opener.to_string(), std::time::Instant::now()));
     }
 
-    /// A window named for `opener` was made, or will not be: its place is
-    /// counted as what it became, or given up
-    fn arrived(&mut self, opener: &str) {
-        if let Some(at) = self.coming.iter().position(|(pane, _)| pane == opener) {
-            self.coming.remove(at);
-        }
+    /// The window `name` was made, or will not be: its place is counted as
+    /// what it became, or given up
+    fn arrived(&mut self, name: &str) {
+        self.coming.retain(|(n, ..)| n != name);
+    }
+
+    /// Whether a window just made for `opener` still has a place. Asked
+    /// again when it arrives: one that took so long to be made that its
+    /// place was given up may arrive to a pane that has filled since
+    fn has_place(&self, opener: &str) -> bool {
+        let made = self.made.iter().filter(|(pane, ..)| pane == opener).count();
+        self.standing.get(opener).copied().unwrap_or(0) + made < WINDOWS_MOST
     }
 }
 
@@ -195,9 +201,10 @@ impl Popups {
             ));
             return None;
         }
-        ib.name(&self.opener);
         ib.next += 1;
-        Some(format!("{}#window{}", self.opener, ib.next))
+        let name = format!("{}#window{}", self.opener, ib.next);
+        ib.name(&name, &self.opener);
+        Some(name)
     }
 
     /// What the window runs before its own scripts
@@ -246,16 +253,23 @@ impl Popups {
     pub fn made(&self, name: String, page: Page, uri: &str) {
         shikisha_core::append_hook_log(&format!("[browser] '{}' opened a window -> '{name}' ({uri})", self.opener));
         if let Ok(mut ib) = self.inbox.try_borrow_mut() {
-            ib.arrived(&self.opener);
-            ib.made.push((self.opener.clone(), name, page));
+            ib.arrived(&name);
+            match ib.has_place(&self.opener) {
+                true => ib.made.push((self.opener.clone(), name, page)),
+                // Let go of here, which closes it
+                false => shikisha_core::append_hook_log(&format!(
+                    "[browser] '{}' has {WINDOWS_MOST} windows open over it; the one just made is closed",
+                    self.opener
+                )),
+            }
         }
         let _ = self.wake.send_event(Cmd::Adopt);
     }
 
     /// The window could not be made
-    pub fn failed(&self, uri: &str, e: &dyn std::fmt::Display) {
+    pub fn failed(&self, name: &str, uri: &str, e: &dyn std::fmt::Display) {
         if let Ok(mut ib) = self.inbox.try_borrow_mut() {
-            ib.arrived(&self.opener);
+            ib.arrived(name);
         }
         shikisha_core::append_hook_log(&format!(
             "[browser] '{}' asked for a window ({uri}) and it could not be made: {e}",
@@ -1591,14 +1605,24 @@ mod tests {
 
         // Named and not yet made, they hold their places: an engine that
         // names several before it makes the first does not get past the most
-        for _ in 0..WINDOWS_MOST {
+        for n in 0..WINDOWS_MOST {
             assert!(inbox.room("shop"));
-            inbox.name("shop");
+            inbox.name(&format!("shop#window{n}"), "shop");
         }
         assert!(!inbox.room("shop"), "windows named at once went past the most");
         assert!(inbox.room("docs"));
-        // One that will not be made gives its place up
-        inbox.arrived("shop");
+        // One that will not be made gives its own place up, and no other's
+        inbox.arrived("shop#window3");
         assert!(inbox.room("shop"));
+        inbox.arrived("shop#window3");
+        inbox.name("shop#window9", "shop");
+        assert!(!inbox.room("shop"), "a place was given up twice for one window");
+        // One made after the pane filled has no place left
+        assert!(inbox.has_place("shop"));
+        for n in 0..WINDOWS_MOST {
+            overlays.entry("shop".into()).or_default().push((format!("shop#late{n}"), 0));
+        }
+        inbox.count(&overlays);
+        assert!(!inbox.has_place("shop"), "a window made late was let into a full pane");
     }
 }

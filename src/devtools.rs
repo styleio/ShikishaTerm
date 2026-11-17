@@ -59,7 +59,6 @@ impl Bridge {
                     // says nothing is not waited on, and past so many at
                     // once the rest are not answered at all
                     let Some(served) = serving.enter() else { continue };
-                    let _ = stream.set_read_timeout(Some(ws::OPENING_WITHIN));
                     let tell = tell.clone();
                     let want = std::sync::Arc::clone(&want);
                     let _ = std::thread::Builder::new().name("devtools-line".into()).spawn(move || {
@@ -80,6 +79,13 @@ impl Bridge {
     pub fn made(&self, url: &str) -> bool {
         let Some((key, page)) = url.strip_prefix(&self.prefix()).and_then(|rest| rest.split_once('/')) else { return false };
         self.keys.lock().unwrap_or_else(|e| e.into_inner()).get(page).is_some_and(|k| shikisha_core::crypto::token_eq(k, key))
+    }
+
+    /// The page `name` closed: its key goes with it. Kept, the address of
+    /// the closed page's screen opened the next page given the same name --
+    /// another tab, perhaps a private one
+    pub fn forget(&self, name: &str) {
+        self.keys.lock().unwrap_or_else(|e| e.into_inner()).remove(&hex(name));
     }
 
     /// The address the DevTools screen is opened at for page `to`. Its key
@@ -124,7 +130,7 @@ fn admitted(path: &str, origin: &str, keys: &std::collections::HashMap<String, S
 fn serve(stream: TcpStream, keys: &std::sync::Mutex<std::collections::HashMap<String, String>>, tell: tao::event_loop::EventLoopProxy<Cmd>) {
     let Ok(read_side) = stream.try_clone() else { return };
     let mut reader = BufReader::new(read_side);
-    let Some(asked) = ws::read_opening(&mut reader) else { return };
+    let Some(asked) = ws::read_opening_within(&mut reader, ws::OPENING_WITHIN) else { return };
     let mut out = stream;
     let page = admitted(&asked.path, &asked.origin, &keys.lock().unwrap_or_else(|e| e.into_inner()));
     let Some(page) = page.filter(|_| !asked.key.is_empty()) else {
@@ -136,8 +142,6 @@ fn serve(stream: TcpStream, keys: &std::sync::Mutex<std::collections::HashMap<St
     if out.write_all(ws::welcome(&asked.key).as_bytes()).is_err() {
         return;
     }
-    // Let in: from here it is waited on for as long as it is open
-    let _ = out.set_read_timeout(None);
     let conn = NEXT.fetch_add(1, Ordering::Relaxed);
     shikisha_core::append_hook_log(&format!("[devtools] screen {conn} opened on page '{page}'"));
     // What the page says goes out on a writer of its own, so a page talking
@@ -162,6 +166,11 @@ fn serve(stream: TcpStream, keys: &std::sync::Mutex<std::collections::HashMap<St
                 // are inside the one session this screen speaks through
                 match shikisha_core::devscreen::said(&text, None, &|_| true) {
                     shikisha_core::devscreen::Said::On => {
+                        if tell.send_event(Cmd::DevtoolsSay { conn, text }).is_err() {
+                            break;
+                        }
+                    }
+                    shikisha_core::devscreen::Said::Trimmed(text) => {
                         if tell.send_event(Cmd::DevtoolsSay { conn, text }).is_err() {
                             break;
                         }

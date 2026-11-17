@@ -422,10 +422,19 @@ fn a_late_report_is_about_the_assignment_it_names() {
     let note = inbox["mail"].as_array().unwrap().iter().find(|m| m["kind"] == "note").expect("not handed to the lead").to_string();
     assert!(note.contains("A late report on a1 (t1)") && note.contains("Did the first."), "{note}");
     w.ok("lead", "inbox", vec![json!({"dealt": inbox["handover"]})]);
-    // The second is still its own to report on, and an assignment that was
-    // never this tab's is not
-    let said = w.ok("codex", "report", vec![json!("failed"), json!("Could not do the second.")]);
+    // On a third task now, it reports on the second by name: heard as a
+    // late report on the second, and the third is still its own
+    w.ok("lead", "task_add", vec![json!("Third.")]);
+    w.assign("t3", "codex");
+    let said = w.ok("codex", "report", vec![json!("failed"), json!("Could not do the second."), json!({"assignment": "a2"})]);
+    assert_eq!(said["state"], "ended before this report", "{said}");
     assert_eq!(said["assignment"], "a2", "{said}");
+    let inbox = w.ok("lead", "inbox", vec![]);
+    assert!(inbox["mail"].to_string().contains("A late report on a2 (t2)"), "{inbox}");
+    w.ok("lead", "inbox", vec![json!({"dealt": inbox["handover"]})]);
+    let said = w.ok("codex", "report", vec![json!("done"), json!("Did the third.")]);
+    assert_eq!(said["assignment"], "a3", "{said}");
+    // An assignment that was never this tab's is not its to report on
     let (rx, _) = w.send("claude", "report", vec![json!("done"), json!("Not mine."), json!({"assignment": "a1"})]);
     assert!(rx.try_recv().unwrap().is_err(), "a tab reported on another tab's assignment");
 }

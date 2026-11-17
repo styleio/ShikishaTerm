@@ -44,8 +44,8 @@ pub struct Opening {
 const OPENING_LINE: u64 = 8 * 1024;
 const OPENING_LINES: usize = 64;
 
-/// How long an opening request may take to arrive. Set on the socket by the
-/// door before it reads one (see [`read_opening`]), and taken off after
+/// How long an opening request may take to arrive, all of it (see
+/// [`read_opening_within`])
 pub const OPENING_WITHIN: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Read an opening request to the end of its headers. `None` when the
@@ -53,20 +53,60 @@ pub const OPENING_WITHIN: std::time::Duration = std::time::Duration::from_secs(5
 ///
 /// Read before the caller is known to be anybody: nothing here keeps more
 /// than a line of what it is sent, and a line that does not end is given up
-/// on. The door sets [`OPENING_WITHIN`] as the socket's read timeout first,
-/// so one that says nothing is not waited on either
+/// on
 pub fn read_opening<R: std::io::BufRead>(r: &mut R) -> Option<Opening> {
     // One line, or `None` for one that is too long or cut short
-    fn line<R: std::io::BufRead>(r: &mut R) -> Option<String> {
+    opening_of(&mut || {
         use std::io::BufRead as _;
         let mut bytes = Vec::new();
         let n = std::io::Read::take(&mut *r, OPENING_LINE).read_until(b'\n', &mut bytes).ok()?;
         (n > 0 && bytes.last() == Some(&b'\n')).then(|| String::from_utf8_lossy(&bytes).into_owned())
-    }
-    let first = line(r)?;
+    })
+}
+
+/// The same, off a socket, with a time for the whole of it.
+///
+/// A socket's own read timeout is for each read, and a caller that sends a
+/// byte just inside it, again and again, keeps a door's thread for as long
+/// as it likes -- and enough of them keep everybody else out. Here each
+/// read is given only what is left of `within`, so the request is whole by
+/// then or the caller is let go. The socket is left with no read timeout
+pub fn read_opening_within(r: &mut std::io::BufReader<std::net::TcpStream>, within: std::time::Duration) -> Option<Opening> {
+    use std::io::BufRead as _;
+    let until = std::time::Instant::now() + within;
+    let asked = opening_of(&mut || {
+        let mut bytes: Vec<u8> = Vec::new();
+        loop {
+            let left = until.checked_duration_since(std::time::Instant::now()).filter(|d| !d.is_zero())?;
+            r.get_ref().set_read_timeout(Some(left)).ok()?;
+            let got = r.fill_buf().ok()?;
+            if got.is_empty() {
+                return None;
+            }
+            let (take, whole) = match got.iter().position(|b| *b == b'\n') {
+                Some(at) => (at + 1, true),
+                None => (got.len(), false),
+            };
+            bytes.extend_from_slice(&got[..take]);
+            r.consume(take);
+            if bytes.len() as u64 > OPENING_LINE {
+                return None;
+            }
+            if whole {
+                return Some(String::from_utf8_lossy(&bytes).into_owned());
+            }
+        }
+    });
+    let _ = r.get_ref().set_read_timeout(None);
+    asked
+}
+
+/// An opening request, read a line at a time from `line`
+fn opening_of(line: &mut dyn FnMut() -> Option<String>) -> Option<Opening> {
+    let first = line()?;
     let mut asked = Opening { path: first.split_whitespace().nth(1).unwrap_or_default().to_string(), ..Default::default() };
     for _ in 0..OPENING_LINES {
-        let line = line(r)?;
+        let line = line()?;
         if line.trim().is_empty() {
             return Some(asked);
         }
@@ -178,6 +218,9 @@ fn op_of(opcode: u8) -> std::io::Result<Op> {
     })
 }
 
+/// The most a ping, a pong or a close may carry
+const CONTROL_MOST: usize = 125;
+
 /// A message being put together from the pieces it was sent in (see
 /// [`read_message_upto`]): what it is, and what of it has arrived
 #[derive(Default)]
@@ -220,6 +263,11 @@ fn read_piece<R: Read>(r: &mut R, most: usize) -> std::io::Result<(bool, u8, Vec
     r.read_exact(&mut hdr)?;
     let last = hdr[0] & 0x80 != 0;
     let opcode = hdr[0] & 0x0F;
+    // A ping, a pong or a close has a length of its own (the protocol's:
+    // 125 bytes) and may come between the pieces of a message. Held to what
+    // is left of that message, one arriving when the message is nearly as
+    // long as it may be was refused as too large, and the line dropped
+    let most = if opcode >= 0x8 { CONTROL_MOST } else { most };
     let masked = hdr[1] & 0x80 != 0;
     let mut len = (hdr[1] & 0x7F) as usize;
     if len == 126 {
@@ -550,6 +598,15 @@ mod tests {
         wire.extend(piece(true, false, &[b'x'; 600]));
         wire.extend(piece(false, true, &[b'x'; 600]));
         assert!(read_message_upto(&mut wire.as_slice(), 1000, &mut Partial::default()).is_err(), "pieces add up past the most");
+        // A ping between the pieces of a message that is exactly as long as
+        // it may be is still a ping
+        let mut wire = piece(true, false, b"full");
+        wire.extend(client_encode(Op::Ping, b"?"));
+        wire.extend(piece(false, true, b""));
+        let mut r = wire.as_slice();
+        let mut partial = Partial::default();
+        assert_eq!(read_message_upto(&mut r, 4, &mut partial).unwrap(), (Op::Ping, b"?".to_vec()), "a ping was held to what was left of the message");
+        assert_eq!(read_message_upto(&mut r, 4, &mut partial).unwrap(), (Op::Text, b"full".to_vec()));
         // A continuation of nothing, and a new message inside another
         assert!(read_message_upto(&mut piece(false, true, b"x").as_slice(), 1000, &mut Partial::default()).is_err());
         let mut wire = piece(true, false, b"a");
@@ -572,6 +629,50 @@ mod tests {
         assert!(read_opening(&mut long.as_bytes()).is_none(), "a line of any length was read");
         let many = format!("GET / HTTP/1.1\r\n{}\r\n", "X: 1\r\n".repeat(10_000));
         assert!(read_opening(&mut many.as_bytes()).is_none(), "any number of lines was read");
+    }
+
+    /// An opening off a socket is given a time for the whole of it: one
+    /// that arrives a byte at a time, each just in time, is let go when the
+    /// time is up
+    #[test]
+    fn an_opening_that_trickles_in_is_given_up_on() {
+        use super::read_opening_within;
+        use std::io::Write as _;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let at = listener.local_addr().unwrap();
+        let within = std::time::Duration::from_millis(300);
+        // A caller in no hurry: a byte every 40 ms, for as long as it is let
+        let slow = std::thread::spawn(move || {
+            let mut s = std::net::TcpStream::connect(at).unwrap();
+            for b in "GET /devtools/k/T HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: devtools://devtools\r\n".bytes().cycle() {
+                if s.write_all(&[b]).is_err() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(40));
+            }
+        });
+        let (stream, _) = listener.accept().unwrap();
+        let started = std::time::Instant::now();
+        let mut reader = std::io::BufReader::new(stream);
+        assert!(read_opening_within(&mut reader, within).is_none(), "a request that never ended was taken");
+        let took = started.elapsed();
+        assert!(took >= within && took < within * 4, "given {took:?} where {within:?} was the most");
+        drop(reader);
+        let _ = slow.join();
+
+        // One that arrives as a browser sends it is read, and the socket is
+        // left waiting as long as it likes for what comes after
+        let quick = std::thread::spawn(move || {
+            let mut s = std::net::TcpStream::connect(at).unwrap();
+            s.write_all(b"GET /devtools/k/T HTTP/1.1\r\nHost: 127.0.0.1:9\r\nSec-WebSocket-Key: abc==\r\n\r\n").unwrap();
+            s
+        });
+        let (stream, _) = listener.accept().unwrap();
+        let mut reader = std::io::BufReader::new(stream);
+        let asked = read_opening_within(&mut reader, within).expect("a whole request was not read");
+        assert_eq!((asked.path.as_str(), asked.key.as_str()), ("/devtools/k/T", "abc=="));
+        assert_eq!(reader.get_ref().read_timeout().unwrap(), None, "the time for the opening is still on the socket");
+        drop(quick.join());
     }
 
     /// A lane hands on what it is given, closes when too much waits on it,

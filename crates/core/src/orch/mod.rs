@@ -1142,7 +1142,12 @@ impl Orchestra {
         let found = part(2, &["found"]);
         let left = part(3, &["left"]);
         let named = option(&o, &["assignment"]).and_then(|v| number(v, 'a'));
-        let a = match self.my_assignment(&me, c.incarnation)? {
+        // On one now, and naming another: an earlier one of its own, given
+        // up on before it reported, which it is reporting on all the same.
+        // That is a late report on the one named, not a mistake about the
+        // one it is on
+        let on_now = self.my_assignment(&me, c.incarnation)?.filter(|a| named.is_none_or(|n| n == a.id));
+        let a = match on_now {
             Some(a) => a,
             None => {
                 // Already reported, or never given anything. The one it
