@@ -4315,7 +4315,10 @@ impl HookEngine {
                 target(&repo, &arg(&args, 0)).and_then(|(repo, n)| hub.set_pull_state(&repo, n, open).map(|()| serde_json::Value::Bool(true)))
             });
             github!("github_pr_merge", |lua, repo, hub, args| {
-                number(&arg(&args, 0)).and_then(|n| hub.merge_pull(&repo, n, arg(&args, 1).as_str().unwrap_or_default()))
+                // An automation says how, and may say the commit it read the
+                // checks of (`{head = "<sha>"}`): merged only if still there
+                let head = arg(&args, 2).get("head").and_then(|h| h.as_str()).map(str::to_string);
+                number(&arg(&args, 0)).and_then(|n| hub.merge_pull(&repo, n, arg(&args, 1).as_str().unwrap_or_default(), head.as_deref()))
             });
             github!("github_labels", |lua, repo, hub, args| {
                 let _ = &args;

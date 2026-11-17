@@ -360,6 +360,18 @@ pub fn longest_make() -> Duration {
     crate::pr::slowest_sign_in() + REQUEST_LIMIT
 }
 
+/// What a merge asks of GitHub: how, and -- when the caller knows it -- the
+/// commit the pull request has to be at still. Only a whole commit id is
+/// sent: anything else would be refused as not matching, in words that say
+/// the branch moved
+fn merge_ask(method: &str, head: Option<&str>) -> Value {
+    let mut ask = json!({"merge_method": method});
+    if let Some(sha) = head.map(str::trim).filter(|h| h.len() == 40 && h.bytes().all(|b| b.is_ascii_hexdigit())) {
+        ask["sha"] = sha.into();
+    }
+    ask
+}
+
 impl Hub {
     pub fn new(token: String) -> Hub {
         let agent = ureq::Agent::config_builder()
@@ -1094,7 +1106,11 @@ impl Hub {
 
     /// Merge a pull request: `squash`, `merge` or `rebase`. The branch is left
     /// where it is -- throwing it away is a separate decision
-    pub fn merge_pull(&self, repo: &Repo, number: u64, method: &str) -> Result<Value> {
+    /// `head` is the commit the pull request stood at when it was looked
+    /// at, when the caller knows: GitHub then merges only if that is still
+    /// its last commit. Without it, a commit pushed between the checks being
+    /// read as green and the button being pressed is merged unseen
+    pub fn merge_pull(&self, repo: &Repo, number: u64, method: &str, head: Option<&str>) -> Result<Value> {
         let method = match method.trim() {
             "" | "squash" => "squash",
             "merge" => "merge",
@@ -1104,11 +1120,7 @@ impl Hub {
                 &[("method", other)]
             )),
         };
-        let v = self.call(
-            "PUT",
-            &format!("repos/{}/pulls/{number}/merge", repo.slug()),
-            Some(json!({"merge_method": method})),
-        )?;
+        let v = self.call("PUT", &format!("repos/{}/pulls/{number}/merge", repo.slug()), Some(merge_ask(method, head)))?;
         Ok(json!({"merged": v.get("merged"), "sha": v.get("sha")}))
     }
 
@@ -1917,7 +1929,7 @@ pub fn answer(
         "pr_state" => hub
             .set_pull_state(&repo, number, s("state") == "open")
             .map(|()| json!(true)),
-        "merge" => hub.merge_pull(&repo, number, &s("method")),
+        "merge" => hub.merge_pull(&repo, number, &s("method"), Some(s("head")).filter(|h| !h.is_empty()).as_deref()),
         "prepare" => prepare_pull(source, &hub, &repo, number, look),
         // A GitHub Project is read as the account of the project it is
         // reached through, wherever on GitHub it is
@@ -2629,6 +2641,18 @@ use crate::urlcodec::encode;
 
 #[cfg(test)]
 mod tests {
+    /// A merge names the commit it is for only when it was given a whole
+    /// one: half a commit id would be refused as "the branch moved"
+    #[test]
+    fn a_merge_names_the_commit_it_was_looked_at() {
+        let whole = "0123456789abcdef0123456789abcdef01234567";
+        assert_eq!(super::merge_ask("squash", Some(whole)), serde_json::json!({"merge_method": "squash", "sha": whole}));
+        assert_eq!(super::merge_ask("merge", Some(&format!("  {whole}\n"))), serde_json::json!({"merge_method": "merge", "sha": whole}));
+        for not_one in [None, Some(""), Some("0123456"), Some("main"), Some("zzzz456789abcdef0123456789abcdef01234567")] {
+            assert_eq!(super::merge_ask("rebase", not_one), serde_json::json!({"merge_method": "rebase"}), "{not_one:?}");
+        }
+    }
+
     /// A project on MicroVMs whose repository is known is not asked it again:
     /// asking went to the checkout's machine on every call to GitHub. Here the
     /// machine cannot be reached at all, and the answer still gets as far as

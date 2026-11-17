@@ -28603,7 +28603,7 @@ function gitPrMerge(p) {
   if (G.armed !== p.number) { G.armed = p.number; G.said = ""; drawGit(); return; }
   G.armed = 0; G.busy = "pr_merge"; G.said = ""; G.merging = p.base || "";
   drawGit();
-  gitIssuesAsk("merge", {project: g.project, number: p.number, method: gitMergeMethod()});
+  gitIssuesAsk("merge", {project: g.project, number: p.number, method: gitMergeMethod(), head: p.sha || ""});
 }
 // The failed checks and the ends of their logs, handed to an AI tab in the
 // middle, for the newest open pull request

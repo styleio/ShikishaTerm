@@ -219,6 +219,12 @@ once it reaches its first tagged release.
   history of that session and an AI's CLI had no chance to put its
   session away. They are now sent the hangup a closing terminal sends,
   given up to 0.3 seconds, and only what is still running then is killed.
+- **Merge merges the commit you were looking at.** The Merge button on a
+  pull request merged whatever the branch held at that moment. A commit
+  pushed after the checks were read as green was merged with them, unseen.
+  The button now names the commit the panel shows, and GitHub refuses the
+  merge if the branch has moved; read it again and press once more.
+  `shikisha.github_pr_merge` takes the same as `{head = sha}`.
 - **The server's browser no longer says it is a robot.** A browser run
   without a window calls itself `HeadlessChrome`, and many sites answer
   that with a refusal or a puzzle. The server version's pages now call
