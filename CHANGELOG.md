@@ -23,13 +23,17 @@ once it reaches its first tagged release.
   more numbers a line -- how busy the disk was, how much memory was being
   read back from it, how much of the machine this app and what it started
   were using -- and stays as small as it was.
-- **Less of you in the saved diagnostics.** The names of your desks,
-  folders, tabs and machines, and the branch each folder is on, are put as
-  numbers in every file of the zip ("[desk 1]", "[folder 2]", the same
-  numbers `storage.txt` uses). A path is told by no more than its file, and
-  only when the file is a program or one of the app's own. What you typed
-  into the settings, the PC's name and who is logged in are never in it.
-  The message shown after saving says what can still be there.
+- **Less of you in the saved diagnostics.** Of the app's logs, the zip
+  now keeps only the words the app itself is written in, and the numbers:
+  any other word -- the name of a desk, a branch, a machine, a file, in
+  whatever line it turns up -- is left out, and the line still says what
+  happened. The names of your desks, folders, tabs and machines are put as
+  numbers ("[desk 1]", "[folder 2]", the same numbers `storage.txt` uses), a
+  path is told by no more than its file, and only when the file is a program
+  or one of the app's own, and what a line quotes of what you or an AI wrote
+  is cut. What you typed into the settings, the PC's name and who is logged
+  in are never in it. The message shown after saving says what can still be
+  there.
 
 ### Fixed
 - **Removing a large folder no longer has a second program walking it the
