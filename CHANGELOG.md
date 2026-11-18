@@ -131,6 +131,12 @@ once it reaches its first tagged release.
   long one is now handed to the shell in its environment as it starts, and
   only a few words are typed to run it. This is done by the SHIKISHA bridge
   on the server.
+- **A browser tab whose page crashed comes back by itself in the window
+  app.** When a page's own process died, the tab was left showing the
+  browser's error where the page had been. It is now opened again at the
+  address it was at -- not loaded again the way it was reached, so a page
+  reached by sending a form does not send the form a second time. One that
+  dies three times in a minute, or for want of memory, is left as it is.
 
 ## [0.31.0] - 2026-11-17
 

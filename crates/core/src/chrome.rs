@@ -1449,8 +1449,8 @@ struct Seen {
 }
 
 /// How many times in how long a page whose process died is loaded again
-const PAGE_DIED_MOST: usize = 3;
-const PAGE_DIED_WITHIN: std::time::Duration = std::time::Duration::from_secs(60);
+pub const PAGE_DIED_MOST: usize = 3;
+pub const PAGE_DIED_WITHIN: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// One download on its way, as this side keeps track of it.
 ///

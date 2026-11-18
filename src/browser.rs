@@ -258,6 +258,9 @@ pub enum Cmd {
     /// Put a placed page above the others. A page built later already sits
     /// above one built earlier; this is for when that is the wrong way round
     RaiseChild { name: String },
+    /// The processes of a placed page died (`memory`: for want of it). The
+    /// page is opened again at its address, or left as it is
+    PageDied { name: String, memory: bool },
     /// Remove a placed page
     RemoveChild { name: String },
     /// Take in the windows pages asked for, and let go of the ones that asked

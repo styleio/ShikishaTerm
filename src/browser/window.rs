@@ -452,6 +452,8 @@ pub(super) fn run_window(
 
     // Pages placed inside the same window. Looked up by name
     let mut children: std::collections::HashMap<String, Page> = std::collections::HashMap::new();
+    // When each placed page's processes last died, within the last minute
+    let mut page_deaths: std::collections::HashMap<String, Vec<std::time::Instant>> = std::collections::HashMap::new();
     // What the browser calls itself. Read once, here: a name that changed
     // under a page would be a different browser halfway through a login
     let user_agent = shikisha_core::config::user_agent();
@@ -775,6 +777,8 @@ pub(super) fn run_window(
                     // and off when loading finishes. This keeps it lit for the entire wait
                     let load_tx = ev_tx.clone();
                     let load_who = name.clone();
+                    let died_wake = adopt_wake.clone();
+                    let died_who = name.clone();
                     let keys_own = std::rc::Rc::clone(&own);
                     let dialogs_own = std::rc::Rc::clone(&own);
                     let spec = Spec {
@@ -818,7 +822,9 @@ pub(super) fn run_window(
                             loading: Some(std::rc::Rc::new(move |busy| {
                                 let _ = load_tx.send(Ev::Loading { from: Some(load_who.clone()), busy });
                             })),
-                            died: None,
+                            died: Some(std::rc::Rc::new(move |memory| {
+                                let _ = died_wake.send_event(Cmd::PageDied { name: died_who.clone(), memory });
+                            })),
                             closing: None,
                             // What to do when this page asks to open a window.
                             // Without an answer the request is refused in
@@ -868,6 +874,33 @@ pub(super) fn run_window(
                             "err.browser.log_place_failed",
                             &[("name", &name), ("e", &format!("{e}"))],
                         )),
+                    }
+                }
+                // The processes of a placed page died. The tab is the
+                // person's, and an error where its page was is not what they
+                // left there: it is opened again at its address -- not loaded
+                // again the way it was reached, so a page reached by sending a
+                // form does not send it a second time. Not when memory ran
+                // out (building it again would make that worse), and not more
+                // than three times a minute: the browser's own page saying
+                // what went wrong is left, with its button to load it again
+                Cmd::PageDied { name, memory } => {
+                    if let Some(v) = children.get(&name) {
+                        let lately = page_deaths.entry(name.clone()).or_default();
+                        lately.retain(|at| at.elapsed() < shikisha_core::chrome::PAGE_DIED_WITHIN);
+                        lately.push(std::time::Instant::now());
+                        let at = v.url();
+                        let gone = at.is_empty() || at == "about:blank";
+                        let said = match (memory, lately.len() > shikisha_core::chrome::PAGE_DIED_MOST, gone) {
+                            (true, _, _) => " for want of memory; it is left as it is".to_string(),
+                            (_, true, _) => format!(" {} times in a minute; it is left as it is", lately.len()),
+                            (_, _, true) => "; where it was is not known, so it is left as it is".to_string(),
+                            _ => match v.load(&at) {
+                                Ok(()) => "; it is opened again at its address".to_string(),
+                                Err(e) => format!("; it could not be opened again: {e}"),
+                            },
+                        };
+                        shikisha_core::append_hook_log(&format!("[browser] the process of the page '{name}' died{said}"));
                     }
                 }
                 Cmd::RaiseChild { name } => {
@@ -971,6 +1004,7 @@ pub(super) fn run_window(
                 }
                 Cmd::RemoveChild { name } => {
                     children.remove(&name);
+                    page_deaths.remove(&name);
                     child_sizes.remove(&name);
                     // Whatever it opened goes with it
                     overlays.remove(&name);
