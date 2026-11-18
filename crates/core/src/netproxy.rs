@@ -50,10 +50,11 @@ impl Setting {
                 (k.trim().eq_ignore_ascii_case(name) && !v.trim().is_empty()).then(|| strip_scheme(v.trim()).to_string())
             })
         };
-        // An https request goes to the proxy named for https; one named only
-        // for http is what Windows' own programs use for both
+        // Each scheme to the proxy named for it, and nowhere else: a proxy
+        // named for http alone leaves https going direct, as Windows' own
+        // programs read the setting
         match scheme {
-            "https" => by("https").or_else(|| by("http")),
+            "https" => by("https"),
             _ => by("http"),
         }
     }
@@ -275,7 +276,8 @@ mod tests {
         assert_eq!(proxy_by(&s, "https://api.github.com/").as_deref(), Some("secure:443"));
         assert_eq!(proxy_by(&s, "http://example.com/").as_deref(), Some("web:80"));
         let only_http = set("http=web:80", "");
-        assert_eq!(proxy_by(&only_http, "https://api.github.com/").as_deref(), Some("web:80"));
+        assert_eq!(proxy_by(&only_http, "https://api.github.com/"), None, "a proxy named for http was used for https");
+        assert_eq!(proxy_by(&only_http, "http://example.com/").as_deref(), Some("web:80"));
         let only_socks = set("socks=s:1080", "");
         assert_eq!(proxy_by(&only_socks, "https://api.github.com/"), None, "a SOCKS proxy is not one this library speaks here");
         assert_eq!(proxy_by(&set("http://proxy:3128/", ""), "https://a.example/").as_deref(), Some("proxy:3128"));

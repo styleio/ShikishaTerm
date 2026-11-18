@@ -213,9 +213,11 @@ fn far_hook(which: &str) -> i32 {
     let answer = match which {
         "line" => {
             let said = event.get("last_assistant_message").and_then(|m| m.as_str()).unwrap_or_default().to_string();
+            // Which conversation ended (see `Tab::hears_from`)
+            let from: Value = crate::agenthook::conversation_of(&event).map_or(Value::Null, Into::into);
             let (tx, rx) = std::sync::mpsc::channel();
             std::thread::spawn(move || {
-                let _ = tx.send(crate::api::ApiClient::from_env().and_then(|mut c| c.call("confer_stop", vec![said.into()])));
+                let _ = tx.send(crate::api::ApiClient::from_env().and_then(|mut c| c.call("confer_stop", vec![said.into(), from])));
             });
             match rx.recv_timeout(HOOK_WAIT) {
                 Ok(Ok(a)) if a["ok"] == json!(true) => a["result"]["hold"]

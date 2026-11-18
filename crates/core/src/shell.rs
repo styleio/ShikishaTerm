@@ -6588,7 +6588,10 @@ window.__issues = function (d) {
     case "merge":
       I.armed = ""; I.dupOf = "";
       // A base branch with a merge queue takes it into the queue, not at once
-      if (d.act === "merge") I.said = T[(d.data || {}).queued ? "issues.queued" : "issues.merged"] || "";
+      if (d.act === "merge") {
+        const m = d.data || {};
+        I.said = T[m.queued ? "issues.queued" : m.when_ready ? "issues.when_ready" : "issues.merged"] || "";
+      }
       // As what it is: a pull request opened from a GitHub Project's card is
       // one while the tab lists something else
       issuesAsk("detail", Object.assign({kind: (I.detail && I.detail.kind) || d.kind}, issueAt(d)));

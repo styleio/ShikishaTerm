@@ -4581,6 +4581,7 @@
   "issues.merge.rebase": "リベースしてマージ",
   "issues.merged": "マージしました。",
   "issues.queued": "マージキューに入れました。キューのチェックが通ると、GitHub がマージします。",
+  "issues.when_ready": "チェックが通ると、マージキューに入ります。",
   "issues.pr.conflict": "このプルリクエストは {base} と衝突しているので、GitHub ではマージできません。",
   "issues.pr.conflict.here": "{folder} で {base} の最新を取り込み、衝突は AI のタブで解きます。実行されるもの:",
   "issues.pr.conflict.stopped": "{folder} で、{base} の取り込みが衝突で止まっています。",

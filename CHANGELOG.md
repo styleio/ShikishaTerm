@@ -71,7 +71,8 @@ once it reaches its first tagged release.
   checks pass, where the repository lets a merge wait for them -- and
   GitHub merges it when the queue's own checks pass. One already in the
   queue is left there. `shikisha.github_pr_merge` does the same and answers
-  `{merged = false, queued = true}`.
+  `{merged = false, queued = true}` -- or `when_ready = true` while it waits
+  for its checks before going in.
 - **Windows' proxy setting is used.** On a PC whose way out goes through a
   proxy set in Windows (Settings > Network & internet > Proxy), the update
   check, GitHub, the limits readings, notifications, phone push, the

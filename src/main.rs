@@ -1499,13 +1499,20 @@ fn line_hook(v: &serde_json::Value) {
     if std::env::var(api::ENV_PIPE).is_err() {
         return go();
     }
+    // A side thread's end is not the tab's: its answer is no line of the tab's
+    if shikisha_core::agenthook::of_a_side_thread(v) {
+        return go();
+    }
     let said = v.get("last_assistant_message").and_then(|m| m.as_str()).unwrap_or_default().to_string();
+    // Which conversation ended: one an AI ran inside the tab ends with the
+    // tab's surroundings too, and its answer is not the tab's line
+    let from: serde_json::Value = shikisha_core::agenthook::conversation_of(v).map_or(serde_json::Value::Null, Into::into);
     // Asked on a thread and waited for a little less than the CLI waits for
     // this hook (10 s): an app that stopped answering must still leave the
     // hook time to say "go on" itself
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let answer = api::ApiClient::from_env().and_then(|mut c| c.call("confer_stop", vec![said.into()]));
+        let answer = api::ApiClient::from_env().and_then(|mut c| c.call("confer_stop", vec![said.into(), from]));
         let _ = tx.send(answer);
     });
     let answer = match rx.recv_timeout(std::time::Duration::from_secs(8)) {

@@ -4619,6 +4619,7 @@
   "issues.merge.rebase": "Rebase and merge",
   "issues.merged": "Merged.",
   "issues.queued": "In the merge queue. GitHub merges it when the queue's checks pass.",
+  "issues.when_ready": "It goes into the merge queue once its checks pass.",
   "issues.pr.conflict": "This pull request conflicts with {base}, so GitHub cannot merge it.",
   "issues.pr.conflict.here": "In {folder}, the latest {base} is brought in and the conflicts are handed to an AI tab. What runs:",
   "issues.pr.conflict.stopped": "In {folder}, bringing in {base} has stopped on its conflicts.",

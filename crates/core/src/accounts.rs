@@ -577,6 +577,13 @@ pub(crate) fn toml_text(text: &str, path: &[&str]) -> Option<String> {
             let (keys, rest) = toml_keys(line)?;
             let value = rest.strip_prefix('=')?.trim_start();
             let full: Vec<&str> = table.iter().map(String::as_str).chain(keys.iter().map(|(k, _)| k.as_str())).collect();
+            // A table written on the line (`oauth = { oauth_host = "..." }`)
+            if full.len() < path.len()
+                && path.starts_with(&full)
+                && let Some(inside) = value.strip_prefix('{')
+            {
+                return toml_inline_text(inside, &path[full.len()..]);
+            }
             if full == path {
                 let (said, after) = match value.as_bytes().first()? {
                     b'"' if !value.starts_with("\"\"\"") => {
@@ -595,6 +602,58 @@ pub(crate) fn toml_text(text: &str, path: &[&str]) -> Option<String> {
         }
     }
     None
+}
+
+/// The text at `path` inside a table written on one line, from just
+/// after its `{`: its keys, dotted or not, and tables inside it
+fn toml_inline_text(mut text: &str, path: &[&str]) -> Option<String> {
+    loop {
+        text = text.trim_start();
+        if text.starts_with('}') || text.is_empty() {
+            return None;
+        }
+        let (keys, rest) = toml_keys(text)?;
+        let value = rest.strip_prefix('=')?.trim_start();
+        let names: Vec<&str> = keys.iter().map(|(k, _)| k.as_str()).collect();
+        if names.len() < path.len()
+            && path.starts_with(&names)
+            && let Some(inside) = value.strip_prefix('{')
+        {
+            return toml_inline_text(inside, &path[names.len()..]);
+        }
+        if names == path {
+            return match value.as_bytes().first()? {
+                b'"' if !value.starts_with("\"\"\"") => serde_json::from_str::<String>(toml_key(value)?.1).ok(),
+                b'\'' if !value.starts_with("'''") => Some(toml_key(value)?.0),
+                _ => None,
+            };
+        }
+        text = toml_skip_value(value)?.strip_prefix(',').unwrap_or_default();
+    }
+}
+
+/// What follows one value inside a table written on one line: from its
+/// `,` or `}` on, quotes and brackets read through
+fn toml_skip_value(value: &str) -> Option<&str> {
+    let mut depth = 0usize;
+    let mut rest = value;
+    loop {
+        let at = rest.find(['"', '\'', '[', ']', '{', '}', ','])?;
+        let c = rest.as_bytes()[at];
+        match c {
+            b'"' | b'\'' => rest = toml_key(&rest[at..])?.2,
+            b'[' | b'{' => {
+                depth += 1;
+                rest = &rest[at + 1..];
+            }
+            b']' | b'}' if depth > 0 => {
+                depth -= 1;
+                rest = &rest[at + 1..];
+            }
+            _ if depth == 0 => return Some(&rest[at..]),
+            _ => rest = &rest[at + 1..],
+        }
+    }
 }
 
 /// `ours` (an account's Codex settings) with the folders `theirs` (the usual
@@ -985,6 +1044,13 @@ mod tests {
         assert_eq!(toml_text(hidden, &path), None, "a line inside a text was taken for a key");
         assert_eq!(toml_text("[other]\noauth_host = \"https://y.example\"\n", &path), None);
         assert_eq!(toml_text("[providers.\"managed:kimi-code\".oauth]\noauth_host = 3\n", &path), None);
+        // ...and inside a table written on its line
+        let inline = "[providers.\"managed:kimi-code\"]\nbase_url = \"https://custom.example/coding/v1\"\noauth = { oauth_host = \"https://login.example\" }\n";
+        assert_eq!(toml_text(inline, &path).as_deref(), Some("https://login.example"));
+        let beside = "[providers]\n\"managed:kimi-code\" = { base_url = \"https://b.example\", oauth = { scopes = [\"a\", \"b,c\"], oauth_host = 'https://d.example' } }\n";
+        assert_eq!(toml_text(beside, &path).as_deref(), Some("https://d.example"));
+        assert_eq!(toml_text(beside, &["providers", "managed:kimi-code", "base_url"]).as_deref(), Some("https://b.example"));
+        assert_eq!(toml_text("[providers.\"managed:kimi-code\"]\noauth = { other = 1 }\n", &path), None);
     }
 
     struct Scratch(PathBuf);

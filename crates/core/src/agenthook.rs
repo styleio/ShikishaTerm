@@ -1438,9 +1438,8 @@ fn is_side_thread(id: &str) -> bool {
 }
 
 /// The conversation `id` is a side thread. Written by a hook that hears
-/// one begin, and by the app when it finds a conversation begun inside a
-/// tab's own turn (`Tab::hears_session`)
-pub fn note_side_thread(id: &str) {
+/// one begin
+fn note_side_thread(id: &str) {
     // An id is a word; anything else is not written into a list of lines
     if id.is_empty() || id.len() > 200 || !id.chars().all(|c| c.is_ascii_graphic()) {
         return;
@@ -1497,7 +1496,14 @@ const REVIEWER_READ_MOST: u64 = 8 * 1024 * 1024;
 /// (`turn_context`, `approvals_reviewer`): read from the newest turn back.
 /// Only a record that says so in as many words counts -- no record, an
 /// older CLI that writes no reviewer, a record that cannot be read: the
-/// request is a person's, as it always was
+/// request is a person's, as it always was.
+///
+/// The turn's reviewer is not the last word on every request: Codex still
+/// puts one before the person when a rule says a person must decide it, or
+/// when its reviewer cannot, and the event does not say which. Such a
+/// request is a dialog on the screen, and a question read off the screen
+/// outranks what a hook says (`detect`; the dialogs Codex draws are in its
+/// profile's `question_patterns`)
 fn reviewed_by_the_cli(v: &serde_json::Value) -> bool {
     if v.get("hook_event_name").and_then(|e| e.as_str()) != Some("PermissionRequest") {
         return false;
@@ -1547,16 +1553,27 @@ fn last_reviewer(path: &Path) -> Option<String> {
     None
 }
 
+/// The conversation an event is of, whatever the CLI calls it
+pub fn conversation_of(v: &serde_json::Value) -> Option<String> {
+    ["session_id", "sessionId", "conversation_id", "conversationId"]
+        .iter()
+        .find_map(|k| v.get(*k).and_then(|x| x.as_str()))
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+}
+
+/// Whether the conversation an event is of is a side thread (see
+/// [`report_of`]): what it says at the end of its turn is not the tab's
+pub fn of_a_side_thread(v: &serde_json::Value) -> bool {
+    conversation_of(v).is_some_and(|id| is_side_thread(&id))
+}
+
 /// `kind` is what the hook entry asked for: `session`, or `state:<STATE>`.
 pub fn report_of(kind: &str, v: &serde_json::Value) -> Report {
     // The same fact goes by several names across the CLIs that report it, and a
     // CLI is free to rename it in its next release. Read every spelling anyone
     // is known to use rather than one and a shrug
-    let id = ["session_id", "sessionId", "conversation_id", "conversationId"]
-        .iter()
-        .find_map(|k| v.get(*k).and_then(|x| x.as_str()))
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string());
+    let id = conversation_of(v);
     // A side thread of the tab's conversation, begun or carrying on: none
     // of it is the tab's to act on. Taken for the tab's, a side question
     // asked while the main turn ran put the tab down as finished when the

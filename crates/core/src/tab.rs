@@ -4171,6 +4171,10 @@ pub struct Tab {
     /// places of the ones not answered yet. While any is open a person is
     /// wanted, though the AI goes on working
     open_asks: Vec<(String, Vec<usize>)>,
+    /// Answers heard to questions not heard asked yet, by call and place:
+    /// hooks are told not to wait for each other, and the report of a
+    /// question can come in after the answer to it
+    early_answers: Vec<(String, usize)>,
     /// What this tab's CLI can do about carrying a conversation across a
     /// restart, read from its profile at every launch (so editing a profile
     /// takes effect the next time, like the detection rules do)
@@ -5449,6 +5453,7 @@ impl Tab {
             session,
             nested: Vec::new(),
             open_asks: Vec::new(),
+            early_answers: Vec::new(),
             resume: resume_spec,
             title,
             id: opts.id.clone(),
@@ -6570,6 +6575,7 @@ impl Tab {
         // the CLI drops the ones nobody answered
         if taken && (state.turn_ended() || state == TabState::Wait) {
             self.open_asks.clear();
+            self.early_answers.clear();
         }
         taken
     }
@@ -6598,11 +6604,6 @@ impl Tab {
         self.aside.helping(Instant::now())
     }
 
-    /// What this tab has to take from one report of its CLI's hook, beyond the
-    /// conversation's id and its prompt: its state, and what runs beside it.
-    /// The one place both roads a report comes by -- the pipe from a program
-    /// here, the terminal from one on another machine -- hand it over, so the
-    /// two cannot come to read the same report differently
     /// Whether a conversation that says it is running in this tab is the
     /// tab's own, and is taken as the one it is running.
     ///
@@ -6611,22 +6612,23 @@ impl Tab {
     /// and report as the tab: taken for its own, the tab was put down as
     /// finished when the program it ran finished, and the conversation it
     /// would be taken up in again after a restart was that program's. What
-    /// gives them away: a conversation begun afresh, other than the tab's,
-    /// while the tab's own is in the middle of a turn -- a person cannot
-    /// start one in a tab whose AI is at work. Such a conversation is
-    /// remembered (here, and on the machine's list of side threads, which
-    /// the hooks read) and nothing it says is the tab's
+    /// gives them away: a conversation other than the tab's -- begun afresh
+    /// or taken up again -- while the tab's own is in the middle of a turn;
+    /// a person cannot start one in a tab whose AI is at work.
+    ///
+    /// Remembered by this tab alone, and only while the app runs: the same
+    /// conversation taken up later by a person, in another tab, is that
+    /// tab's, and a list kept for the whole machine would have dropped
+    /// everything it said there
     pub fn hears_session(&mut self, id: &str, fresh: bool) -> bool {
         if self.nested.iter().any(|n| n == id) {
             return false;
         }
-        let another = self.session.as_ref().is_some_and(|s| s.id != id);
-        if another && fresh && self.hook_word() == Some(TabState::Busy) {
+        if self.another_mid_turn(id) {
             if self.nested.len() >= NESTED_MOST {
                 self.nested.remove(0);
             }
             self.nested.push(id.to_string());
-            crate::agenthook::note_side_thread(id);
             return false;
         }
         if fresh {
@@ -6638,8 +6640,22 @@ impl Tab {
     /// Whether what a conversation says is the tab's to act on: anything
     /// but a conversation its AI ran inside it (`hears_session`). A report
     /// that does not say which conversation it is of is the tab's
+    ///
+    /// Hooks are programs of their own, told not to wait for each other: a
+    /// run's end can be heard before its start. So a conversation other than
+    /// the tab's, heard while the tab's own is in the middle of a turn, is
+    /// not the tab's whether or not its start was heard
     pub fn hears_from(&self, conversation: Option<&str>) -> bool {
-        conversation.is_none_or(|c| !self.nested.iter().any(|n| n == c))
+        conversation.is_none_or(|c| !self.nested.iter().any(|n| n == c) && !self.another_mid_turn(c))
+    }
+
+    /// Whether `id` is another conversation than the one the tab's hook
+    /// said it runs, heard while that one is in the middle of a turn. Only
+    /// against a conversation its hook named: one this app worked out for
+    /// itself may be out of date, and would shut the real one out
+    fn another_mid_turn(&self, id: &str) -> bool {
+        self.session.as_ref().is_some_and(|s| s.source == SessionSource::Hook && s.id != id)
+            && self.hook_word() == Some(TabState::Busy)
     }
 
     /// The tab's AI asked the person `count` questions in the call `call`,
@@ -6652,7 +6668,12 @@ impl Tab {
         if self.open_asks.len() >= OPEN_ASKS_MOST {
             self.open_asks.remove(0);
         }
-        self.open_asks.push((call.to_string(), (0..count.min(64)).collect()));
+        // Less what was answered before the question was heard
+        let left: Vec<usize> = (0..count.min(64)).filter(|n| !self.early_answers.iter().any(|(c, a)| c == call && a == n)).collect();
+        self.early_answers.retain(|(c, _)| c != call);
+        if !left.is_empty() {
+            self.open_asks.push((call.to_string(), left));
+        }
     }
 
     /// What a person sent the tab's AI, as its hook says it was sent: the
@@ -6663,8 +6684,15 @@ impl Tab {
         match crate::agenthook::answers_in(text) {
             Some(answers) => {
                 for (call, at) in answers {
-                    if let Some((_, left)) = self.open_asks.iter_mut().find(|(c, _)| *c == call) {
-                        left.retain(|n| *n != at);
+                    match self.open_asks.iter_mut().find(|(c, _)| *c == call) {
+                        Some((_, left)) => left.retain(|n| *n != at),
+                        // Its question not heard yet: kept for when it is
+                        None => {
+                            if self.early_answers.len() >= OPEN_ASKS_MOST * 4 {
+                                self.early_answers.remove(0);
+                            }
+                            self.early_answers.push((call, at));
+                        }
                     }
                 }
                 self.open_asks.retain(|(_, left)| !left.is_empty());
@@ -6681,6 +6709,11 @@ impl Tab {
         !self.open_asks.is_empty()
     }
 
+    /// What this tab has to take from one report of its CLI's hook, beyond the
+    /// conversation's id and its prompt: its state, and what runs beside it.
+    /// The one place both roads a report comes by -- the pipe from a program
+    /// here, the terminal from one on another machine -- hand it over, so the
+    /// two cannot come to read the same report differently
     pub fn take_report(&mut self, report: &crate::agenthook::Report, sent_ms: u64) -> bool {
         if !self.hears_from(report.from.as_deref()) {
             return true;
@@ -7571,8 +7604,18 @@ mod nested_conversations {
         let own = crate::agenthook::Report { state: Some("DONE".into()), from: Some("main-conv".into()), ..Default::default() };
         t.take_report(&own, now + 20);
         assert_eq!(t.hook_word(), Some(TabState::Done));
-        // A conversation taken up again mid-turn is not a fresh one
-        assert!(t.hears_session("resumed", false));
+        // Another conversation taken up again mid-turn is not the tab's either
+        assert!(t.hook_says(TabState::Busy, now + 30));
+        assert!(!t.hears_session("resumed-run", false));
+        // A run's end heard before its start is not the tab's end
+        let early = crate::agenthook::Report { state: Some("DONE".into()), from: Some("unheard-run".into()), ..Default::default() };
+        t.take_report(&early, now + 40);
+        assert_eq!(t.hook_word(), Some(TabState::Busy), "a run heard ending before it began put the tab down as finished");
+        assert!(!t.hears_session("unheard-run", true));
+        assert_eq!(t.session.as_ref().map(|s| s.id.as_str()), Some("main-conv"));
+        // Between turns a person may take another conversation up
+        assert!(t.hook_says(TabState::Done, now + 50));
+        assert!(t.hears_session("person-picked", false));
         t.kill();
     }
 
@@ -7604,6 +7647,13 @@ mod nested_conversations {
         assert!(t.asks_open());
         t.heard_prompt("never mind, use Postgres");
         assert!(!t.asks_open());
+        // An answer heard before its question: the question is not left open
+        assert!(t.hook_says(TabState::Busy, now + 5));
+        t.heard_prompt(&reply(&[("call_6_1", 0)]));
+        t.asked_aside("call_6_1", 2);
+        assert!(t.asks_open(), "the question not answered was dropped with the one that was");
+        t.heard_prompt(&reply(&[("call_6_1", 1)]));
+        assert!(!t.asks_open(), "a question answered before it was heard was left open");
         // So does the end of the turn
         t.asked_aside("call_5_1", 1);
         assert!(t.hook_says(TabState::Done, now + 10));

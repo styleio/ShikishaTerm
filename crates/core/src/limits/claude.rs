@@ -149,6 +149,9 @@ pub fn parse(v: &serde_json::Value) -> Option<Limits> {
             wins.push(Allowance::whole(span, w));
         }
     }
+    // Whether the subscription as a whole has windows: a model's own week
+    // is not one, whichever way the body writes it
+    let windowed = !wins.is_empty();
     let mut seen: Vec<String> = Vec::new();
     let mut scoped = |name: &str, w: Window, wins: &mut Vec<Allowance>| {
         let name = name.trim();
@@ -170,7 +173,7 @@ pub fn parse(v: &serde_json::Value) -> Option<Limits> {
     // A seat with no five hours and no week to it (an organisation's plan)
     // is held by the month's spending cap alone, and that is its limit.
     // Beside the windows, spending is what is paid past them, not a limit
-    if wins.is_empty()
+    if !windowed
         && let Some(pct) = spend_cap_used(v)
     {
         wins.push(Allowance::whole(Span::Month, Window::of_percent(pct, None)));
@@ -392,6 +395,11 @@ mod tests {
             "extra_usage": {"monthly_limit": 50000, "used_credits": 40000, "utilization": 80}});
         assert_eq!(month(balance_then_older), Some(80));
         assert_eq!(parse(&serde_json::json!({"spend": {"balance": {"amount_minor": 1000}}})), None, "a balance with no cap was made a limit");
+        // A model's own week beside the cap, written either way, leaves the cap shown
+        let scoped = serde_json::json!({"limits": [{"kind": "weekly_scoped", "utilization": 20, "scope": {"model": {"display_name": "fable"}}}],
+            "spend": {"percent": 90, "limit": {"amount_minor": 100}}});
+        let older = serde_json::json!({"seven_day_fable": {"utilization": 20}, "spend": {"percent": 90, "limit": {"amount_minor": 100}}});
+        assert_eq!((month(scoped), month(older)), (Some(90), Some(90)), "how the body wrote a model's week decided whether the cap showed");
         let beside = serde_json::json!({"five_hour": {"utilization": 10}, "spend": {"used": {"amount_minor": 5000}, "limit": {"amount_minor": 200000}, "percent": 2.5}});
         let l = parse(&beside).unwrap();
         assert!(l.whole(Span::Month).is_none() && l.whole(Span::Hours5).is_some(), "spending past the windows was shown as a limit");

@@ -5729,12 +5729,16 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     // the tab is who is calling
                     if call.method == "confer_stop" {
                         let said = call.params.first().and_then(serde_json::Value::as_str).unwrap_or_default();
+                        // The conversation that ended, when the hook says: one an AI
+                        // ran inside the tab is no line of the tab's
+                        let from = call.params.get(1).and_then(serde_json::Value::as_str);
                         // On whichever desk it is: an ask is followed on a desk not in
                         // front too (`tend_asks`), and its answer ends there
                         let me = call
                             .caller
                             .as_deref()
-                            .and_then(|c| tabs.iter().find(|t| t.called() == c));
+                            .and_then(|c| tabs.iter().find(|t| t.called() == c))
+                            .filter(|t| t.hears_from(from));
                         let line_max = config::confer().line_max;
                         let mut hold = serde_json::Value::Null;
                         if let Some(t) = me {

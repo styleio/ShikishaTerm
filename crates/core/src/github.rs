@@ -1251,7 +1251,9 @@ impl Hub {
                     json!({"id": id, "method": method.to_uppercase(), "head": at(&current)}),
                 )?;
                 match refused(&answer, "enablePullRequestAutoMerge") {
-                    None => return Ok(json!({"merged": false, "queued": true})),
+                    // Not in the queue yet: GitHub puts it there once its
+                    // checks pass
+                    None => return Ok(json!({"merged": false, "queued": false, "when_ready": true})),
                     // Its checks have passed already: nothing to wait for
                     Some(why) if why.to_lowercase().contains("clean status") => self.enqueue(&id, &at(&current))?,
                     Some(why) => bail!(crate::i18n::tp("err.github.queue", &[("reason", &why)])),
