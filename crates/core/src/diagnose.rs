@@ -1329,7 +1329,8 @@ fn own_names() -> Vec<(String, String)> {
                 // names are looked for: as it is, under the home folder's
                 // stand-in, with the other mark, and with each mark twice
                 // (as JSON writes it)
-                let whole = at.to_string_lossy().into_owned();
+                // (the settings may hold it with either mark; the logs write it with the system's)
+                let whole = at.to_string_lossy().replace('/', std::path::MAIN_SEPARATOR_STR);
                 let mut ways = vec![whole.clone()];
                 if let Some(rest) = home.as_ref().filter(|h| whole.to_lowercase().starts_with(&h.to_lowercase())).and_then(|h| whole.get(h.len()..)) {
                     ways.push(format!("{HOME}{rest}"));

@@ -265,7 +265,7 @@ pub fn of_log(hooks: &str) -> String {
     }
     let kept = lines.iter().filter(|l| l.starts_with("could not remove ")).count();
     if kept > 0 {
-        out.push_str(&format!("A folder was asked to be removed and stayed, {kept} times; the lines beginning \"could not remove\" say which file held it.\n"));
+        out.push_str(&format!("A folder was asked to be removed and stayed, {kept} times. The lines beginning \"could not remove\" keep the system's reason for it (os error 32 is a file in use, 5 one the app may not touch); which file it was is left out of a report.\n"));
     }
     // The same thing said over and over is either the trouble or its trace
     // (a log put in a report has a run of the same line said once, with a
@@ -422,7 +422,7 @@ mod tests {
         let folded = "[   0.000] started\n[   2.000] this PC's resident process: no line to it (gone)\n    (the same 39 more times, the last at 80.000)\n";
         assert!(of_log(folded).contains("40 times: this PC's resident process: no line to it (gone)"), "{}", of_log(folded));
         assert!(told.contains("restarting the PC"), "{told}");
-        assert!(told.contains("stayed, 1 times"), "{told}");
+        assert!(told.contains("stayed, 1 times."), "{told}");
         assert!(told.contains("40 times: this PC's resident process: no line to it"), "{told}");
         assert!(of_log("[   0.000] started\n[   1.000] ready\n").contains("Nothing in it is known to stop the app working"));
     }
