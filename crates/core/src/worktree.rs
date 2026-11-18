@@ -4242,6 +4242,7 @@ pub fn as_written(argv: &[String]) -> String {
 }
 
 pub fn run(argv: &[String]) -> Result<()> {
+    let _doing = crate::watchdog::doing("running git for a working folder");
     let (head, rest) = argv.split_first().expect("a command with nothing in it");
     let mut running = std::process::Command::new(head);
     running.args(rest);

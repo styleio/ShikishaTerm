@@ -864,10 +864,36 @@ fn launcher(name: &str, args: Vec<String>) -> Option<(String, Vec<String>)> {
 pub fn assistant_ai(want: Option<&str>) -> Option<(&'static str, &'static str)> {
     AI_ENGINES
         .iter()
-        .find(|(name, _, _)| {
-            want.is_none_or(|w| w == *name) && crate::tab::resolve_command(name).is_some()
-        })
+        .find(|(name, _, _)| want.is_none_or(|w| w == *name) && installed_lately(name))
         .map(|(name, _, label)| (*name, *label))
+}
+
+/// For how long an answer to "is this AI installed" is taken to still hold
+const INSTALLED_HOLDS: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Whether an AI's program is installed, as found within the last few
+/// seconds.
+///
+/// Finding it means asking the disk about every folder on the PATH, for
+/// each ending a program can have: a few hundred questions. The work loop
+/// asks which assistant AI there is each time it says what the screen
+/// shows, sixty times a second, and asked afresh each time that was a third
+/// of all the loop did while nothing was happening -- and far more on a
+/// machine whose PATH is long, or whose disk is busy, where every one of
+/// those questions waits its turn and the whole window with it. An AI
+/// installed or taken off shows within these few seconds
+fn installed_lately(name: &str) -> bool {
+    static FOUND: std::sync::Mutex<Vec<(String, std::time::Instant, bool)>> = std::sync::Mutex::new(Vec::new());
+    let mut found = FOUND.lock().unwrap_or_else(|e| e.into_inner());
+    // (a test changes what is installed and asks again at once)
+    let holds = if cfg!(test) { std::time::Duration::ZERO } else { INSTALLED_HOLDS };
+    if let Some(there) = found.iter().find(|(n, at, _)| n == name && at.elapsed() < holds).map(|(_, _, there)| *there) {
+        return there;
+    }
+    let there = crate::tab::resolve_command(name).is_some();
+    found.retain(|(n, _, _)| n != name);
+    found.push((name.to_string(), std::time::Instant::now(), there));
+    there
 }
 
 /// What the first-start setup offers: the assistant AIs, the installed ones to

@@ -297,6 +297,41 @@ pub fn of_log(hooks: &str) -> String {
     out
 }
 
+/// The last times a part of the app stopped answering, with where it was
+/// (`crate::watchdog` wrote them down as they happened)
+pub fn of_hangs(hangs: &[crate::watchdog::Hang], now: u64) -> String {
+    let mut out = String::from("== The last time each part of the app stopped answering (hang.json) ==\n");
+    if hangs.is_empty() {
+        out.push_str("No part has stopped for long enough to be written down (twenty seconds).\n");
+        return out;
+    }
+    for h in hangs {
+        let ago = now.saturating_sub(h.since);
+        out.push_str(&format!(
+            "the {} part, {} h {} min ago, for {} s; {}\n",
+            h.part,
+            ago / 3_600,
+            ago % 3_600 / 60,
+            h.secs,
+            if h.back { "it answered again" } else { "it had not answered again when this was written" }
+        ));
+        if !h.doing.is_empty() {
+            out.push_str(&format!("  it was in the middle of: {}\n", h.doing));
+        }
+        match h.stack.is_empty() {
+            true => out.push_str("  where it was is not written down (a version from before that was kept, or a machine it cannot be read on)\n"),
+            false => {
+                // The system's own function it was inside says the kind of thing it waited for
+                out.push_str("  where it was, the innermost first -- a place given as a number is in the app itself, and is named by the build it came from:\n");
+                for place in h.stack.iter().take(24) {
+                    out.push_str(&format!("    {place}\n"));
+                }
+            }
+        }
+    }
+    out
+}
+
 /// What the machine was doing at the moment the report was made
 pub fn of_now(look: &Look, top: &crate::health::Top) -> String {
     let mut out = String::from("== At the moment this report was made (now.txt) ==\n");
@@ -405,6 +440,25 @@ mod tests {
         let apart = "[pid 1 at 100] 2026-11-18T10:00:00 cpu 6%, memory 500 MB free of 7.8 GB, late: work 0.0 s window 2.0 s, kernel 1%, disk busy 1%, disk queue 0.0, paged in 0/s\n[pid 1 at 160] 2026-11-18T10:01:00 cpu 6%, memory 4.0 GB free of 7.8 GB, late: work 0.0 s window 2.0 s, kernel 1%, disk busy 1%, disk queue 0.0, paged in 3000/s\n";
         let told = of_week(apart);
         assert!(!told.contains("ran out of memory") && told.contains("a large program was starting"), "{told}");
+    }
+
+    /// A part that stopped is told with what it was doing and where it was
+    #[test]
+    fn a_part_that_stopped_is_told_with_where_it_was() {
+        let hang = crate::watchdog::Hang {
+            pid: 7,
+            part: "work".into(),
+            since: 1_000,
+            secs: 41,
+            back: true,
+            doing: "running git".into(),
+            stack: vec!["ntdll.dll!NtWaitForSingleObject+0x14".into(), "SHIKISHA-TERM.exe+0x3d0899a".into()],
+            ..Default::default()
+        };
+        let told = of_hangs(&[hang], 1_000 + 3_600 + 120);
+        assert!(told.contains("the work part, 1 h 2 min ago, for 41 s; it answered again"), "{told}");
+        assert!(told.contains("it was in the middle of: running git") && told.contains("    ntdll.dll!NtWaitForSingleObject+0x14\n    SHIKISHA-TERM.exe+0x3d0899a"), "{told}");
+        assert!(of_hangs(&[], 0).contains("No part has stopped"));
     }
 
     /// The log's known troubles are named with what clears them, and what

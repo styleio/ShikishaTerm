@@ -120,6 +120,7 @@ pub mod pressure;
 pub mod health;
 pub mod perf;
 pub mod findings;
+pub mod stack;
 pub mod profile;
 pub mod push;
 pub mod pwa;

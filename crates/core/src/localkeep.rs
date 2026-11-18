@@ -218,7 +218,18 @@ fn connect_or(starting: bool) -> Result<Arc<Link>> {
     if !matches!(serde_json::from_str::<crate::farlink::Frame>(first.trim()), Ok(crate::farlink::Frame::Hello { .. })) {
         bail!("this PC's resident process did not name itself");
     }
-    let key = crate::fardaemon::door_key(&home)?;
+    let key = match crate::fardaemon::door_key(&home) {
+        Ok(key) => key,
+        // One that answers and whose key is gone has outlived its folder
+        // (`end_outlived`). Ended, the next try starts a new one
+        Err(e) if starting && outlived(&home) => {
+            drop(reader);
+            drop(conn);
+            end_outlived(&home, &door).with_context(|| format!("{e:#}"))?;
+            return connect_or(starting);
+        }
+        Err(e) => return Err(e),
+    };
     (&conn).write_all(format!("{}\n", json!({ "role": "port", "key": key })).as_bytes())?;
     // The line hears the resident process name itself first, as every line
     // to a bridge does
@@ -237,6 +248,88 @@ fn connect_or(starting: bool) -> Result<Arc<Link>> {
         crate::caps::tell(crate::i18n::tp("msg.localkeep.older", &[("theirs", &theirs), ("ours", env!("CARGO_PKG_VERSION"))]));
     }
     Ok(link)
+}
+
+/// How many resident processes this run may end for having outlived their
+/// folder: one is the case this is for, and a second is allowed for a
+/// machine where it happens again; past that something else is wrong, and
+/// ending more would only hide it
+const OUTLIVED_MOST: u32 = 2;
+
+/// Whether the resident process that answers has outlived its folder: its
+/// key is not where it wrote it, and still is not a few seconds on.
+///
+/// The key is written the moment a resident process opens its door, and
+/// the folder it is in is the app's own data -- which goes when the data is
+/// cleared, or the app is taken off and put on again. A resident process
+/// that was running then runs on, with its door open, and nobody can ever
+/// show it its key again: every tab waits for a line that cannot be made,
+/// and the programs it holds run where nobody sees them
+fn outlived(home: &std::path::Path) -> bool {
+    let key = crate::fardaemon::run_dir(home).join("keep.key");
+    for _ in 0..6 {
+        if key.exists() {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    true
+}
+
+/// End a resident process that has outlived its folder, with everything it
+/// holds, so that a new one can be started.
+///
+/// It cannot be asked to end: asking takes the key. So it is found among
+/// the processes -- a copy of this very program, started to keep this very
+/// folder -- and ended with what it started. What it held could not be
+/// reached by anybody any more; said in the log and to the person all the
+/// same, since programs of theirs ended with it
+#[cfg(windows)]
+fn end_outlived(home: &std::path::Path, door: &std::path::Path) -> Result<()> {
+    use std::os::windows::process::CommandExt as _;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    static ENDED: AtomicU32 = AtomicU32::new(0);
+    if ENDED.fetch_add(1, Ordering::SeqCst) >= OUTLIVED_MOST {
+        bail!("this PC's resident process has outlived its folder, and too many were ended for that already");
+    }
+    let me = std::env::current_exe()?;
+    let kept = home.to_string_lossy().to_lowercase();
+    let mut all = System::new();
+    all.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing().with_exe(UpdateKind::Always).with_cmd(UpdateKind::Always));
+    let mine: Vec<u32> = all
+        .processes()
+        .values()
+        .filter(|p| p.pid().as_u32() != std::process::id())
+        .filter(|p| p.exe().is_some_and(|e| e.to_string_lossy().eq_ignore_ascii_case(&me.to_string_lossy())))
+        .filter(|p| {
+            let said: Vec<String> = p.cmd().iter().map(|a| a.to_string_lossy().to_lowercase()).collect();
+            said.iter().any(|a| a == "--keeper") && said.iter().any(|a| *a == kept)
+        })
+        .map(|p| p.pid().as_u32())
+        .collect();
+    if mine.is_empty() {
+        bail!("this PC's resident process has outlived its folder, and was not found among the processes to be ended");
+    }
+    for pid in &mine {
+        // With everything it started: the terminals it holds are its children
+        let _ = std::process::Command::new("taskkill").args(["/PID", &pid.to_string(), "/T", "/F"]).creation_flags(0x0800_0000).output();
+    }
+    let until = Instant::now() + Duration::from_secs(8);
+    while !matches!(crate::fardaemon::find(door), crate::fardaemon::Found::Nobody) {
+        if Instant::now() >= until {
+            bail!("this PC's resident process has outlived its folder, and did not end when it was ended");
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    crate::append_hook_log(&format!("this PC's resident process: {} that outlived its folder ended, with what it held; a new one is started", mine.len()));
+    crate::caps::tell(crate::i18n::t("msg.localkeep.outlived"));
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn end_outlived(_home: &std::path::Path, _door: &std::path::Path) -> Result<()> {
+    bail!("this PC's resident process is only kept on Windows")
 }
 
 /// Start the resident process

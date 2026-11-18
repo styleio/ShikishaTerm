@@ -1559,7 +1559,9 @@ fn kind_of(name: &str) -> Kind {
     match name {
         "health.log" | "findings.txt" | "now.txt" | "about.txt" | "storage.txt" | "files.txt" | "settings.txt" | "dumps.txt" | "short-runs.txt" => Kind::Record,
         "events.txt" => Kind::Events,
-        "crash.log" | "last-run-ended.txt" | "memory.log" => Kind::Ending,
+        // (where a part stopped is the names of functions: not the app's
+        // vocabulary, and what the file is for)
+        "crash.log" | "last-run-ended.txt" | "memory.log" | "hang.json" => Kind::Ending,
         _ => Kind::Log,
     }
 }
@@ -1620,6 +1622,8 @@ pub fn bundle() -> Result<(String, Vec<u8>, usize)> {
         first.push('\n');
     }
     first.push_str(&crate::findings::of_week(health.as_deref().unwrap_or_default()));
+    first.push('\n');
+    first.push_str(&crate::findings::of_hangs(&crate::watchdog::last_hangs(), now_secs));
     first.push('\n');
     first.push_str(&crate::findings::of_log(hooks.as_deref().unwrap_or_default()));
     let about = later("about", about).recv_timeout(Duration::from_secs(8)).unwrap_or_else(|_| "the settings did not answer in time\n".to_string()) + &machine(git.recv_timeout(Duration::from_secs(6)).ok().flatten());

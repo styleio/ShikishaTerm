@@ -410,6 +410,7 @@ impl Link {
 
     /// Ask the bridge to do something over there, and wait for its answer
     pub fn call(&self, op: &str, p: Value, wait: Duration) -> Result<Value, String> {
+        let _doing = crate::watchdog::doing("asking a resident process or a bridge");
         if !self.is_up() {
             return Err("the bridge is not connected".into());
         }

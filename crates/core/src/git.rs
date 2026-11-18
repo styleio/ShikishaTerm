@@ -383,6 +383,7 @@ pub fn run_stdin(dir: &Path, args: &[&str], input: &str, limit: Duration) -> Res
 
 /// ...as somebody in particular
 pub fn run_as(dir: &Path, args: &[&str], input: &str, limit: Duration, who: &As) -> Result<String> {
+    let _doing = crate::watchdog::doing("running git");
     run_bytes_as(dir, args, input.as_bytes(), limit, who).map(|out| String::from_utf8_lossy(&out).into_owned())
 }
 

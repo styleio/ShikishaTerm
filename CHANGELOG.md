@@ -23,6 +23,13 @@ once it reaches its first tagged release.
   more numbers a line -- how busy the disk was, how much memory was being
   read back from it, how much of the machine this app and what it started
   were using -- and stays as small as it was.
+- **Where the app was when it stopped answering.** When a part of the app
+  has not answered for twenty seconds, what it was inside of is now written
+  down with the fact that it stopped: the system's own call it was waiting
+  in -- reading a folder, waiting for a program, for the network -- by name,
+  and the app's own functions above it by their place in the program.
+  `hang.json` holds it, and the first page of the saved diagnostics tells
+  it. None of the memory it was working on is kept.
 - **Less of you in the saved diagnostics.** Of the app's logs, the zip
   now keeps only the words the app itself is written in, and the numbers:
   any other word -- the name of a desk, a branch, a machine, a file, in
@@ -36,6 +43,19 @@ once it reaches its first tagged release.
   there.
 
 ### Fixed
+- **The app no longer searches the whole PATH sixty times a second.** To
+  say which assistant AI there is, the work loop looked for its program in
+  every folder of the PATH each time it described the screen. With nothing
+  happening that was a third of all the loop did; on a PC with a long PATH,
+  or a disk busy with something else -- an AI at work, a folder being
+  deleted -- every one of those lookups waited its turn, and the whole
+  window with it. The answer is now kept for a few seconds.
+- **A background process left over from before the app's data was cleared
+  no longer keeps every terminal from opening.** After the app was reset,
+  or taken off and put on again, the process that keeps this PC's terminals
+  running could still be there from before, with its key gone: no tab could
+  reach it, and each waited for good. The app now ends such a process, with
+  what it held, starts a new one, and says so.
 - **Removing a large folder no longer has a second program walking it the
   whole time.** While a worktree was being deleted, the count of what was
   left started again the moment it ended; in a folder of hundreds of

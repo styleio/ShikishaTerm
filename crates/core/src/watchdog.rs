@@ -122,10 +122,47 @@ pub fn late_so_far() -> [u64; 2] {
     [LATE[0].load(Ordering::SeqCst), LATE[1].load(Ordering::SeqCst)]
 }
 
+/// The number the system knows each part's thread by, once the part has
+/// said it is alive: what its stack is read by when it stops (`crate::stack`)
+static THREADS: [AtomicU32; 2] = [AtomicU32::new(0), AtomicU32::new(0)];
+
+/// What each part is in the middle of, when it is something that waits on
+/// what is outside the app -- git, a resident process, a disk. In the app's
+/// own words, never a name or a place. Empty the rest of the time
+static DOING: [std::sync::Mutex<&'static str>; 2] = [std::sync::Mutex::new(""), std::sync::Mutex::new("")];
+
 /// A part says it is alive, from its own thread
 pub fn beat(part: Part) {
-    MINE.with(|m| m.set(Some(part)));
+    MINE.with(|m| {
+        if m.get() != Some(part) {
+            m.set(Some(part));
+            THREADS[part.index()].store(crate::stack::this_thread(), Ordering::SeqCst);
+        }
+    });
     LAST[part.index()].store(awake_ms(), Ordering::SeqCst);
+}
+
+/// Says what the part on this thread is in the middle of, for as long as
+/// what is given back is kept: a part found stopped is written down with
+/// it. Nothing on a thread that is not a part's, and next to nothing on one
+/// that is -- two words put in a slot and taken out again
+pub fn doing(what: &'static str) -> Doing {
+    let Some(part) = MINE.with(|m| m.get()) else { return Doing(None) };
+    let i = part.index();
+    let before = std::mem::replace(&mut *DOING[i].lock().unwrap_or_else(|e| e.into_inner()), what);
+    Doing(Some((i, before)))
+}
+
+/// What `doing` gives back: dropped, the part is in the middle of what it
+/// was before
+pub struct Doing(Option<(usize, &'static str)>);
+
+impl Drop for Doing {
+    fn drop(&mut self) {
+        if let Some((i, before)) = self.0 {
+            *DOING[i].lock().unwrap_or_else(|e| e.into_inner()) = before;
+        }
+    }
 }
 
 /// Start watching a part from now on, from any thread: one that does not
@@ -184,6 +221,14 @@ pub struct Hang {
     /// The dump written when it was found, once it is written
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub dump: String,
+    /// What it was in the middle of when it was found, where it had said (`doing`)
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub doing: String,
+    /// Where its thread was when it was found: the functions it was inside
+    /// of, the innermost first (`crate::stack`). Names and places in the
+    /// program, nothing of what it was working on
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stack: Vec<String>,
 }
 
 /// The last time each part stopped, as the hang file says
@@ -264,14 +309,85 @@ pub fn start() {
     #[cfg(windows)]
     native::catch_crashes();
     let _ = std::thread::Builder::new().name("shikisha-watchdog".into()).spawn(watch);
+    #[cfg(debug_assertions)]
+    debug_sample();
+}
+
+/// For finding what the work loop spends its time on, in a debug build
+/// only: `SHIKISHA_DEBUG_SAMPLE=<after>:<for>` looks at where the loop's
+/// thread is every few milliseconds for `<for>` seconds, `<after>` seconds
+/// into the run, and writes `logs/sample.txt`: the functions it was found
+/// in most often -- innermost, and anywhere on the way down
+#[cfg(debug_assertions)]
+fn debug_sample() {
+    let Some((after, len)) = std::env::var("SHIKISHA_DEBUG_SAMPLE").ok().and_then(|v| {
+        let (a, b) = v.split_once(':')?;
+        Some((a.trim().parse::<u64>().ok()?, b.trim().parse::<u64>().ok()?))
+    }) else {
+        return;
+    };
+    let _ = std::thread::Builder::new().name("shikisha-sample".into()).spawn(move || {
+        use std::collections::{HashMap, HashSet};
+        std::thread::sleep(Duration::from_secs(after));
+        let until = std::time::Instant::now() + Duration::from_secs(len);
+        let (mut looks, mut innermost, mut anywhere): (u32, HashMap<u64, u32>, HashMap<u64, u32>) = (0, HashMap::new(), HashMap::new());
+        while std::time::Instant::now() < until {
+            let places = crate::stack::places(THREADS[Part::Work.index()].load(Ordering::SeqCst));
+            if let Some(first) = places.first() {
+                looks += 1;
+                *innermost.entry(*first).or_default() += 1;
+                for place in places.iter().collect::<HashSet<_>>() {
+                    *anywhere.entry(*place).or_default() += 1;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(11));
+        }
+        // By function, not by the place in it
+        let function = |place: u64| {
+            let said = crate::stack::told(place);
+            let name = said.split(" (").next().unwrap_or(&said);
+            // One the program's file gives no name for is kept as its place,
+            // for whoever has the build to name
+            match name.contains('!') {
+                true => name.rsplit_once("+0x").map_or(name, |(f, _)| f).to_string(),
+                false => name.to_string(),
+            }
+        };
+        let by_function = |places: HashMap<u64, u32>| {
+            let mut all: HashMap<String, u32> = HashMap::new();
+            for (place, n) in places {
+                *all.entry(function(place)).or_default() += n;
+            }
+            let mut all: Vec<(String, u32)> = all.into_iter().collect();
+            all.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            all
+        };
+        let mut out = format!("{looks} looks at the work loop's thread over {len} s\n\ninnermost (where the time itself goes):\n");
+        for (name, n) in by_function(innermost).iter().take(40) {
+            out.push_str(&format!("{:>6.1}%  {name}\n", *n as f64 * 100.0 / looks.max(1) as f64));
+        }
+        out.push_str("\nanywhere on the way down (a place may be counted in several functions of one look):\n");
+        for (name, n) in by_function(anywhere).iter().take(120) {
+            out.push_str(&format!("{:>6.1}%  {name}\n", *n as f64 * 100.0 / looks.max(1) as f64));
+        }
+        let _ = std::fs::write(crate::config::logs_dir().join("sample.txt"), out);
+    });
 }
 
 /// A dump asked for: of which part, for which time it stopped (the times
 /// any part stopped are counted, so a dump that comes back late is put with
 /// the time it was taken for)
+#[derive(Clone, Copy)]
 struct DumpAsk {
     part: Part,
     time: u64,
+}
+
+/// What came of asking: where the part's thread was, which is read at
+/// once, and then the dump, which takes a while
+enum Got {
+    Stack(Vec<String>),
+    Dump(Option<PathBuf>),
 }
 
 /// A part that is stopped, as the watching thread holds it
@@ -285,16 +401,22 @@ fn watch() {
     // ends cannot hold up writing down that the part stopped, nor the
     // watching of the other part
     let (ask_tx, ask_rx) = std::sync::mpsc::channel::<DumpAsk>();
-    let (got_tx, got_rx) = std::sync::mpsc::channel::<(DumpAsk, Option<PathBuf>)>();
+    let (got_tx, got_rx) = std::sync::mpsc::channel::<(DumpAsk, Got)>();
     let _ = std::thread::Builder::new().name("shikisha-dumps".into()).spawn(move || {
         take_old_dumps();
         tidy_dumps(&dumps_dir());
         for ask in ask_rx {
+            // Where it is first, while it is still there: a part that comes
+            // back a moment later is somewhere else by the time a dump is written
+            let stack = crate::stack::of(THREADS[ask.part.index()].load(Ordering::SeqCst));
+            if got_tx.send((ask, Got::Stack(stack))).is_err() {
+                return;
+            }
             #[cfg(windows)]
             let got = native::dump_now(&format!("hang-{}", ask.part.name()), None);
             #[cfg(not(windows))]
             let got = None;
-            if got_tx.send((ask, got)).is_err() {
+            if got_tx.send((ask, Got::Dump(got))).is_err() {
                 return;
             }
         }
@@ -312,10 +434,19 @@ fn watch() {
         let mut changed = false;
         for (ask, got) in got_rx.try_iter() {
             let i = ask.part.index();
-            let Some(path) = got else { continue };
-            if let (Some(h), true) = (&mut open[i], open_time[i] == ask.time) {
-                h.dump = path.display().to_string();
-                changed = true;
+            let (Some(h), true) = (&mut open[i], open_time[i] == ask.time) else { continue };
+            match got {
+                Got::Stack(stack) if !stack.is_empty() => {
+                    // Said where the stop itself is said too, the innermost few
+                    note(&format!("the {} part was in: {}", ask.part.name(), stack.iter().take(12).cloned().collect::<Vec<_>>().join(" < ")));
+                    h.stack = stack;
+                    changed = true;
+                }
+                Got::Dump(Some(path)) => {
+                    h.dump = path.display().to_string();
+                    changed = true;
+                }
+                _ => {}
             }
         }
         let now = awake_ms();
@@ -350,6 +481,8 @@ fn watch() {
                         secs: quiet.as_secs(),
                         back: false,
                         dump: String::new(),
+                        doing: DOING[i].lock().unwrap_or_else(|e| e.into_inner()).to_string(),
+                        stack: Vec::new(),
                     });
                     open_time[i] = times;
                     stopped[i] = Some(Stopped { from: last });
@@ -786,7 +919,7 @@ mod tests {
 
     #[test]
     fn hangs_read_back_as_written() {
-        let h = Hang { pid: 7, part: "work".into(), since: 100, secs: 25, back: false, dump: String::new() };
+        let h = Hang { pid: 7, part: "work".into(), since: 100, secs: 25, back: false, dump: String::new(), ..Default::default() };
         let text = serde_json::to_string(&[&h]).unwrap();
         assert_eq!(read_hangs(&text), vec![h.clone()]);
         assert!(!text.contains("dump"), "no dump, nothing said of one");
@@ -830,8 +963,8 @@ mod tests {
 
     #[test]
     fn a_part_back_does_not_hide_one_still_stopped() {
-        let work = Hang { pid: 7, part: "work".into(), since: 100, secs: 40, back: false, dump: String::new() };
-        let window = Hang { pid: 7, part: "window".into(), since: 100, secs: 22, back: true, dump: String::new() };
+        let work = Hang { pid: 7, part: "work".into(), since: 100, secs: 40, back: false, dump: String::new(), ..Default::default() };
+        let window = Hang { pid: 7, part: "window".into(), since: 100, secs: 22, back: true, dump: String::new(), ..Default::default() };
         let both = [window.clone(), work.clone()];
         assert_eq!(still_stopped(&both, 7, 90), Some(&work));
         assert_eq!(still_stopped(&[window], 7, 90), None, "back is not stopped");
