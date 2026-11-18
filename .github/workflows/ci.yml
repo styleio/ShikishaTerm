@@ -23,7 +23,10 @@ jobs:
       - name: Build
         run: cargo build --workspace --locked --verbose
 
+      # A test that hangs fails this step with its log kept, rather than
+      # the whole job being cut off with nothing to read
       - name: Test
+        timeout-minutes: 12
         run: cargo test --workspace --locked --verbose
 
       # A page that cannot take its first state is an app that never starts.
@@ -87,7 +90,10 @@ jobs:
       - name: Build
         run: cargo build --workspace --locked --verbose
 
+      # A test that hangs fails this step with its log kept, rather than
+      # the whole job being cut off with nothing to read
       - name: Test
+        timeout-minutes: 12
         run: cargo test --workspace --locked --verbose
 
       # The cask a release hands to Homebrew, written from made-up checksums and
