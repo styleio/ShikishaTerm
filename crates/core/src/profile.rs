@@ -452,6 +452,14 @@ pub struct HookSpec {
     /// it is on (`agenthook::NOTICE_ARG`). Absent: it is not told
     #[serde(default)]
     pub turn_start: Option<String>,
+    /// The events that say the CLI asked the person something without
+    /// stopping its turn, and the tool it asks with:
+    /// `{"PreToolUse": "request_user_input_async"}`. The turn goes on while
+    /// the question waits, so nothing else the CLI reports says a person is
+    /// wanted. Written with a matcher on the tool's name, so the hook runs
+    /// for that tool alone and not for every command the CLI runs
+    #[serde(default)]
+    pub asks: std::collections::BTreeMap<String, String>,
     /// What this CLI counts a hook's patience in. Absent is seconds, which is
     /// what most of them use -- and getting it wrong is not a rounding error:
     /// three seconds written where three milliseconds was meant kills every

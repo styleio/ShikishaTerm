@@ -4571,8 +4571,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         append_hook_log(&format!("\"{}\" (on another machine) is running {}", t.title, s.short()));
                         t.session = Some(s);
                     }
-                    if let Some(prompt) = &report.prompt {
-                        t.heard_from_program(prompt);
+                    if let Some(prompt) = report.prompt.as_deref().filter(|_| t.hears_from(report.from.as_deref())) {
+                        t.heard_prompt(prompt);
                     }
                     let sent = if sent == 0 { crate::hooks::epoch_ms() } else { sent };
                     t.take_report(&report, sent);
@@ -22601,7 +22601,7 @@ pub fn exec_commands(
                     continue;
                 };
                 if t.hears_from(from.as_deref()) {
-                    t.heard_from_program(&text);
+                    t.heard_prompt(&text);
                 }
             }
             // A tab saying what it is doing, rather than being read. Believed
@@ -22633,6 +22633,14 @@ pub fn exec_commands(
                     t.helper_says(&id, running);
                 }
                 None => append_hook_log(&format!("set_helper from tab{origin}: no such tab")),
+            },
+            Command::ReportAsked { call, count, from, origin } => match session_of(origin).and_then(|i| tabs.get_mut(i)) {
+                Some(t) if !t.hears_from(from.as_deref()) => {}
+                Some(t) => {
+                    append_hook_log(&format!("tab{origin} \"{}\": asked {count} question(s) without stopping its turn", t.title));
+                    t.asked_aside(&call, count);
+                }
+                None => append_hook_log(&format!("report_asked from tab{origin}: no such tab")),
             },
             Command::SetRunning { helpers, other, from, origin } => match session_of(origin).and_then(|i| tabs.get_mut(i)) {
                 Some(t) if !t.hears_from(from.as_deref()) => {}

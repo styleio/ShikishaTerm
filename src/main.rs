@@ -1432,6 +1432,9 @@ fn hook_mode(kind: String) -> Result<()> {
     if let Some(state) = report.state {
         calls.push(("set_state", vec![state.into(), sent.into(), from.clone()]));
     }
+    if let Some((call, count)) = report.asked {
+        calls.push(("report_asked", vec![call.into(), count.into(), from.clone()]));
+    }
     if let Some(prompt) = report.prompt {
         calls.push(("report_prompt", vec![prompt.into(), from]));
     }

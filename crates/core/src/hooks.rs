@@ -1399,6 +1399,7 @@ pub enum Command {
     /// "This is everything I still have running beside the conversation":
     /// the helpers by id, and whether anything else is still going
     SetRunning { helpers: Vec<String>, other: bool, from: Option<String>, origin: usize },
+    ReportAsked { call: String, count: usize, from: Option<String>, origin: usize },
     /// "This is what I am doing." The caller's own tab unless it names another
     /// — a build script run by hand is nobody's tab and still has something to
     /// say. An empty value takes the entry away, so finishing needs no second verb
@@ -3845,6 +3846,23 @@ impl HookEngine {
                             .filter(|s| !s.is_empty())
                             .collect();
                         c.borrow_mut().push(Command::SetRunning { helpers, other: other.unwrap_or(false), from, origin: o.get() });
+                        Ok(())
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+            // `report_asked(call, count, conversation)`: the program asked a
+            // person `count` questions in its call `call` and went on
+            // working. The tab says a person is wanted until they are
+            // answered, or a message of the person's or the end of the turn
+            // leaves them behind
+            let c = Rc::clone(&commands);
+            let o = Rc::clone(&current_origin);
+            shikisha
+                .set(
+                    "report_asked",
+                    lua.create_function(move |_, (call, count, from): (String, usize, Option<String>)| {
+                        c.borrow_mut().push(Command::ReportAsked { call: call.trim().to_string(), count, from, origin: o.get() });
                         Ok(())
                     })
                     .map_err(lerr)?,

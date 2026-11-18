@@ -50,6 +50,10 @@ pub const LINE_ARG: &str = "line";
 /// says is only read when the CLI waits for it -- and answered at once: an app
 /// with nothing to say says so without looking anything up
 pub const NOTICE_ARG: &str = "notice";
+
+/// What the hook is run with when the CLI asks the person something without
+/// stopping its turn (`HookSpec::asks`)
+pub const ASK_ARG: &str = "ask:open";
 /// Whether the CLI waits for this hook and reads what it prints
 fn answers_back(arg: &str) -> bool {
     arg == LINE_ARG || arg == NOTICE_ARG
@@ -240,6 +244,9 @@ pub struct Target {
     /// None for the CLI's own folder. Agreed to with the CLI: the same hook
     /// for the same program, in another of its folders
     pub account: Option<String>,
+    /// The tool an event is to be reported for, by event, where it is not
+    /// every tool: written into the CLI's file as the group's `matcher`
+    pub matchers: std::collections::BTreeMap<String, String>,
 }
 
 /// Where the target stands right now.
@@ -301,6 +308,17 @@ pub fn targets() -> Vec<Target> {
             if let Some(event) = hook.turn_start.as_ref() {
                 entries.push(Entry { event: event.clone(), arg: NOTICE_ARG.to_string() });
             }
+            // Asked of one tool, by its whole name: the CLI matches a tool's
+            // name against it as a pattern
+            let mut matchers = std::collections::BTreeMap::new();
+            for (event, tool) in &hook.asks {
+                if tool.is_empty() || !tool.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                    crate::append_hook_log(&format!("profile {}: {event} asks with {tool:?}, which is not a tool's name", p.name));
+                    continue;
+                }
+                entries.push(Entry { event: event.clone(), arg: ASK_ARG.to_string() });
+                matchers.insert(event.clone(), format!("^{tool}$"));
+            }
             // In the CLI's folder as it finds it -- the person's own variable,
             // when they set one -- and in each account's folder of it: a tab
             // running as an account reads its hooks from there
@@ -313,6 +331,7 @@ pub fn targets() -> Vec<Target> {
                 entries,
                 trust: hook.trust,
                 account: None,
+                matchers,
             };
             let mut all = vec![];
             if let Some(k) = crate::accounts::kind_of_profile(&p.name) {
@@ -627,12 +646,25 @@ const MARKED: &str = "\u{1}shikisha:";
 /// ours is on its own
 pub fn preview(t: &Target) -> Vec<Line> {
     let existing = std::fs::read_to_string(&t.file).ok();
-    preview_of(existing.as_deref(), wanted(t, &me()))
+    preview_of(existing.as_deref(), wanted(t, &me()), &t.matchers)
+}
+
+/// A group of ours in a CLI's file: our handlers for one event, for the
+/// tool `matcher` names when it names one
+fn group_of(hs: Vec<serde_json::Value>, matcher: Option<&String>) -> serde_json::Value {
+    match matcher {
+        Some(m) => serde_json::json!({ "matcher": m, "hooks": hs }),
+        None => serde_json::json!({ "hooks": hs }),
+    }
 }
 
 /// [`preview`] of a file's text as read, wherever it was read from, with
 /// `wanted` put into it
-fn preview_of(existing: Option<&str>, wanted: Vec<(String, Vec<serde_json::Value>)>) -> Vec<Line> {
+fn preview_of(
+    existing: Option<&str>,
+    wanted: Vec<(String, Vec<serde_json::Value>)>,
+    matchers: &std::collections::BTreeMap<String, String>,
+) -> Vec<Line> {
     let mut doc = match existing {
         None => serde_json::json!({}),
         Some(text) => match serde_json::from_str::<serde_json::Value>(text.trim_start_matches('\u{feff}')) {
@@ -640,7 +672,8 @@ fn preview_of(existing: Option<&str>, wanted: Vec<(String, Vec<serde_json::Value
             _ => {
                 let mut hooks = serde_json::Map::new();
                 for (event, hs) in wanted {
-                    hooks.insert(event, serde_json::json!([{ "hooks": hs }]));
+                    let group = group_of(hs, matchers.get(&event));
+                    hooks.insert(event, serde_json::json!([group]));
                 }
                 return pretty_lines(&serde_json::json!({ "hooks": hooks }), true);
             }
@@ -648,7 +681,7 @@ fn preview_of(existing: Option<&str>, wanted: Vec<(String, Vec<serde_json::Value
     };
     let had: Option<Vec<String>> = doc.get("hooks").and_then(|h| h.as_object()).map(|h| h.keys().cloned().collect());
     let mut marks = Vec::new();
-    merge_with(&mut doc, wanted, true, Some(&mut marks));
+    merge_with(&mut doc, wanted, matchers, true, Some(&mut marks));
     // The stand-in as the text spells it: quoted, the mark escaped
     let needle = serde_json::to_string(MARKED).unwrap_or_default();
     let needle = needle.trim_end_matches('"');
@@ -1147,7 +1180,7 @@ fn edit(t: &Target, want: bool, program: &Path) -> Result<()> {
 /// put in as a stand-in naming its place in `marks` instead, for [`preview`]
 /// to find in the text and draw as ours
 fn merge(doc: &mut serde_json::Value, t: &Target, want: bool, program: &Path, marks: Option<&mut Vec<serde_json::Value>>) {
-    merge_with(doc, wanted(t, program), want, marks)
+    merge_with(doc, wanted(t, program), &t.matchers, want, marks)
 }
 
 /// [`merge`], given what is wanted of each event rather than working it out
@@ -1156,10 +1189,12 @@ fn merge(doc: &mut serde_json::Value, t: &Target, want: bool, program: &Path, ma
 fn merge_with(
     doc: &mut serde_json::Value,
     wanted: Vec<(String, Vec<serde_json::Value>)>,
+    matchers: &std::collections::BTreeMap<String, String>,
     want: bool,
     mut marks: Option<&mut Vec<serde_json::Value>>,
 ) {
     for (event, hs) in wanted {
+        let matcher = matchers.get(&event).cloned();
         let list = doc
             .as_object_mut()
             .and_then(|o| o.entry("hooks").or_insert_with(|| serde_json::json!({})).as_object_mut())
@@ -1183,7 +1218,7 @@ fn merge_with(
                 .unwrap_or(true)
         });
         if want {
-            let group = serde_json::json!({ "hooks": hs });
+            let group = group_of(hs, matcher.as_ref());
             match marks.as_deref_mut() {
                 Some(marks) => {
                     groups.push(serde_json::json!(format!("{MARKED}{}", marks.len())));
@@ -1233,6 +1268,41 @@ pub struct Report {
     /// The conversation begins afresh (started, or cleared), rather than
     /// being taken up again or packed down
     pub fresh: bool,
+    /// Questions put to the person without the turn stopping: the CLI's id
+    /// for the call that asked them, and how many it asked
+    pub asked: Option<(String, usize)>,
+}
+
+/// The answers a message carries to questions asked without the turn
+/// stopping (`Report::asked`), by the call that asked and the question's
+/// place in it: `None` for a message that is not such an answer.
+///
+/// Codex sends them as a message of the person's, wrapped:
+/// `<send_user_message_question_reply>[{"answer": ..., "questionItemId":
+/// "[\"request_user_input_async\", \"<call>\", <n>]"}]</send_user_message_question_reply>`
+pub fn answers_in(text: &str) -> Option<Vec<(String, usize)>> {
+    const OPEN: &str = "<send_user_message_question_reply>";
+    const CLOSE: &str = "</send_user_message_question_reply>";
+    let body = text.trim().strip_prefix(OPEN)?.strip_suffix(CLOSE)?;
+    let items: Vec<serde_json::Value> = serde_json::from_str(body.trim()).unwrap_or_default();
+    Some(
+        items
+            .iter()
+            .filter_map(|item| {
+                let id: serde_json::Value = serde_json::from_str(item.get("questionItemId")?.as_str()?).ok()?;
+                let call = id.get(1)?.as_str()?.to_string();
+                let at = usize::try_from(id.get(2)?.as_u64()?).ok()?;
+                Some((call, at))
+            })
+            .collect(),
+    )
+}
+
+/// The questions a call to a CLI's asking tool puts: its id, and how many
+fn asked_of(v: &serde_json::Value) -> Option<(String, usize)> {
+    let call = v.get("tool_use_id").and_then(|c| c.as_str()).map(str::trim).filter(|c| !c.is_empty())?;
+    let questions = v.pointer("/tool_input/questions").and_then(|q| q.as_array())?;
+    (!questions.is_empty()).then(|| (call.to_string(), questions.len()))
 }
 
 /// What a CLI said is still running beside a conversation (see [`Report::running`]).
@@ -1502,6 +1572,9 @@ pub fn report_of(kind: &str, v: &serde_json::Value) -> Report {
             return Report::default();
         }
     }
+    if kind == ASK_ARG {
+        return Report { asked: asked_of(v), from: id, ..Default::default() };
+    }
     if let Some(way) = kind.strip_prefix("helper:") {
         let helper = Helper::of(way).zip(helper_id(v)).map(|(h, id)| (id, h == Helper::Up));
         return Report { helper, from: id, ..Default::default() };
@@ -1548,7 +1621,7 @@ pub fn report_of(kind: &str, v: &serde_json::Value) -> Report {
     // What is still running, from the parent's own end of its turn only: a
     // helper's list is not the conversation's
     let running = (!sub).then(|| running_of(v)).flatten();
-    Report { id: None, state: keep.then(|| state.to_string()), prompt, helper, running, from: id, fresh: false }
+    Report { id: None, state: keep.then(|| state.to_string()), prompt, helper, running, from: id, fresh: false, asked: None }
 }
 
 // ── On another machine ───────────────────────────────────────────────────
@@ -1660,6 +1733,7 @@ pub fn far_edited(t: &Target, existing: Option<&str>) -> Option<String> {
     }
     let before = doc.clone();
     for (event, hs) in far_wanted(t) {
+        let matcher = t.matchers.get(&event).cloned();
         let Some(slot) = doc
             .as_object_mut()
             .and_then(|o| o.entry("hooks").or_insert_with(|| serde_json::json!({})).as_object_mut())
@@ -1687,7 +1761,7 @@ pub fn far_edited(t: &Target, existing: Option<&str>) -> Option<String> {
             }
         }
         groups.retain(|g| g.pointer("/hooks").and_then(|h| h.as_array()).is_none_or(|h| !h.is_empty()));
-        groups.push(serde_json::json!({ "hooks": hs }));
+        groups.push(group_of(hs, matcher.as_ref()));
     }
     (doc != before).then(|| serde_json::to_string_pretty(&doc).unwrap_or_default())
 }
@@ -1753,7 +1827,7 @@ pub fn far_seen(t: &Target, existing: Option<&str>) -> FarSeen {
 /// The hook file on another machine as it would be once this app's entries
 /// are in, a line at a time, the lines this app adds told apart ([`preview`])
 pub fn far_preview(t: &Target, existing: Option<&str>) -> Vec<Line> {
-    preview_of(existing.filter(|s| !s.trim().is_empty()), far_wanted(t))
+    preview_of(existing.filter(|s| !s.trim().is_empty()), far_wanted(t), &t.matchers)
 }
 
 /// The profiles' hook targets for the machine `host` (its entry's name),
@@ -2310,6 +2384,7 @@ mod tests {
                 Entry { event: "SessionStart".into(), arg: "session".into() },
                 Entry { event: "Stop".into(), arg: "state:DONE".into() },
             ],
+            matchers: Default::default(),
         };
         let theirs = r#"{"model":"opus","hooks":{"Stop":[{"hooks":[{"type":"command","command":"say done"}]}]}}"#;
         let once = far_edited(&t, Some(theirs)).expect("nothing was written");
@@ -2453,6 +2528,7 @@ mod tests {
 
             account: None,
             entries: events.iter().map(|(e, a)| Entry { event: (*e).into(), arg: (*a).into() }).collect(),
+            matchers: Default::default(),
         }
     }
 
@@ -2561,6 +2637,7 @@ mod tests {
 
             account: None,
             entries: vec![Entry { event: "SessionStart".into(), arg: "session".into() }],
+            matchers: Default::default(),
         }
     }
 
@@ -2590,6 +2667,7 @@ mod tests {
                 Entry { event: "SessionStart".into(), arg: "session".into() },
                 Entry { event: "Stop".into(), arg: "state:DONE".into() },
             ],
+            matchers: Default::default(),
         };
         // Not set up at all: not this question's
         assert!(new_events(&older).is_empty());
@@ -2781,6 +2859,7 @@ mod tests {
                 Entry { event: "BeforeAgent".into(), arg: "state:BUSY".into() },
                 Entry { event: "AfterAgent".into(), arg: "state:DONE".into() },
             ],
+            matchers: Default::default(),
         };
         install(&t).unwrap();
         assert_eq!(status(&t), Status::Installed, "three written means all three are there");
@@ -2854,6 +2933,7 @@ mod tests {
                 Entry { event: "PermissionRequest".into(), arg: "state:QUESTION".into() },
                 Entry { event: "Stop".into(), arg: "state:DONE".into() },
             ],
+            matchers: Default::default(),
         };
         assert_eq!(status(&t), Status::NoConfig);
         install(&t).unwrap();
@@ -2992,6 +3072,45 @@ mod tests {
         assert!(!is_a_hooks_event(&serde_json::json!({"session_id": "s"})));
         assert!(!is_a_hooks_event(&serde_json::json!(["hook_event_name"])));
         assert!(!is_a_hooks_event(&serde_json::json!({"hook_event_name": 3})));
+    }
+
+    /// Questions asked without the turn stopping: the call that asked them
+    /// and how many, the answers that come back for them, and the hook
+    /// written for the asking tool alone
+    #[test]
+    fn a_question_asked_on_the_side_is_reported_and_answered() {
+        let ask = serde_json::json!({"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "request_user_input_async",
+            "tool_use_id": "call_3_1", "tool_input": {"questions": [{"title": "Which database?", "options": ["Postgres", "SQLite"]}, {"title": "Table name?"}]}});
+        let r = report_of(ASK_ARG, &ask);
+        assert_eq!(r.asked, Some(("call_3_1".to_string(), 2)));
+        assert_eq!((r.state, r.from.as_deref()), (None, Some("s")));
+        assert_eq!(report_of(ASK_ARG, &serde_json::json!({"session_id": "s", "tool_use_id": "c"})).asked, None);
+
+        let reply = format!(
+            "<send_user_message_question_reply>\n{}\n</send_user_message_question_reply>",
+            serde_json::json!([{"answer": "SQLite", "question": "Which database?", "questionItemId": "[\"request_user_input_async\",\"call_3_1\",0]"}])
+        );
+        assert_eq!(answers_in(&reply), Some(vec![("call_3_1".to_string(), 0)]));
+        assert_eq!(answers_in("> Which database?\n\nSQLite"), None, "a message of the person's own was taken for an answer");
+        assert_eq!(answers_in("<send_user_message_question_reply>not json</send_user_message_question_reply>"), Some(vec![]));
+
+        // Written for the asking tool alone, and read back as installed
+        let dir = tmp("asks");
+        let mut t = target(&dir, HookFormat::Bare);
+        t.entries.push(Entry { event: "PreToolUse".into(), arg: ASK_ARG.into() });
+        t.matchers.insert("PreToolUse".into(), "^request_user_input_async$".into());
+        install(&t).unwrap();
+        let made: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&t.file).unwrap()).unwrap();
+        assert_eq!(made["hooks"]["PreToolUse"][0]["matcher"], "^request_user_input_async$");
+        assert!(made["hooks"]["SessionStart"][0].get("matcher").is_none());
+        assert_eq!(status(&t), Status::Installed);
+        // Put in again, it is not written twice
+        install(&t).unwrap();
+        let again: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&t.file).unwrap()).unwrap();
+        assert_eq!(again["hooks"]["PreToolUse"].as_array().unwrap().len(), 1);
+        let far = far_edited(&t, None).unwrap();
+        assert!(far.contains("^request_user_input_async$"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A request for permission Codex's own reviewer decides is the turn

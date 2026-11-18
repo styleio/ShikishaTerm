@@ -63,7 +63,10 @@
         "Interrupt": "WAIT"
       },
       "turn_end": "Stop",
-      "turn_start": "UserPromptSubmit"
+      "turn_start": "UserPromptSubmit",
+      "asks": {
+        "PreToolUse": "request_user_input_async"
+      }
     }
   }
 }

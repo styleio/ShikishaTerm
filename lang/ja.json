@@ -4114,6 +4114,7 @@
   "grant.reply_url": "タブに返信できるリンクを作る",
   "grant.set_state": "このタブが今どの状態かを自分で伝える",
   "grant.set_helper": "このタブが裏で動かす作業役の始まりと終わりを伝える",
+  "grant.report_asked": "このタブの AI がターンを止めずにした質問を伝える",
   "grant.set_running": "このタブが会話の横でまだ動かしているものを全部伝える",
   "grant.set_status": "このタブが何をしているかを自分の言葉で伝える",
   "grant.set_progress": "このタブがどこまで進んだかを伝える",

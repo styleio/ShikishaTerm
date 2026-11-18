@@ -93,6 +93,13 @@ once it reaches its first tagged release.
   command it let through put the tab down as waiting for you, for a moment,
   with a notification. A request is now taken as yours only when the
   conversation's record does not say Codex's reviewer decides it.
+- **A question Codex asks without stopping its turn says it wants you.**
+  Codex can put questions to you while it goes on working; nothing showed
+  it, and the tab read as working until the turn ended. The tab now reads
+  as waiting for you -- and the notification for questions goes out --
+  until every question is answered, you send a message of your own, or the
+  turn ends. The Codex hook gains an entry for this, written for the
+  asking tool alone, so the app asks again before writing it.
 
 ## [0.31.0] - 2026-11-17
 

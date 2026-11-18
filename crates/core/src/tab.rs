@@ -1193,6 +1193,9 @@ const TYPED_MOST: u64 = 16 * 1024 * 1024;
 /// How many conversations begun inside a tab's own turn it remembers
 const NESTED_MOST: usize = 64;
 
+/// How many calls asking questions on the side a tab keeps open at once
+const OPEN_ASKS_MOST: usize = 16;
+
 /// What is typed into a tab's program, handed to a thread of the tab's own
 /// and typed there, in order.
 ///
@@ -4163,6 +4166,11 @@ pub struct Tab {
     /// `codex exec` its AI ran -- which report through the tab's hooks as if
     /// they were its own (see `hears_session`)
     nested: Vec<String>,
+    /// Questions the tab's AI asked without stopping its turn (Codex's
+    /// `request_user_input_async`), by the call that asked them, with the
+    /// places of the ones not answered yet. While any is open a person is
+    /// wanted, though the AI goes on working
+    open_asks: Vec<(String, Vec<usize>)>,
     /// What this tab's CLI can do about carrying a conversation across a
     /// restart, read from its profile at every launch (so editing a profile
     /// takes effect the next time, like the detection rules do)
@@ -5435,6 +5443,7 @@ impl Tab {
             .then(|| (Instant::now() + std::time::Duration::from_secs(1), 30)),
             session,
             nested: Vec::new(),
+            open_asks: Vec::new(),
             resume: resume_spec,
             title,
             id: opts.id.clone(),
@@ -6412,6 +6421,11 @@ impl Tab {
         if self.is_generating() {
             self.state = TabState::Busy;
         }
+        // A question the AI asked without stopping: it goes on working, and
+        // a person is wanted all the same -- what a person needs to hear
+        if self.state == TabState::Busy && self.asks_open() {
+            self.state = TabState::Question;
+        }
         // Two things the screen cannot say, applied once the screen has had
         // its say. Both only ever refine a resting state: a tab that is
         // working, or that has a person to answer, is already saying the more
@@ -6546,7 +6560,13 @@ impl Tab {
     /// read. `sent_ms` is its clock at the moment it said so; false means it
     /// was older than something already applied and was dropped
     pub fn hook_says(&mut self, state: TabState, sent_ms: u64) -> bool {
-        self.detector.hook_says(state, sent_ms)
+        let taken = self.detector.hook_says(state, sent_ms);
+        // A turn that ends leaves no question it asked on the side open:
+        // the CLI drops the ones nobody answered
+        if taken && (state.turn_ended() || state == TabState::Wait) {
+            self.open_asks.clear();
+        }
+        taken
     }
 
     /// The CLI said a helper of its began (`up`) or ended
@@ -6604,6 +6624,9 @@ impl Tab {
             crate::agenthook::note_side_thread(id);
             return false;
         }
+        if fresh {
+            self.open_asks.clear();
+        }
         true
     }
 
@@ -6614,9 +6637,51 @@ impl Tab {
         conversation.is_none_or(|c| !self.nested.iter().any(|n| n == c))
     }
 
+    /// The tab's AI asked the person `count` questions in the call `call`,
+    /// and went on working
+    pub fn asked_aside(&mut self, call: &str, count: usize) {
+        if call.is_empty() || count == 0 {
+            return;
+        }
+        self.open_asks.retain(|(c, _)| c != call);
+        if self.open_asks.len() >= OPEN_ASKS_MOST {
+            self.open_asks.remove(0);
+        }
+        self.open_asks.push((call.to_string(), (0..count.min(64)).collect()));
+    }
+
+    /// What a person sent the tab's AI, as its hook says it was sent: the
+    /// answers to questions it asked without stopping (`agenthook::answers_in`),
+    /// or a message of its own -- which leaves no question waiting, the way
+    /// the CLI itself drops them, and is what the tab was asked
+    pub fn heard_prompt(&mut self, text: &str) {
+        match crate::agenthook::answers_in(text) {
+            Some(answers) => {
+                for (call, at) in answers {
+                    if let Some((_, left)) = self.open_asks.iter_mut().find(|(c, _)| *c == call) {
+                        left.retain(|n| *n != at);
+                    }
+                }
+                self.open_asks.retain(|(_, left)| !left.is_empty());
+            }
+            None => {
+                self.open_asks.clear();
+                self.heard_from_program(text);
+            }
+        }
+    }
+
+    /// Whether a question the AI asked without stopping is waiting for a person
+    pub fn asks_open(&self) -> bool {
+        !self.open_asks.is_empty()
+    }
+
     pub fn take_report(&mut self, report: &crate::agenthook::Report, sent_ms: u64) -> bool {
         if !self.hears_from(report.from.as_deref()) {
             return true;
+        }
+        if let Some((call, count)) = &report.asked {
+            self.asked_aside(call, *count);
         }
         if let Some((id, up)) = &report.helper {
             self.helper_says(id, *up);
@@ -7503,6 +7568,41 @@ mod nested_conversations {
         assert_eq!(t.hook_word(), Some(TabState::Done));
         // A conversation taken up again mid-turn is not a fresh one
         assert!(t.hears_session("resumed", false));
+        t.kill();
+    }
+
+    /// A question the AI asked without stopping its turn wants a person
+    /// while the AI goes on working, until every question of it is answered
+    #[test]
+    fn a_question_asked_without_stopping_wants_a_person_until_answered() {
+        let mut t = Tab::spawn("otter".into(), &[crate::test_shell()], None, 10, 40, Default::default()).unwrap();
+        let start = std::time::Instant::now();
+        let now = crate::hooks::epoch_ms();
+        t.spoke.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(t.hook_says(TabState::Busy, now));
+        assert_eq!(t.tick(start).1, TabState::Busy);
+        let reply = |items: &[(&str, usize)]| {
+            let list: Vec<_> = items
+                .iter()
+                .map(|(call, n)| serde_json::json!({"answer": "SQLite", "question": "q", "questionItemId": serde_json::json!(["request_user_input_async", call, n]).to_string()}))
+                .collect();
+            format!("<send_user_message_question_reply>\n{}\n</send_user_message_question_reply>", serde_json::Value::Array(list))
+        };
+        t.asked_aside("call_3_1", 2);
+        assert_eq!(t.tick(start).1, TabState::Question, "a question asked on the side did not want a person");
+        t.heard_prompt(&reply(&[("call_3_1", 0)]));
+        assert_eq!(t.tick(start).1, TabState::Question, "half the questions answered let the person go");
+        t.heard_prompt(&reply(&[("call_3_1", 1)]));
+        assert_eq!(t.tick(start).1, TabState::Busy);
+        // A message of the person's own leaves the questions behind
+        t.asked_aside("call_4_1", 1);
+        assert!(t.asks_open());
+        t.heard_prompt("never mind, use Postgres");
+        assert!(!t.asks_open());
+        // So does the end of the turn
+        t.asked_aside("call_5_1", 1);
+        assert!(t.hook_says(TabState::Done, now + 10));
+        assert!(!t.asks_open(), "a question the CLI dropped at the end of the turn stayed open");
         t.kill();
     }
 }

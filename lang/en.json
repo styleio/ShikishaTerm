@@ -4152,6 +4152,7 @@
   "grant.reply_url": "Make a link that lets somebody reply into a tab",
   "grant.set_state": "Report this tab's own state",
   "grant.set_helper": "Report a helper this tab runs on the side beginning or ending",
+  "grant.report_asked": "Report questions this tab's AI asked without stopping its turn",
   "grant.set_running": "Report everything this tab still has running beside its conversation",
   "grant.set_status": "Report what this tab is doing, in its own words",
   "grant.set_progress": "Report how far along this tab is",
