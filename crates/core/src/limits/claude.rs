@@ -167,6 +167,14 @@ pub fn parse(v: &serde_json::Value) -> Option<Limits> {
             scoped(&capitalised(name), w, &mut wins);
         }
     }
+    // A seat with no five hours and no week to it (an organisation's plan)
+    // is held by the month's spending cap alone, and that is its limit.
+    // Beside the windows, spending is what is paid past them, not a limit
+    if wins.is_empty()
+        && let Some(pct) = spend_cap_used(v)
+    {
+        wins.push(Allowance::whole(Span::Month, Window::of_percent(pct, None)));
+    }
     if let Some(o) = v.as_object() {
         for (key, w) in o {
             // A model's name is one word; `seven_day_oauth_apps` counts
@@ -181,6 +189,31 @@ pub fn parse(v: &serde_json::Value) -> Option<Limits> {
         }
     }
     Limits::of(wins, None)
+}
+
+/// How much of the month's spending cap is used, in percent: from
+/// `spend` (amounts in minor units, `percent` beside them), or the older
+/// `extra_usage` when `spend` names no cap. A balance with no cap to it is
+/// no limit
+fn spend_cap_used(v: &serde_json::Value) -> Option<f64> {
+    let money = |m: Option<&serde_json::Value>| -> Option<f64> {
+        let m = m?;
+        let minor = super::number(m.get("amount_minor"))?;
+        let exponent = super::number(m.get("exponent")).unwrap_or(2.0);
+        Some(minor / 10f64.powf(exponent))
+    };
+    let from_spend = v.get("spend").filter(|s| s.is_object()).and_then(|s| {
+        let cap = money(s.get("limit")).or_else(|| money(s.pointer("/cap/money"))).filter(|c| *c > 0.0)?;
+        super::number(s.get("percent")).or_else(|| Some(money(s.get("used"))? / cap * 100.0))
+    });
+    // The older shape: the amounts first, since its `utilization` has been
+    // seen written as a fraction as well as a percentage
+    let from_extra = || {
+        let e = v.get("extra_usage").filter(|e| e.is_object())?;
+        let cap = super::number(e.get("monthly_limit")).filter(|c| *c > 0.0)?;
+        super::number(e.get("used_credits")).map(|used| used / cap * 100.0).or_else(|| super::number(e.get("utilization")))
+    };
+    from_spend.or_else(from_extra).map(|p| p.clamp(0.0, 100.0))
 }
 
 /// A model's name as a person reads it: `fable` as `Fable`
@@ -339,6 +372,29 @@ mod tests {
         assert_eq!(scoped[0].only.as_deref(), Some("Fable"));
         assert_eq!(scoped[0].window, Window { pct: 82, resets_at: Some(1_789_189_199) });
         assert_eq!(l.wins[0].only, None, "the model's allowance came before the whole subscription's");
+    }
+
+    /// A seat with no five hours and no week is held by its month's
+    /// spending cap; beside the windows, spending is not a limit
+    #[test]
+    fn a_seat_with_only_a_spending_cap_is_read_by_the_month() {
+        let month = |v: serde_json::Value| parse(&v).and_then(|l| l.whole(Span::Month).map(|w| w.pct));
+        let spend = serde_json::json!({"five_hour": null, "seven_day": null, "limits": [], "spend": {
+            "used": {"amount_minor": 40000, "currency": "USD", "exponent": 2},
+            "limit": {"amount_minor": 50000, "currency": "USD", "exponent": 2}, "percent": 80, "enabled": true}});
+        assert_eq!(month(spend), Some(80));
+        let amounts = serde_json::json!({"spend": {"used": {"amount_minor": 1000}, "limit": {"amount_minor": 4000}}});
+        assert_eq!(month(amounts), Some(25));
+        let older = serde_json::json!({"five_hour": null, "seven_day": null,
+            "extra_usage": {"monthly_limit": 5000, "used_credits": 479, "utilization": 0.0958, "is_enabled": true}});
+        assert_eq!(month(older), Some(10), "a fraction was taken for a percentage");
+        let balance_then_older = serde_json::json!({"spend": {"balance": {"amount_minor": 1000}, "enabled": true},
+            "extra_usage": {"monthly_limit": 50000, "used_credits": 40000, "utilization": 80}});
+        assert_eq!(month(balance_then_older), Some(80));
+        assert_eq!(parse(&serde_json::json!({"spend": {"balance": {"amount_minor": 1000}}})), None, "a balance with no cap was made a limit");
+        let beside = serde_json::json!({"five_hour": {"utilization": 10}, "spend": {"used": {"amount_minor": 5000}, "limit": {"amount_minor": 200000}, "percent": 2.5}});
+        let l = parse(&beside).unwrap();
+        assert!(l.whole(Span::Month).is_none() && l.whole(Span::Hours5).is_some(), "spending past the windows was shown as a limit");
     }
 
     /// The sign-in is read, never trusted past its time, and never written.

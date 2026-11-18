@@ -8,9 +8,69 @@
 
 use super::{Allowance, Limits, Span, Window};
 
-/// The sign-in file, where the CLI keeps it (its own variable moves it)
+/// The service Kimi Code signs in to and asks of, as it decides it
+const OAUTH_HOST: &str = "https://auth.kimi.com";
+const BASE_URL: &str = "https://api.kimi.com/coding/v1";
+
+/// Kimi Code's own folder (its own variable moves it)
+fn kimi_home() -> Option<std::path::PathBuf> {
+    super::home_or("KIMI_CODE_HOME", &[".kimi-code"])
+}
+
+/// Where Kimi Code signs in and asks, as it works it out: its variables,
+/// else its settings (`[providers."managed:kimi-code"]`), else its own
+/// service. Either variable set puts the settings aside for both
+fn service(config: &str, var: &dyn Fn(&str) -> Option<String>) -> (String, String) {
+    let trim = |s: String| s.trim().trim_end_matches('/').to_string();
+    let env_base = var("KIMI_CODE_BASE_URL");
+    let env_host = var("KIMI_CODE_OAUTH_HOST").or_else(|| var("KIMI_OAUTH_HOST"));
+    let provider = ["providers", "managed:kimi-code"];
+    let (base, host) = if env_base.is_some() || env_host.is_some() {
+        (env_base, env_host)
+    } else {
+        (
+            crate::accounts::toml_text(config, &[&provider[..], &["base_url"]].concat()),
+            crate::accounts::toml_text(config, &[&provider[..], &["oauth", "oauth_host"]].concat()),
+        )
+    };
+    (
+        host.map(trim).filter(|h| !h.is_empty()).unwrap_or_else(|| OAUTH_HOST.to_string()),
+        base.map(trim).filter(|b| !b.is_empty()).unwrap_or_else(|| BASE_URL.to_string()),
+    )
+}
+
+/// The name of the sign-in file for that service: Kimi Code 2 keeps one per
+/// service it is pointed at, named after a hash of where that is, and the
+/// plain name for its own
+fn token_name(host: &str, base: &str) -> String {
+    use sha2::Digest as _;
+    if host == OAUTH_HOST && base == BASE_URL {
+        return "kimi-code".to_string();
+    }
+    // As the CLI writes it out (`{"oauthHost":..,"baseUrl":..}`, in that order)
+    let scope = format!(
+        "{{\"oauthHost\":{},\"baseUrl\":{}}}",
+        serde_json::Value::String(host.to_string()),
+        serde_json::Value::String(base.to_string())
+    );
+    let hash = sha2::Sha256::digest(scope.as_bytes());
+    let hex: String = hash.iter().map(|b| format!("{b:02x}")).collect();
+    format!("kimi-code-env-{}", &hex[..16])
+}
+
+/// The sign-in file and the address to ask, for the service Kimi Code is
+/// pointed at
+fn where_to_ask() -> Option<(std::path::PathBuf, String)> {
+    let home = kimi_home()?;
+    let config = std::fs::read_to_string(home.join("config.toml")).unwrap_or_default();
+    let var = |k: &str| std::env::var(k).ok();
+    let (host, base) = service(&config, &var);
+    Some((home.join("credentials").join(format!("{}.json", token_name(&host, &base))), format!("{base}/usages")))
+}
+
+/// The sign-in file, where the CLI keeps it
 fn sign_in_file() -> Option<std::path::PathBuf> {
-    Some(super::home_or("KIMI_CODE_HOME", &[".kimi-code"])?.join("credentials").join("kimi-code.json"))
+    where_to_ask().map(|(file, _)| file)
 }
 
 pub(super) fn signed_in() -> bool {
@@ -33,10 +93,9 @@ pub(super) fn account() -> Option<String> {
 }
 
 pub(super) fn ask() -> Option<Limits> {
-    let token = token_in(&super::read_json(&sign_in_file()?)?, super::now_ms() / 1000)?;
-    let base = std::env::var("KIMI_CODE_BASE_URL").ok().filter(|b| !b.trim().is_empty());
-    let base = base.as_deref().unwrap_or("https://api.kimi.com/coding/v1").trim_end_matches('/');
-    let mut resp = super::get(&format!("{base}/usages"))
+    let (file, usages) = where_to_ask()?;
+    let token = token_in(&super::read_json(&file)?, super::now_ms() / 1000)?;
+    let mut resp = super::get(&usages)
         .header("Authorization", &format!("Bearer {token}"))
         .header("Accept", "application/json")
         .call()
@@ -93,6 +152,30 @@ fn parse(v: &serde_json::Value) -> Option<Limits> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Kimi Code 2 names its sign-in after the service it is pointed at:
+    /// its own by the plain name, any other by a hash of where it is
+    #[test]
+    fn the_sign_in_is_found_for_the_service_kimi_is_pointed_at() {
+        let none = |_: &str| None;
+        assert_eq!(service("", &none), (OAUTH_HOST.to_string(), BASE_URL.to_string()));
+        assert_eq!(token_name(OAUTH_HOST, BASE_URL), "kimi-code");
+        let config = "[providers.\"managed:kimi-code\"]\nbase_url = \"https://kimi.example/coding/v1/\"\n\n[providers.\"managed:kimi-code\".oauth]\noauth_host = \"https://login.example\"\n";
+        let (host, base) = service(config, &none);
+        assert_eq!((host.as_str(), base.as_str()), ("https://login.example", "https://kimi.example/coding/v1"));
+        let name = token_name(&host, &base);
+        assert!(name.starts_with("kimi-code-env-") && name.len() == "kimi-code-env-".len() + 16, "{name}");
+        assert_ne!(name, token_name(OAUTH_HOST, "https://kimi.example/coding/v1"));
+        // A variable puts the settings aside for both
+        let env = |k: &str| (k == "KIMI_CODE_BASE_URL").then(|| BASE_URL.to_string());
+        assert_eq!(service(config, &env), (OAUTH_HOST.to_string(), BASE_URL.to_string()));
+        // The hash of a known scope, worked out apart: sha256 of
+        // {"oauthHost":"https://auth.kimi.com","baseUrl":"https://kimi.example/v1"}
+        assert_eq!(token_name(OAUTH_HOST, "https://kimi.example/v1"), format!("kimi-code-env-{}", KNOWN_SCOPE_HASH));
+    }
+
+    /// Worked out apart (sha256 in another program), not by the code above
+    const KNOWN_SCOPE_HASH: &str = "29838f8d9214a2f3";
 
     #[test]
     fn a_sign_in_is_sent_only_with_life_left_in_it() {

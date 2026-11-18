@@ -100,6 +100,14 @@ once it reaches its first tagged release.
   until every question is answered, you send a message of your own, or the
   turn ends. The Codex hook gains an entry for this, written for the
   asking tool alone, so the app asks again before writing it.
+- **Usage limits for more accounts.** A Cursor member of a team whose
+  limit the team sets showed nothing for the month; it now shows the
+  member's own allowance (the team's spending stays out of it), and a plan
+  whose base allowance reads as used up while the plan still has room
+  shows the plan. A Claude seat with no five-hour or weekly window (an
+  organisation's plan) shows how much of the month's spending cap is used.
+  Kimi Code 2 pointed at another service keeps its sign-in in a file of
+  its own; it is now found there, and the usage is asked of that service.
 
 ## [0.31.0] - 2026-11-17
 

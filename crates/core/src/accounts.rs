@@ -540,6 +540,63 @@ fn codex_projects(text: &str) -> Option<Vec<(String, String, bool)>> {
     (text_until.is_none() && depth == 0).then_some(found)
 }
 
+/// The text a settings file (TOML) gives the key at `path` -- its tables
+/// and its keys, dotted or not (`[a."b c"]` then `d.e = "x"` is
+/// `["a", "b c", "d", "e"]`) -- when it is written as text on one line.
+/// Read as the file is read, so a line inside a text that runs over lines
+/// is not taken for a key
+pub(crate) fn toml_text(text: &str, path: &[&str]) -> Option<String> {
+    let mut table: Vec<String> = Vec::new();
+    let (mut text_until, mut depth): (Option<&'static str>, usize) = (None, 0);
+    for line in text.lines() {
+        let rest = match text_until {
+            Some(end) => match toml_closes(line, end) {
+                Some(after) => Some(after),
+                None => continue,
+            },
+            None if depth > 0 => Some(line),
+            None => None,
+        };
+        if let Some(rest) = rest {
+            (depth, text_until) = toml_value(rest, depth)?;
+            continue;
+        }
+        let line = line.trim_start();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some(inside) = line.strip_prefix("[[") {
+            let (keys, _) = toml_keys(inside)?;
+            table = keys.into_iter().map(|(k, _)| k).collect();
+            // Of a list of tables: none of it is the one key asked for
+            table.insert(0, String::new());
+        } else if let Some(inside) = line.strip_prefix('[') {
+            let (keys, _) = toml_keys(inside)?;
+            table = keys.into_iter().map(|(k, _)| k).collect();
+        } else {
+            let (keys, rest) = toml_keys(line)?;
+            let value = rest.strip_prefix('=')?.trim_start();
+            let full: Vec<&str> = table.iter().map(String::as_str).chain(keys.iter().map(|(k, _)| k.as_str())).collect();
+            if full == path {
+                let (said, after) = match value.as_bytes().first()? {
+                    b'"' if !value.starts_with("\"\"\"") => {
+                        let (_, written, after) = toml_key(value)?;
+                        (serde_json::from_str::<String>(written).ok()?, after)
+                    }
+                    b'\'' if !value.starts_with("'''") => {
+                        let (names, _, after) = toml_key(value)?;
+                        (names, after)
+                    }
+                    _ => return None,
+                };
+                return toml_ends(after).then_some(said);
+            }
+            (depth, text_until) = toml_value(value, 0)?;
+        }
+    }
+    None
+}
+
 /// `ours` (an account's Codex settings) with the folders `theirs` (the usual
 /// account's) trusts added, and how many were. `None` when there is nothing
 /// to add -- or when either file says anything about folders in a way this
@@ -913,6 +970,22 @@ impl crate::config::AiAccountSpec {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A key's text is read wherever the file puts it: a table, a dotted
+    /// key, a quoted name -- and not out of a text that runs over lines
+    #[test]
+    fn a_keys_text_is_read_as_the_file_reads() {
+        let path = ["providers", "managed:kimi-code", "oauth", "oauth_host"];
+        let table = "[providers.\"managed:kimi-code\".oauth]\noauth_host = \"https://a.example\" # mine\n";
+        assert_eq!(toml_text(table, &path).as_deref(), Some("https://a.example"));
+        let dotted = "[providers.\"managed:kimi-code\"]\nbase_url = 'https://b.example'\noauth.oauth_host = \"https://c.example\"\n";
+        assert_eq!(toml_text(dotted, &path).as_deref(), Some("https://c.example"));
+        assert_eq!(toml_text(dotted, &["providers", "managed:kimi-code", "base_url"]).as_deref(), Some("https://b.example"));
+        let hidden = "note = \"\"\"\n[providers.\"managed:kimi-code\".oauth]\noauth_host = \"https://x.example\"\n\"\"\"\n";
+        assert_eq!(toml_text(hidden, &path), None, "a line inside a text was taken for a key");
+        assert_eq!(toml_text("[other]\noauth_host = \"https://y.example\"\n", &path), None);
+        assert_eq!(toml_text("[providers.\"managed:kimi-code\".oauth]\noauth_host = 3\n", &path), None);
+    }
 
     struct Scratch(PathBuf);
     impl Scratch {

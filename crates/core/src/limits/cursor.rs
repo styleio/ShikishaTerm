@@ -87,18 +87,27 @@ pub(super) fn ask() -> Option<Limits> {
     parse(&resp.body_mut().read_json().ok()?)
 }
 
-/// The month's plan: what is used of it, and when the month ends. The plan
-/// a team pays for is not the person's own and says nothing here
+/// The month's plan: what is used of it, and when the month ends.
+///
+/// The person's own allowance is `plan`; a member of a team whose limit
+/// the team sets has it as `overall` instead, with `plan` switched off or
+/// not there. What the team as a whole spends (`teamUsage`) is not the
+/// person's and says nothing here.
+///
+/// Cursor's own percentage is read first: the plain amounts are those of
+/// the base allowance, which reads as all used while the plan still has
+/// room. The amounts stand in only when it gives none
 fn parse(v: &serde_json::Value) -> Option<Limits> {
-    let plan = v.pointer("/individualUsage/plan")?;
-    if plan.get("enabled").and_then(|e| e.as_bool()) == Some(false) {
-        return None;
-    }
+    let enabled = |p: &&serde_json::Value| p.get("enabled").and_then(|e| e.as_bool()) != Some(false) && !p.is_null();
+    let plan = v
+        .pointer("/individualUsage/plan")
+        .filter(enabled)
+        .or_else(|| v.pointer("/individualUsage/overall").filter(enabled))?;
     let from_amounts = || {
         let limit = super::number(plan.get("limit")).filter(|l| *l > 0.0)?;
         Some(super::number(plan.get("used"))? / limit * 100.0)
     };
-    let pct = from_amounts().or_else(|| super::number(plan.get("totalPercentUsed")))?;
+    let pct = super::number(plan.get("totalPercentUsed")).or_else(from_amounts)?;
     let ends = super::instant_of(v.get("billingCycleEnd"));
     Limits::of(vec![Allowance::whole(Span::Month, Window::of_percent(pct, ends))], None)
 }
@@ -120,18 +129,40 @@ mod tests {
     }
 
     #[test]
-    fn the_month_is_read_from_the_amounts_first() {
+    fn the_month_is_read_from_cursors_own_percentage_first() {
+        // The base allowance used up while the plan still has room
         let v = serde_json::json!({
             "billingCycleEnd": "2026-10-15T00:00:00.000Z",
-            "individualUsage": {"plan": {"enabled": true, "used": 500, "limit": 2000, "totalPercentUsed": 30}}
+            "individualUsage": {"plan": {"enabled": true, "used": 2000, "limit": 2000, "totalPercentUsed": 30}}
         });
         let l = parse(&v).unwrap();
-        assert_eq!(l.whole(Span::Month).map(|w| w.pct), Some(25), "the rounded percentage won over the amounts");
+        assert_eq!(l.whole(Span::Month).map(|w| w.pct), Some(30), "the base allowance was taken for the plan");
         assert!(l.whole(Span::Month).unwrap().resets_at.is_some());
-        let only_pct = serde_json::json!({"individualUsage": {"plan": {"totalPercentUsed": 61.2}}});
-        assert_eq!(parse(&only_pct).unwrap().whole(Span::Month).map(|w| w.pct), Some(61));
+        let only_amounts = serde_json::json!({"individualUsage": {"plan": {"used": 500, "limit": 2000}}});
+        assert_eq!(parse(&only_amounts).unwrap().whole(Span::Month).map(|w| w.pct), Some(25));
         let team = serde_json::json!({"individualUsage": {"plan": {"enabled": false, "totalPercentUsed": 0}}});
         assert_eq!(parse(&team), None, "a plan somebody else pays for was shown as this person's");
+    }
+
+    /// A member of a team whose limit the team sets has the allowance as
+    /// `overall`; the team's own spending is not the member's
+    #[test]
+    fn a_team_members_allowance_is_read_from_overall() {
+        let v = serde_json::json!({
+            "membershipType": "enterprise", "limitType": "team",
+            "individualUsage": {"overall": {"enabled": true, "used": 75000, "limit": 500000, "remaining": 425000}},
+            "teamUsage": {"onDemand": {"enabled": true, "used": 500000, "limit": 2500000}}
+        });
+        assert_eq!(parse(&v).unwrap().whole(Span::Month).map(|w| w.pct), Some(15));
+        let both = serde_json::json!({"individualUsage": {
+            "plan": {"enabled": false, "totalPercentUsed": 0},
+            "overall": {"enabled": true, "used": 90, "limit": 100}}});
+        assert_eq!(parse(&both).unwrap().whole(Span::Month).map(|w| w.pct), Some(90));
+        let plan_first = serde_json::json!({"individualUsage": {
+            "plan": {"enabled": true, "totalPercentUsed": 30},
+            "overall": {"enabled": true, "used": 90, "limit": 100}}});
+        assert_eq!(parse(&plan_first).unwrap().whole(Span::Month).map(|w| w.pct), Some(30));
+        assert_eq!(parse(&serde_json::json!({"individualUsage": {"plan": null, "overall": null}})), None);
     }
 
     /// The editor's database is looked into without being changed.
