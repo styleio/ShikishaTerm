@@ -28582,6 +28582,9 @@ function gitPrChecking(p) {
 // settle its conflict, or merge it -- armed by the first press, done by the second
 function gitPrAction(p) {
   if (p.state !== "open" || gitPrChecking(p)) return null;
+  // Bringing the base in is done against this checkout's own base, which is
+  // not the base of one sent to the repository this one is a fork of
+  if (p.merge_state === "dirty" && p.upstream) return null;
   if (p.merge_state === "dirty") {
     return {label: T["git.prs.resolve.short"] || "", run:() => gitPrResolve(p)};
   }
@@ -28655,7 +28658,7 @@ function gitPrMerge(p) {
   if (G.armed !== p.number) { G.armed = p.number; G.said = ""; drawGit(); return; }
   G.armed = 0; G.busy = "pr_merge"; G.said = ""; G.merging = p.base || "";
   drawGit();
-  gitIssuesAsk("merge", {project: g.project, number: p.number, method: gitMergeMethod(), head: p.sha || ""});
+  gitIssuesAsk("merge", {project: g.project, number: p.number, method: gitMergeMethod(), head: p.sha || "", upstream: !!p.upstream});
 }
 // The failed checks and the ends of their logs, handed to an AI tab in the
 // middle, for the newest open pull request
@@ -28669,7 +28672,8 @@ function gitCiFix() {
   G.busy = "ci_fix"; G.said = ""; G.armed = 0;
   drawGit();
   gitIssuesAsk("ci_fix", {project: g.project, number: p ? p.number : 0, head: G.branch.name,
-    sha: G.checks.sha || (p && p.sha) || "", title: p ? (p.title || "") : "", url: p ? (p.url || "") : ""});
+    sha: G.checks.sha || (p && p.sha) || "", title: p ? (p.title || "") : "", url: p ? (p.url || "") : "",
+    upstream: !!(p && p.upstream)});
 }
 // The review threads left open on this branch's pull request, to an AI tab
 function gitReviewFix() {
@@ -28679,7 +28683,7 @@ function gitReviewFix() {
   G.busy = "review_fix"; G.said = ""; G.armed = 0;
   drawGit();
   gitIssuesAsk("review_fix", {project: g.project, number: p.number, head: G.branch.name,
-    sha: p.sha || "", title: p.title || "", url: p.url || ""});
+    sha: p.sha || "", title: p.title || "", url: p.url || "", upstream: !!p.upstream});
 }
 // One check's log, in an editor that only reads. Any check, passed or not: a
 // green one is read to see what ran. One asked at a time; the row says it is
@@ -28710,6 +28714,9 @@ function gitPrResolve(p) {
 function gitPrShow(p) {
   const g = gitGroup();
   if (!g) return;
+  // One sent to the repository this one is a fork of is read on GitHub: the
+  // page in the middle reads and writes the project's own repository
+  if (p.upstream) { if (p.url) window.open(p.url, "_blank", "noopener"); return; }
   issuesAsk("detail", Object.assign({kind:"pr"}, issueAt({project: g.project, number: p.number})));
   send({kind:"openissues"});
 }
@@ -28829,7 +28836,7 @@ function gitFixSaid(d) {
 // same press the git column's menu makes. Answers how long it stays up
 function prNewsToast(n) {
   const hand = act => () => send({kind:"issues", act, args:{kind:"pr", seq:"news-" + act, project:n.project,
-    number:n.number, head:n.head, sha:n.sha, title:n.title || "", url:n.url || ""}});
+    number:n.number, head:n.head, sha:n.sha, title:n.title || "", url:n.url || "", upstream: !!n.upstream}});
   const step = !n.project ? null
     : n.what === "found" ? {label: T["git.review.fix"] || "", run: hand("review_fix")}
     : n.what === "ci_failed" ? {label: T["git.ci.fix"] || "", run: hand("ci_fix")}

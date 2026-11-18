@@ -683,17 +683,69 @@ impl Hub {
         Ok(out)
     }
 
-    /// Every pull request made from `head` in this repository, newest first: one
-    /// a base, as a branch can be sent to more than one. An open one says whether
-    /// GitHub can merge it -- asked of each, since the list does not say
+    /// The repository this one is a fork of, when it is one: where its
+    /// branches are sent as pull requests in the usual way of working on
+    /// somebody else's project. Kept a while -- a fork does not change what
+    /// it is a fork of
+    pub fn parent_of(&self, repo: &Repo) -> Result<Option<Repo>> {
+        static KNOWN: std::sync::Mutex<Option<std::collections::HashMap<String, (std::time::Instant, Option<String>)>>> =
+            std::sync::Mutex::new(None);
+        const FOR: std::time::Duration = std::time::Duration::from_secs(3600);
+        let key = repo.slug().to_ascii_lowercase();
+        if let Some((_, parent)) = KNOWN
+            .lock()
+            .ok()
+            .and_then(|k| k.as_ref().and_then(|m| m.get(&key).cloned()))
+            .filter(|(at, _)| at.elapsed() < FOR)
+        {
+            return Ok(parent.as_deref().and_then(Repo::parse));
+        }
+        let v = self.call("GET", &format!("repos/{}", repo.slug()), None)?;
+        let parent = v.pointer("/parent/full_name").and_then(|p| p.as_str()).filter(|_| v.get("fork") == Some(&json!(true))).map(str::to_string);
+        if let Ok(mut k) = KNOWN.lock() {
+            k.get_or_insert_with(Default::default).insert(key, (std::time::Instant::now(), parent.clone()));
+        }
+        Ok(parent.as_deref().and_then(Repo::parse))
+    }
+
+    /// The repository a pull request of this project is in: its own, or
+    /// (`upstream`) the one it is a fork of. Nothing else: a request can
+    /// name the repository it means only by that one word, never by a name
+    /// of its choosing
+    pub fn pull_repo(&self, repo: Repo, upstream: bool) -> Result<Repo> {
+        match upstream {
+            false => Ok(repo),
+            true => self.parent_of(&repo)?.ok_or_else(|| anyhow!(crate::i18n::tp("err.github.no_upstream", &[("repo", &repo.slug())]))),
+        }
+    }
+
+    /// Every pull request made from `head` of this repository, newest first:
+    /// one a base, as a branch can be sent to more than one. Those sent to the
+    /// repository this one is a fork of are among them, marked `upstream` --
+    /// on somebody else's project that is the only kind there is. An open one
+    /// says whether GitHub can merge it -- asked of each, since the list does
+    /// not say
     pub fn branch_pulls(&self, repo: &Repo, head: &str) -> Result<Value> {
         let head = head.trim();
         if head.is_empty() {
             return Ok(json!([]));
         }
+        let mut out = self.pulls_from(repo, repo, head, false)?;
+        // Asked of the parent too; one that cannot be read leaves the fork's own
+        if let Ok(Some(parent)) = self.parent_of(repo)
+            && let Ok(theirs) = self.pulls_from(&parent, repo, head, true)
+        {
+            out.extend(theirs);
+        }
+        Ok(Value::Array(out))
+    }
+
+    /// The pull requests in `at` made from `head` of `from`
+    fn pulls_from(&self, at: &Repo, from: &Repo, head: &str, upstream: bool) -> Result<Vec<Value>> {
+        let repo = at;
         let v = self.call(
             "GET",
-            &format!("repos/{}/pulls?head={}:{}&state=all&per_page=20", repo.slug(), repo.owner, head),
+            &format!("repos/{}/pulls?head={}:{}&state=all&per_page=20", at.slug(), from.owner, encode(head)),
             None,
         )?;
         let mut out = Vec::new();
@@ -718,9 +770,11 @@ impl Hub {
                 "sha": p.pointer("/head/sha"),
                 "merge_state": merge_state,
                 "url": p.get("html_url"),
+                "upstream": upstream,
+                "repo": if upstream { json!(at.slug()) } else { Value::Null },
             }));
         }
-        Ok(Value::Array(out))
+        Ok(out)
     }
 
     /// Each reviewer's latest word: changes asked for outweighs an approval
@@ -1945,7 +1999,13 @@ pub fn answer(
         if elsewhere.is_none() && !seen.is_empty() && !seen.eq_ignore_ascii_case(&repo.slug()) {
             bail!(crate::i18n::tp("err.github.other_repo", &[("repo", &seen)]));
         }
-        Ok((elsewhere.unwrap_or(repo), hub))
+        // A pull request sent to the repository this one is a fork of
+        let upstream = elsewhere.is_none() && args.get("upstream").and_then(|u| u.as_bool()) == Some(true);
+        let repo = match elsewhere {
+            Some(r) => r,
+            None => hub.pull_repo(repo, upstream)?,
+        };
+        Ok((repo, hub))
     }).and_then(|(repo, hub)| match act {
         "detail" if pulls => hub.pull(&repo, number),
         "detail" => hub.issue(&repo, number),
@@ -1954,14 +2014,18 @@ pub fn answer(
         // ran on whether a pull request was ever made from it or not -- a
         // check that failed is worth knowing about before anybody opens one
         "branch_prs" => hub.branch_pulls(&repo, &s("head")).map(|prs| {
-            let sha = prs
-                .as_array()
-                .and_then(|a| a.iter().find(|p| p["state"] == "open"))
+            let open = prs.as_array().and_then(|a| a.iter().find(|p| p["state"] == "open"));
+            let sha = open
                 .and_then(|p| p["sha"].as_str())
                 .map(str::to_string)
                 .or_else(|| Some(s("sha")).filter(|sha| !sha.is_empty()));
+            // The checks of a pull request sent to the parent run there
+            let checked = match open.is_some_and(|p| p["upstream"] == json!(true)) {
+                true => hub.parent_of(&repo).ok().flatten().unwrap_or_else(|| repo.clone()),
+                false => repo.clone(),
+            };
             let checks = sha.as_deref().and_then(|sha| {
-                hub.checks(&repo, sha).ok().map(|mut c| {
+                hub.checks(&checked, sha).ok().map(|mut c| {
                     c["sha"] = json!(sha);
                     c
                 })
@@ -2273,6 +2337,7 @@ pub fn log_tail(log: &str) -> String {
 pub fn ci_failures(
     sources: &[Source],
     project: &str,
+    upstream: bool,
     sha: &str,
     look: &dyn Fn(&str) -> Option<String>,
 ) -> Result<Value> {
@@ -2282,6 +2347,7 @@ pub fn ci_failures(
         .ok_or_else(|| anyhow!(crate::i18n::t("err.github.no_project")))?;
     let (repo, token) = target_of(source, look)?;
     let hub = Hub::new(token);
+    let repo = hub.pull_repo(repo, upstream)?;
     let checks = hub.checks(&repo, sha)?;
     let mut out = Vec::new();
     for c in checks.get("items").and_then(|i| i.as_array()).into_iter().flatten() {
@@ -2307,6 +2373,7 @@ pub fn ci_failures(
 pub fn review_threads(
     sources: &[Source],
     project: &str,
+    upstream: bool,
     number: u64,
     look: &dyn Fn(&str) -> Option<String>,
 ) -> Result<Value> {
@@ -2315,7 +2382,9 @@ pub fn review_threads(
         .find(|s| s.name == project)
         .ok_or_else(|| anyhow!(crate::i18n::t("err.github.no_project")))?;
     let (repo, token) = target_of(source, look)?;
-    Ok(Value::Array(Hub::new(token).open_review_threads(&repo, number)?))
+    let hub = Hub::new(token);
+    let repo = hub.pull_repo(repo, upstream)?;
+    Ok(Value::Array(hub.open_review_threads(&repo, number)?))
 }
 
 impl Hub {

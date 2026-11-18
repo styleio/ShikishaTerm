@@ -11036,6 +11036,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 let (project, head, sha, title, url) = (text("project"), text("head"), text("sha"), text("title"), text("url"));
                 let owner = AsyncProject::of(desks.get(desk_index), &project);
                 let number = args.get("number").and_then(|v| v.as_u64()).unwrap_or(0);
+                // Sent to the repository the project's is a fork of
+                let upstream = args.get("upstream").and_then(|u| u.as_bool()) == Some(true);
                 let seq = args.get("seq").cloned().unwrap_or(serde_json::Value::Null);
                 // A project on another machine: which of its folders there is
                 // on the branch is asked there, on the thread that reads GitHub
@@ -11051,8 +11053,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             Some((dir, on)) => {
                                 let at = std::path::PathBuf::from(crate::uistate::place_key(Some(&on), &dir));
                                 let result = match review {
-                                    true => crate::github::review_threads(&sources, &project, number, &|k| tokens.get(k).cloned()),
-                                    false => crate::github::ci_failures(&sources, &project, &sha, &|k| tokens.get(k).cloned()),
+                                    true => crate::github::review_threads(&sources, &project, upstream, number, &|k| tokens.get(k).cloned()),
+                                    false => crate::github::ci_failures(&sources, &project, upstream, &sha, &|k| tokens.get(k).cloned()),
                                 };
                                 let _ = tx.send(CiFix { owner, project, number, seq, title, url, head, sha, dir, at, result, review });
                             }
@@ -11073,8 +11075,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         let tx = ci_tx.clone();
                         std::thread::spawn(move || {
                             let result = match review {
-                                true => crate::github::review_threads(&sources, &project, number, &|k| tokens.get(k).cloned()),
-                                false => crate::github::ci_failures(&sources, &project, &sha, &|k| tokens.get(k).cloned()),
+                                true => crate::github::review_threads(&sources, &project, upstream, number, &|k| tokens.get(k).cloned()),
+                                false => crate::github::ci_failures(&sources, &project, upstream, &sha, &|k| tokens.get(k).cloned()),
                             };
                             let _ = tx.send(CiFix { owner, project, number, seq, title, url, head, sha, at: dir.clone(), dir, result, review });
                         });
@@ -21377,7 +21379,7 @@ fn tell_pr(
     };
     Some(serde_json::json!({
         "text": text, "what": what, "project": told.project, "number": told.number,
-        "head": told.branch, "sha": told.head, "title": told.title, "url": told.url,
+        "head": told.branch, "sha": told.head, "title": told.title, "url": told.url, "upstream": told.upstream,
     }))
 }
 

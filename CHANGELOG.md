@@ -108,6 +108,15 @@ once it reaches its first tagged release.
   organisation's plan) shows how much of the month's spending cap is used.
   Kimi Code 2 pointed at another service keeps its sign-in in a file of
   its own; it is now found there, and the usage is asked of that service.
+- **A pull request sent from a fork to the project it was forked from.**
+  Working on somebody else's project from a fork, the pull request is in
+  their repository, and neither the folder's row nor the git column found
+  it. Both now look there when the fork has none of its own: the row shows
+  it with an arrow (`↑#12`), the git column lists it, its checks are read
+  where they run, and merging it, handing its review or failed checks to an
+  AI, and the notice when its review comes back all go to that repository.
+  Opening it shows it on GitHub. Bringing its base in from the git column
+  is not offered for it: the checkout's own base is not its base.
 
 ## [0.31.0] - 2026-11-17
 

@@ -75,6 +75,8 @@ pub enum State {
 pub struct Pr {
     pub number: u64,
     pub state: State,
+    /// Sent to the repository the branch's is a fork of, not its own
+    pub upstream: bool,
 }
 
 impl Pr {
@@ -84,11 +86,16 @@ impl Pr {
     /// that appears on every row tells nobody anything. The other three are
     /// worth a word each, because each one means "stop waiting for this"
     pub fn short(&self) -> String {
+        // One sent to the parent is told from the fork's own by an arrow up
+        let n = match self.upstream {
+            true => format!("↑#{}", self.number),
+            false => format!("#{}", self.number),
+        };
         match self.state {
-            State::Open => format!("#{}", self.number),
-            State::Draft => format!("#{} draft", self.number),
-            State::Merged => format!("#{} merged", self.number),
-            State::Closed => format!("#{} closed", self.number),
+            State::Open => n,
+            State::Draft => format!("{n} draft"),
+            State::Merged => format!("{n} merged"),
+            State::Closed => format!("{n} closed"),
         }
     }
 
@@ -134,6 +141,8 @@ pub struct Told {
     /// The commit it is about
     pub head: String,
     pub what: Tell,
+    /// In the repository `repo` is a fork of
+    pub upstream: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -390,6 +399,26 @@ fn look(
     // Not answered at all (the network, a refusal): what was known stays, and
     // is asked about again when it next comes due
     let Ok(answer) = hub.graphql(&query, vars) else { return };
+    // A branch with none of its own may have one in the repository this one
+    // is a fork of -- on somebody else's project, the only kind there is.
+    // Asked only then, and only of the parent
+    let none_here: Vec<usize> = (0..branches.len())
+        .filter(|i| {
+            let nodes = answer.pointer(&format!("/data/repository/b{i}/nodes")).and_then(|n| n.as_array());
+            the_one_of(nodes.map(Vec::as_slice).unwrap_or_default(), &r.owner).is_none()
+        })
+        .collect();
+    let parent = match none_here.is_empty() {
+        true => None,
+        false => hub.parent_of(&r).ok().flatten(),
+    };
+    let theirs = parent.as_ref().and_then(|p| {
+        let names: Vec<&str> = none_here.iter().map(|i| branches[*i].0.as_str()).collect();
+        let (query, mut vars) = question(&names);
+        vars["o"] = json!(p.owner);
+        vars["n"] = json!(p.name);
+        hub.graphql(&query, vars).ok()
+    });
     let file = prnews::path();
     let mut mems = prnews::read(&file);
     let handed = crate::handed::path();
@@ -398,11 +427,27 @@ fn look(
         // A repository this account cannot see answers with nothing at all,
         // which is the same "no pull request" a row shows for one not made
         let nodes = answer.pointer(&format!("/data/repository/b{i}/nodes")).and_then(|n| n.as_array());
-        let read = the_one_of(nodes.map(Vec::as_slice).unwrap_or_default(), &r.owner).and_then(read_node);
+        let mut read = the_one_of(nodes.map(Vec::as_slice).unwrap_or_default(), &r.owner).and_then(read_node);
+        // The parent's, made from this fork's branch (`the_one_of` keeps to
+        // the fork's owner)
+        let mut at = r.clone();
+        if read.is_none()
+            && let (Some(p), Some(theirs), Some(j)) = (&parent, &theirs, none_here.iter().position(|n| *n == i))
+        {
+            let nodes = theirs.pointer(&format!("/data/repository/b{j}/nodes")).and_then(|n| n.as_array());
+            read = the_one_of(nodes.map(Vec::as_slice).unwrap_or_default(), &r.owner).and_then(read_node).map(|(mut pr, snap)| {
+                pr.upstream = true;
+                (pr, snap)
+            });
+            if read.is_some() {
+                at = p.clone();
+            }
+        }
         let mut news = News::default();
         let pr = read.as_ref().map(|(pr, _)| *pr);
         if let Some((pr, snap)) = &read {
-            let k = prnews::key(repo, pr.number);
+            // Known by the repository it is in: the parent's #12 is not the fork's
+            let k = prnews::key(&at.slug(), pr.number);
             let judged = prnews::judge(mems.get(&k).cloned().as_ref().unwrap_or(&Default::default()), snap, now);
             let m = judged.mem;
             let handed_key = crate::handed::key(project, pr.number, branch);
@@ -412,7 +457,7 @@ fn look(
             let had = memory.threads.get(&k).map(|t| crate::handed::new_threads(&handed, &handed_key, t, &[]).0.len());
             let read_again = judged.reviewed
                 || (m.ended == prnews::Ended::Reviewed && had.is_none_or(|n| n > 0) && !project.is_empty());
-            match read_again.then(|| hub.open_review_threads(&r, pr.number)) {
+            match read_again.then(|| hub.open_review_threads(&at, pr.number)) {
                 Some(Ok(threads)) => {
                     memory.threads.insert(k.clone(), threads);
                 }
@@ -454,6 +499,7 @@ fn look(
                     url: snap.url.clone(),
                     head: snap.head.clone(),
                     what,
+                    upstream: pr.upstream,
                 });
             };
             if judged.reviewed {
@@ -543,7 +589,7 @@ fn read_node(v: &Value) -> Option<(Pr, prnews::Snapshot)> {
         _ if draft => State::Draft,
         _ => State::Open,
     };
-    let pr = Pr { number, state };
+    let pr = Pr { number, state, upstream: false };
     let list = |p: &str| v.pointer(p).and_then(|n| n.as_array()).cloned().unwrap_or_default();
     let commit = list("/commits/nodes").into_iter().next().unwrap_or(Value::Null);
     let mut failed = Vec::new();
@@ -1125,10 +1171,13 @@ mod tests {
     fn an_open_one_says_only_its_number() {
         // The ordinary case. A word on every row is a word that tells nobody
         // anything, and the row is eighteen columns wide
-        assert_eq!(Pr { number: 12, state: State::Open }.short(), "#12");
-        assert_eq!(Pr { number: 12, state: State::Draft }.short(), "#12 draft");
-        assert_eq!(Pr { number: 12, state: State::Merged }.short(), "#12 merged");
-        assert_eq!(Pr { number: 12, state: State::Closed }.short(), "#12 closed");
+        assert_eq!(Pr { number: 12, state: State::Open, upstream: false }.short(), "#12");
+        assert_eq!(Pr { number: 12, state: State::Draft, upstream: false }.short(), "#12 draft");
+        assert_eq!(Pr { number: 12, state: State::Merged, upstream: false }.short(), "#12 merged");
+        assert_eq!(Pr { number: 12, state: State::Closed, upstream: false }.short(), "#12 closed");
+        // One sent to the repository the fork was made from is told apart
+        assert_eq!(Pr { number: 12, state: State::Open, upstream: true }.short(), "↑#12");
+        assert_eq!(Pr { number: 12, state: State::Merged, upstream: true }.short(), "↑#12 merged");
     }
 
     /// What `gh auth status --json hosts` prints is read as accounts, every
@@ -1288,14 +1337,14 @@ mod tests {
 
     #[test]
     fn a_row_is_asked_about_as_often_as_it_can_change() {
-        let open = Pr { number: 1, state: State::Open };
+        let open = Pr { number: 1, state: State::Open, upstream: false };
         let waiting = News { number: 1, review: Said::Waiting, ..Default::default() };
         let running = News { number: 1, ci: Ci::Running, ..Default::default() };
         assert_eq!(every(Some(&open), &waiting), WAITING_EVERY);
         assert_eq!(every(Some(&open), &running), WAITING_EVERY);
         assert_eq!(every(Some(&open), &News::default()), OPEN_EVERY);
         assert_eq!(every(None, &News::default()), NONE_EVERY);
-        assert_eq!(every(Some(&Pr { number: 1, state: State::Merged }), &waiting), DONE_EVERY);
+        assert_eq!(every(Some(&Pr { number: 1, state: State::Merged, upstream: false }), &waiting), DONE_EVERY);
     }
 
     /// Only the desk's own token is asked with. One machine, two accounts:
