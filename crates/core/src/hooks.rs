@@ -1385,20 +1385,20 @@ pub enum Command {
     /// "The conversation running in this tab is <id>." Reported by the tab
     /// itself — from its own hook, or by anything else speaking for it — so the
     /// tab is `origin`, never a name the caller chose to give
-    SetSession { id: String, origin: usize },
+    SetSession { id: String, fresh: bool, origin: usize },
     /// "I was just asked this." Reported by the tab itself, the same way as
     /// `SetSession`. What a folder's automatic name is written from
-    ReportPrompt { text: String, origin: usize },
+    ReportPrompt { text: String, from: Option<String>, origin: usize },
     /// "This is what I am doing", from the program itself. The state dot is
     /// otherwise read off the screen, which is a guess -- a good one, and
     /// still a guess. A program that will say so outright is believed
-    SetState { state: String, sent_ms: u64, origin: usize },
+    SetState { state: String, sent_ms: u64, from: Option<String>, origin: usize },
     /// "A helper of mine began / ended", from the program in the tab itself --
     /// a subagent it runs on the side, by the program's own id for it
-    SetHelper { id: String, running: bool, origin: usize },
+    SetHelper { id: String, running: bool, from: Option<String>, origin: usize },
     /// "This is everything I still have running beside the conversation":
     /// the helpers by id, and whether anything else is still going
-    SetRunning { helpers: Vec<String>, other: bool, origin: usize },
+    SetRunning { helpers: Vec<String>, other: bool, from: Option<String>, origin: usize },
     /// "This is what I am doing." The caller's own tab unless it names another
     /// — a build script run by hand is nobody's tab and still has something to
     /// say. An empty value takes the entry away, so finishing needs no second verb
@@ -3731,8 +3731,10 @@ impl HookEngine {
             shikisha
                 .set(
                     "set_session",
-                    lua.create_function(move |_, id: String| {
-                        c.borrow_mut().push(Command::SetSession { id, origin: o.get() });
+                    // A second argument `true`: the conversation begins
+                    // afresh, not taken up again (see `Tab::hears_session`)
+                    lua.create_function(move |_, (id, fresh): (String, Option<bool>)| {
+                        c.borrow_mut().push(Command::SetSession { id, fresh: fresh.unwrap_or(false), origin: o.get() });
                         Ok(())
                     })
                     .map_err(lerr)?,
@@ -3751,8 +3753,9 @@ impl HookEngine {
             shikisha
                 .set(
                     "report_prompt",
-                    lua.create_function(move |_, text: String| {
-                        c.borrow_mut().push(Command::ReportPrompt { text, origin: o.get() });
+                    // A second argument: the conversation it was asked in
+                    lua.create_function(move |_, (text, from): (String, Option<String>)| {
+                        c.borrow_mut().push(Command::ReportPrompt { text, from, origin: o.get() });
                         Ok(())
                     })
                     .map_err(lerr)?,
@@ -3778,7 +3781,8 @@ impl HookEngine {
             shikisha
                 .set(
                     "set_state",
-                    lua.create_function(move |_, (state, sent): (String, Option<i64>)| {
+                    // A third argument: the conversation that says it
+                    lua.create_function(move |_, (state, sent, from): (String, Option<i64>, Option<String>)| {
                         // Refused here rather than dropped later: a name this
                         // app has never heard of is a mistake in whatever
                         // wrote it, and a silent one would show up as a dot
@@ -3792,6 +3796,7 @@ impl HookEngine {
                         c.borrow_mut().push(Command::SetState {
                             state: known.label().to_string(),
                             sent_ms: sent.map(|v| v.max(0) as u64).unwrap_or_else(epoch_ms),
+                            from,
                             origin: o.get(),
                         });
                         Ok(())
@@ -3816,12 +3821,12 @@ impl HookEngine {
             shikisha
                 .set(
                     "set_helper",
-                    lua.create_function(move |_, (id, running): (String, bool)| {
+                    lua.create_function(move |_, (id, running, from): (String, bool, Option<String>)| {
                         let id = id.trim().to_string();
                         if id.is_empty() {
                             return Err(mlua::Error::runtime(crate::i18n::t("err.hooks.helper_id")));
                         }
-                        c.borrow_mut().push(Command::SetHelper { id, running, origin: o.get() });
+                        c.borrow_mut().push(Command::SetHelper { id, running, from, origin: o.get() });
                         Ok(())
                     })
                     .map_err(lerr)?,
@@ -3832,14 +3837,14 @@ impl HookEngine {
             shikisha
                 .set(
                     "set_running",
-                    lua.create_function(move |_, (ids, other): (Option<Vec<String>>, Option<bool>)| {
+                    lua.create_function(move |_, (ids, other, from): (Option<Vec<String>>, Option<bool>, Option<String>)| {
                         let helpers = ids
                             .unwrap_or_default()
                             .into_iter()
                             .map(|s| s.trim().to_string())
                             .filter(|s| !s.is_empty())
                             .collect();
-                        c.borrow_mut().push(Command::SetRunning { helpers, other: other.unwrap_or(false), origin: o.get() });
+                        c.borrow_mut().push(Command::SetRunning { helpers, other: other.unwrap_or(false), from, origin: o.get() });
                         Ok(())
                     })
                     .map_err(lerr)?,
@@ -7793,7 +7798,7 @@ mod tests {
         assert!(
             matches!(
                 said.as_slice(),
-                [Command::SetSession { id, origin: 3 }] if id == "3cacb9ce-f140-41ea-bfae-7ab3c3b92ba5"
+                [Command::SetSession { id, origin: 3, .. }] if id == "3cacb9ce-f140-41ea-bfae-7ab3c3b92ba5"
             ),
             "the conversation was written down against somebody else: {said:?}"
         );

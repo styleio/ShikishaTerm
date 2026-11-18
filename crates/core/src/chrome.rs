@@ -257,7 +257,7 @@ pub fn fetch() -> anyhow::Result<std::path::PathBuf> {
 /// from a program that has stopped, so it is said -- in the log, which is
 /// where a runtime with nobody in front of it can say anything at all.
 fn stream_to(url: &str, to: &std::path::Path) -> anyhow::Result<()> {
-    let mut resp = crate::update::agent(std::time::Duration::from_secs(20 * 60))
+    let mut resp = crate::update::agent(std::time::Duration::from_secs(20 * 60), url)
         .get(url)
         .call()?;
     let total: Option<u64> = resp

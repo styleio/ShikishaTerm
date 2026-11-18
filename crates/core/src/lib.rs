@@ -102,6 +102,7 @@ pub mod mailbox;
 pub mod mcp;
 pub mod migrate;
 pub mod netaddr;
+pub mod netproxy;
 pub mod notify;
 pub mod pagedialog;
 pub mod pagewindow;

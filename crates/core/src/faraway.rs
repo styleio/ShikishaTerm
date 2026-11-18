@@ -650,7 +650,7 @@ pub fn join(base: &str, token: &str, here: &str) -> anyhow::Result<String> {
         "" => format!("{}/?t={token}", base.trim_end_matches('/')),
         key => format!("{}/?t={token}&here={key}", base.trim_end_matches('/')),
     };
-    let mut call = crate::update::agent(std::time::Duration::from_secs(30)).get(&door);
+    let mut call = crate::update::agent(std::time::Duration::from_secs(30), &door).get(&door);
     if let (Some(had), true) = (known.get(base), here.is_empty()) {
         call = call.header("Cookie", &format!("rk={had}"));
     }

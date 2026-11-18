@@ -31,6 +31,7 @@
 use crate::prnews::{self, Ci, Said};
 use serde_json::{Value, json};
 use std::collections::HashMap;
+use crate::netproxy::Outward;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -1034,6 +1035,7 @@ pub fn probe(own: Option<String>) -> Probe {
     };
     let agent = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(8)))
+        .outward("https://api.github.com/")
         .build()
         .new_agent();
     let answer = agent

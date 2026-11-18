@@ -18,6 +18,7 @@
 
 use anyhow::{anyhow, Context, Result};
 use std::collections::HashMap;
+use crate::netproxy::Outward;
 use std::io::Read;
 use std::sync::Mutex;
 
@@ -252,11 +253,12 @@ pub fn complete(
 /// end has read a single byte -- nothing at all when a turn is a person
 /// typing, and more than the whole answer when the loop is driving a page.
 /// Agents pool their connections, so keeping them is keeping the handshake
-static AGENTS: Mutex<Option<HashMap<u64, ureq::Agent>>> = Mutex::new(None);
+static AGENTS: Mutex<Option<HashMap<(u64, String), ureq::Agent>>> = Mutex::new(None);
 
-/// The pooled agent for this wait-length (0 = wait as long as it takes)
-fn agent_for(timeout: Option<std::time::Duration>) -> ureq::Agent {
-    let key = timeout.map(|t| t.as_secs().max(1)).unwrap_or(0);
+/// The pooled agent for this wait-length (0 = wait as long as it takes) and
+/// the way to this address: direct, or through Windows' proxy
+fn agent_for(timeout: Option<std::time::Duration>, url: &str) -> ureq::Agent {
+    let key = (timeout.map(|t| t.as_secs().max(1)).unwrap_or(0), crate::netproxy::way_of(url));
     let mut g = AGENTS.lock().unwrap_or_else(|e| e.into_inner());
     let map = g.get_or_insert_with(HashMap::new);
     map.entry(key)
@@ -266,6 +268,7 @@ fn agent_for(timeout: Option<std::time::Duration>) -> ureq::Agent {
             // how to put it right, and treated as an error it was thrown away
             ureq::Agent::config_builder()
                 .timeout_global(timeout)
+                .outward(url)
                 .http_status_as_error(false)
                 .build()
                 .new_agent()
@@ -313,7 +316,7 @@ pub fn complete_shaped(
             );
         }
 
-    let agent = agent_for(timeout);
+    let agent = agent_for(timeout, &endpoint);
     let mut req = agent.post(&endpoint);
     for (k, v) in headers {
         req = req.header(k.as_str(), v.as_str());
@@ -346,6 +349,7 @@ pub fn list_models(base_url: &str, headers: &HashMap<String, String>) -> Result<
     let endpoint = models_endpoint(base_url);
     let agent = ureq::Agent::config_builder()
         .timeout_global(Some(std::time::Duration::from_secs(15)))
+        .outward(&endpoint)
         .build()
         .new_agent();
     let mut req = agent.get(&endpoint);
@@ -620,7 +624,7 @@ fn choose_direct(conn: &ModelConn, ask: &serde_json::Value) -> Result<serde_json
     if let Some(map) = body.as_object_mut() {
         map.insert("model".into(), serde_json::Value::String(conn.model.clone()));
     }
-    let agent = agent_for(conn.timeout);
+    let agent = agent_for(conn.timeout, &endpoint);
     let mut req = agent.post(&endpoint);
     for (k, v) in &conn.headers {
         req = req.header(k.as_str(), v.as_str());

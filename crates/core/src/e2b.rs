@@ -20,6 +20,7 @@
 
 use anyhow::{Result, anyhow, bail};
 use std::time::Duration;
+use crate::netproxy::Outward;
 
 /// Where the service lives. One host for the control plane, one for the
 /// sandboxes themselves -- which are told apart by a header rather than by a
@@ -66,6 +67,7 @@ pub fn key() -> Option<String> {
 
 fn agent() -> ureq::Agent {
     ureq::Agent::config_builder()
+        .outward(API)
         // Making one takes a few seconds; the sandbox is being built
         .timeout_global(Some(Duration::from_secs(60)))
         // A refusal is read, not turned into a bare number: the service says

@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::sync::mpsc;
+use crate::netproxy::Outward;
 
 use serde::Deserialize;
 
@@ -300,20 +301,23 @@ pub fn send_blocking_about(
             None => Err("no shell is running to show a banner".into()),
         };
     }
-    let agent = ureq::Agent::config_builder()
-        .timeout_global(Some(std::time::Duration::from_secs(10)))
-        .build()
-        .new_agent();
+    let agent = |url: &str| {
+        ureq::Agent::config_builder()
+            .timeout_global(Some(std::time::Duration::from_secs(10)))
+            .outward(url)
+            .build()
+            .new_agent()
+    };
     let text = &clip(text, dest.limit());
     let result = match dest {
-        Destination::Slack { webhook } => agent
+        Destination::Slack { webhook } => agent(webhook)
             .post(webhook)
             .send_json(serde_json::json!({ "text": text })),
-        Destination::Telegram { token, chat_id } => agent
+        Destination::Telegram { token, chat_id } => agent("https://api.telegram.org/")
             .post(&format!("https://api.telegram.org/bot{token}/sendMessage"))
             .send_json(serde_json::json!({ "chat_id": chat_id, "text": text })),
         // Discord answers 204 with no body when it takes the message
-        Destination::Discord { webhook } => agent
+        Destination::Discord { webhook } => agent(webhook)
             .post(webhook)
             .send_json(serde_json::json!({ "content": text })),
         // Both handled above, before an HTTP agent was ever built.

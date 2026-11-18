@@ -72,8 +72,7 @@ pub(super) fn account() -> Option<String> {
 
 pub(super) fn ask() -> Option<Limits> {
     let key = key()?;
-    let mut resp = super::client()
-        .get("https://opencode.ai/zen/go/v1/usage")
+    let mut resp = super::get("https://opencode.ai/zen/go/v1/usage")
         .header("Authorization", &format!("Bearer {key}"))
         .header("Accept", "application/json")
         .call()

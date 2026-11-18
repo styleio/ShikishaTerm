@@ -65,6 +65,34 @@ once it reaches its first tagged release.
   process could not be reached, the same line was written every two seconds
   and pushed everything else out of the log. It is written once, and then
   every so often with how many times it has been.
+- **Merging a pull request into a branch with a merge queue.** GitHub
+  refuses a merge straight into such a branch, and the merge button only
+  said so. The pull request is now put in the queue -- as soon as its
+  checks pass, where the repository lets a merge wait for them -- and
+  GitHub merges it when the queue's own checks pass. One already in the
+  queue is left there. `shikisha.github_pr_merge` does the same and answers
+  `{merged = false, queued = true}`.
+- **Windows' proxy setting is used.** On a PC whose way out goes through a
+  proxy set in Windows (Settings > Network & internet > Proxy), the update
+  check, GitHub, the limits readings, notifications, phone push, the
+  judgment model and a page's own requests went straight out and were
+  stopped. They now go through the proxy Windows names -- by scheme, where
+  it names one per scheme -- and leave out what its list of exceptions
+  names. This PC, the local network, the tailnet and `.local` names always
+  go direct. A proxy given in `HTTPS_PROXY` / `HTTP_PROXY` still wins. A
+  setup script (PAC) is not read.
+- **An AI that runs another AI no longer has its tab taken over.** When the
+  AI in a tab ran `claude -p` or `codex exec`, that run reported through the
+  tab's hooks as if it were the tab's own conversation: the tab was put
+  down as finished when the run finished, while its own turn went on, and
+  the conversation it would be taken up in after a restart became the
+  run's. A conversation that begins while the tab's own is in the middle of
+  a turn is now known for what it is, and nothing it says is the tab's.
+- **Codex set to approve for you no longer reads as waiting for you.**
+  With Codex's own reviewer deciding its requests for permission, every
+  command it let through put the tab down as waiting for you, for a moment,
+  with a notification. A request is now taken as yours only when the
+  conversation's record does not say Codex's reviewer decides it.
 
 ## [0.31.0] - 2026-11-17
 

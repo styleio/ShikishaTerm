@@ -30,6 +30,7 @@
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use crate::netproxy::Outward;
 
 thread_local! {
     /// The account folder this thread reads for (`crate::accounts`), on the
@@ -459,13 +460,24 @@ fn token_claims(token: &str) -> Option<serde_json::Value> {
 /// One HTTP client for one ask: the app's name, a bounded wait, and no
 /// following a service that sends the ask elsewhere -- a sign-in page
 /// answered in place of a reading is not a reading
-fn client() -> ureq::Agent {
+fn client(url: &str) -> ureq::Agent {
     ureq::Agent::config_builder()
+        .outward(url)
         .timeout_global(Some(ASK))
         .max_redirects(0)
         .user_agent(concat!("shikisha-term/", env!("CARGO_PKG_VERSION")))
         .build()
         .new_agent()
+}
+
+/// A GET to a provider, through Windows' proxy where its setting says
+fn get(url: &str) -> ureq::RequestBuilder<ureq::typestate::WithoutBody> {
+    client(url).get(url)
+}
+
+/// A POST to a provider, through Windows' proxy where its setting says
+fn post(url: &str) -> ureq::RequestBuilder<ureq::typestate::WithBody> {
+    client(url).post(url)
 }
 
 /// A reading this new is handed out again instead of asking a second time:

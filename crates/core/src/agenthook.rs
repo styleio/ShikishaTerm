@@ -1227,6 +1227,12 @@ pub struct Report {
     /// that is not a helper (a command left running) is still going. The
     /// whole picture as of that moment, so it replaces what was known
     pub running: Option<Running>,
+    /// The conversation the event is of, whatever the event: what the app
+    /// tells a tab's own conversation from one an AI ran inside it by
+    pub from: Option<String>,
+    /// The conversation begins afresh (started, or cleared), rather than
+    /// being taken up again or packed down
+    pub fresh: bool,
 }
 
 /// What a CLI said is still running beside a conversation (see [`Report::running`]).
@@ -1361,8 +1367,10 @@ fn is_side_thread(id: &str) -> bool {
     side_threads().iter().any(|s| s == id)
 }
 
-/// The conversation `id` is a side thread
-fn note_side_thread(id: &str) {
+/// The conversation `id` is a side thread. Written by a hook that hears
+/// one begin, and by the app when it finds a conversation begun inside a
+/// tab's own turn (`Tab::hears_session`)
+pub fn note_side_thread(id: &str) {
     // An id is a word; anything else is not written into a list of lines
     if id.is_empty() || id.len() > 200 || !id.chars().all(|c| c.is_ascii_graphic()) {
         return;
@@ -1403,6 +1411,72 @@ pub fn tidy_side_threads() {
     }
 }
 
+/// How far back from its end a conversation's record is read for who
+/// decides its requests for permission
+const REVIEWER_READ_MOST: u64 = 8 * 1024 * 1024;
+
+/// Whether a request for permission is decided by the CLI itself rather
+/// than by the person: Codex, told to ("approve for me"), hands each one to
+/// a reviewer of its own, and only what that reviewer cannot decide comes
+/// before the person. Its hook for the request runs first all the same, so
+/// the request alone says nothing about anybody waiting -- taken as a
+/// person being asked, every command the reviewer let through put the tab
+/// down as waiting and sent a notification.
+///
+/// Who decides is written in the conversation's record, with each turn
+/// (`turn_context`, `approvals_reviewer`): read from the newest turn back.
+/// Only a record that says so in as many words counts -- no record, an
+/// older CLI that writes no reviewer, a record that cannot be read: the
+/// request is a person's, as it always was
+fn reviewed_by_the_cli(v: &serde_json::Value) -> bool {
+    if v.get("hook_event_name").and_then(|e| e.as_str()) != Some("PermissionRequest") {
+        return false;
+    }
+    let Some(path) = v.get("transcript_path").and_then(|p| p.as_str()).filter(|p| !p.is_empty()) else {
+        return false;
+    };
+    // Codex's records alone carry it; anybody else's is not read through
+    let path = Path::new(path);
+    if !path.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("rollout-") && n.ends_with(".jsonl")) {
+        return false;
+    }
+    last_reviewer(path).is_some_and(|who| !who.is_empty() && who != "user")
+}
+
+/// The reviewer the newest turn of a Codex record names, read from the end
+fn last_reviewer(path: &Path) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = std::fs::File::open(path).ok()?;
+    let size = file.metadata().ok()?.len();
+    let chunk: u64 = 256 * 1024;
+    let mut end = size;
+    // What was read, from `end` to the end of the part read before it: a
+    // line cut at the start of a chunk is whole once the next one is read
+    let mut carry: Vec<u8> = Vec::new();
+    while end > 0 && size - end < REVIEWER_READ_MOST {
+        let start = end.saturating_sub(chunk);
+        let mut buf = vec![0u8; (end - start) as usize];
+        file.seek(SeekFrom::Start(start)).ok()?;
+        file.read_exact(&mut buf).ok()?;
+        buf.extend_from_slice(&carry);
+        // The first line may be cut, unless this is the start of the file
+        let cut = if start == 0 { 0 } else { buf.iter().position(|&b| b == b'\n').map_or(buf.len(), |i| i + 1) };
+        for line in buf[cut..].split(|&b| b == b'\n').rev() {
+            if !line.windows(12).any(|w| w == b"turn_context") {
+                continue;
+            }
+            let Ok(entry) = serde_json::from_slice::<serde_json::Value>(line) else { continue };
+            if entry.get("type").and_then(|t| t.as_str()) != Some("turn_context") {
+                continue;
+            }
+            return Some(entry.pointer("/payload/approvals_reviewer").and_then(|r| r.as_str()).unwrap_or_default().to_string());
+        }
+        carry = buf[..cut].to_vec();
+        end = start;
+    }
+    None
+}
+
 /// `kind` is what the hook entry asked for: `session`, or `state:<STATE>`.
 pub fn report_of(kind: &str, v: &serde_json::Value) -> Report {
     // The same fact goes by several names across the CLIs that report it, and a
@@ -1430,7 +1504,7 @@ pub fn report_of(kind: &str, v: &serde_json::Value) -> Report {
     }
     if let Some(way) = kind.strip_prefix("helper:") {
         let helper = Helper::of(way).zip(helper_id(v)).map(|(h, id)| (id, h == Helper::Up));
-        return Report { helper, ..Default::default() };
+        return Report { helper, from: id, ..Default::default() };
     }
     let Some(state) = kind.strip_prefix("state:") else {
         // A conversation begun afresh has nothing running beside it yet; one
@@ -1439,8 +1513,10 @@ pub fn report_of(kind: &str, v: &serde_json::Value) -> Report {
         let fresh = kind == "session"
             && matches!(v.get("source").and_then(|s| s.as_str()), Some("startup") | Some("clear"));
         return Report {
-            id: id.filter(|_| kind == "session"),
+            id: id.clone().filter(|_| kind == "session"),
             running: fresh.then(Running::default),
+            from: id,
+            fresh,
             ..Default::default()
         };
     };
@@ -1454,6 +1530,9 @@ pub fn report_of(kind: &str, v: &serde_json::Value) -> Report {
     let sub = ["agent_id", "agent_type"]
         .iter()
         .any(|k| v.get(*k).is_some_and(|x| !x.is_null()));
+    // A request for permission that the CLI's own reviewer decides is not
+    // a person being asked: the turn goes on by itself a moment later
+    let state = if state.eq_ignore_ascii_case("QUESTION") && reviewed_by_the_cli(v) { "BUSY" } else { state };
     let keep = !sub || state.eq_ignore_ascii_case("QUESTION");
     // The request itself rides on the event that says one was sent. A
     // subagent's prompt is the main agent talking to it, not a person
@@ -1469,7 +1548,7 @@ pub fn report_of(kind: &str, v: &serde_json::Value) -> Report {
     // What is still running, from the parent's own end of its turn only: a
     // helper's list is not the conversation's
     let running = (!sub).then(|| running_of(v)).flatten();
-    Report { id: None, state: keep.then(|| state.to_string()), prompt, helper, running }
+    Report { id: None, state: keep.then(|| state.to_string()), prompt, helper, running, from: id, fresh: false }
 }
 
 // ── On another machine ───────────────────────────────────────────────────
@@ -2913,6 +2992,47 @@ mod tests {
         assert!(!is_a_hooks_event(&serde_json::json!({"session_id": "s"})));
         assert!(!is_a_hooks_event(&serde_json::json!(["hook_event_name"])));
         assert!(!is_a_hooks_event(&serde_json::json!({"hook_event_name": 3})));
+    }
+
+    /// A request for permission Codex's own reviewer decides is the turn
+    /// going on, not a person being asked; only a record that says so counts
+    #[test]
+    fn a_request_the_cli_reviews_itself_is_not_a_person_asked() {
+        let dir = crate::test_temp("reviewer");
+        std::fs::create_dir_all(&dir).unwrap();
+        let turn = |who: Option<&str>| {
+            let mut payload = serde_json::json!({"cwd": "/repo", "approval_policy": "on-request"});
+            if let Some(who) = who {
+                payload["approvals_reviewer"] = who.into();
+            }
+            serde_json::json!({"type": "turn_context", "payload": payload}).to_string()
+        };
+        let write = |name: &str, lines: &[String]| {
+            let path = dir.join(name);
+            std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+            path.to_string_lossy().to_string()
+        };
+        let asked = |path: &str| {
+            report_of("state:QUESTION", &serde_json::json!({"session_id": "s", "hook_event_name": "PermissionRequest", "tool_name": "Bash", "transcript_path": path})).state
+        };
+        let question = Some("QUESTION".to_string());
+        let auto = write("rollout-auto.jsonl", &[turn(Some("user")), turn(Some("auto_review"))]);
+        assert_eq!(asked(&auto).as_deref(), Some("BUSY"), "a request Codex reviews itself put the tab down as waiting");
+        let person = write("rollout-user.jsonl", &[turn(Some("auto_review")), turn(Some("user"))]);
+        assert_eq!(asked(&person), question, "the newest turn says who decides");
+        let older = write("rollout-old.jsonl", &[turn(None)]);
+        assert_eq!(asked(&older), question, "a record that names nobody is the person's");
+        assert_eq!(asked(&dir.join("rollout-gone.jsonl").to_string_lossy()), question);
+        let other = write("transcript.jsonl", &[turn(Some("auto_review"))]);
+        assert_eq!(asked(&other), question, "another CLI's record was read for Codex's reviewer");
+        // Far back, behind a long turn: read back across the pieces it is read in
+        let filler: Vec<String> = (0..4000).map(|n| serde_json::json!({"type": "event_msg", "payload": {"n": n, "text": "x".repeat(200)}}).to_string()).collect();
+        let long = write("rollout-long.jsonl", &[vec![turn(Some("auto_review"))], filler].concat());
+        assert!(std::fs::metadata(&long).unwrap().len() > 512 * 1024);
+        assert_eq!(asked(&long).as_deref(), Some("BUSY"));
+        // Only the request for permission: the same record leaves a question be
+        let elicit = report_of("state:QUESTION", &serde_json::json!({"session_id": "s", "hook_event_name": "Notification", "transcript_path": auto}));
+        assert_eq!(elicit.state, question);
     }
 
     /// A side thread begun inside a conversation is not the tab's

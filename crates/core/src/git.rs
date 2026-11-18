@@ -1636,6 +1636,7 @@ fn merged_apart(dir: &Path, target: &str, head: &str) -> Option<String> {
     // repository holds, and the folder for things to throw away is one
     // every account of the machine can look into
     let made = {
+        #[cfg_attr(not(unix), allow(unused_mut))]
         let mut make = std::fs::DirBuilder::new();
         #[cfg(unix)]
         std::os::unix::fs::DirBuilderExt::mode(&mut make, 0o700);

@@ -41,6 +41,7 @@
 
 use base64::Engine as _;
 use std::path::PathBuf;
+use crate::netproxy::Outward;
 
 /// Base64url without padding, which is what every field in these two RFCs is.
 const B64: base64::engine::general_purpose::GeneralPurpose =
@@ -606,10 +607,13 @@ pub fn send(title: &str, body: &str, url: Option<&str>) -> Result<usize, String>
     let payload = serde_json::to_vec(&Message { title, body, url })
         .map_err(|e| e.to_string())?;
 
-    let agent = ureq::Agent::config_builder()
-        .timeout_global(Some(std::time::Duration::from_secs(10)))
-        .build()
-        .new_agent();
+    let agent = |url: &str| {
+        ureq::Agent::config_builder()
+            .timeout_global(Some(std::time::Duration::from_secs(10)))
+            .outward(url)
+            .build()
+            .new_agent()
+    };
 
     let mut sent = 0usize;
     let mut gone: Vec<String> = Vec::new();
@@ -633,7 +637,7 @@ pub fn send(title: &str, body: &str, url: Option<&str>) -> Result<usize, String>
                 continue;
             }
         };
-        let result = agent
+        let result = agent(&s.endpoint)
             .post(&s.endpoint)
             .header("Authorization", &format!("vapid t={token}, k={public}"))
             .header("Content-Encoding", "aes128gcm")

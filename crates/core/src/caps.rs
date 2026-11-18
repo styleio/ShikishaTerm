@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 use std::sync::mpsc;
+use crate::netproxy::Outward;
 
 use anyhow::{Result, bail};
 use serde::Deserialize;
@@ -476,14 +477,23 @@ impl Capabilities {
         {
             let (tx, rx) = mpsc::channel::<HttpJob>();
             std::thread::spawn(move || {
-                let agent = ureq::Agent::config_builder()
-                    // Permission is for this destination only. In particular,
-                    // custom credential headers must never follow a redirect.
-                    .max_redirects(0)
-                    .timeout_global(Some(std::time::Duration::from_secs(15)))
-                    .build()
-                    .new_agent();
+                // One agent per way out -- direct, or through Windows' proxy
+                // -- since a job may be for this PC's network or the world
+                let mut agents: HashMap<String, ureq::Agent> = HashMap::new();
                 while let Ok(job) = rx.recv() {
+                    let agent = agents
+                        .entry(crate::netproxy::way_of(&job.url))
+                        .or_insert_with(|| {
+                            ureq::Agent::config_builder()
+                                // Permission is for this destination only. In particular,
+                                // custom credential headers must never follow a redirect.
+                                .max_redirects(0)
+                                .timeout_global(Some(std::time::Duration::from_secs(15)))
+                                .outward(&job.url)
+                                .build()
+                                .new_agent()
+                        })
+                        .clone();
                     // GET has no body, so its type differs (ureq)
                     let result = match job.method.to_ascii_uppercase().as_str() {
                         "GET" => {

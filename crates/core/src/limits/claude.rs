@@ -118,8 +118,7 @@ fn token_in(text: &str, now_ms: i64) -> Option<String> {
 /// (read off its binary, 2026-09-06 build), not a guess
 pub(super) fn ask() -> Option<Limits> {
     let token = token()?;
-    let mut resp = super::client()
-        .get("https://api.anthropic.com/api/oauth/usage")
+    let mut resp = super::get("https://api.anthropic.com/api/oauth/usage")
         .header("Authorization", &format!("Bearer {token}"))
         .header("anthropic-beta", "oauth-2025-04-20")
         .header("Content-Type", "application/json")

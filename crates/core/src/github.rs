@@ -12,6 +12,7 @@
 
 use anyhow::{Result, anyhow, bail};
 use serde_json::{Value, json};
+use crate::netproxy::Outward;
 use std::path::Path;
 use std::time::Duration;
 
@@ -366,16 +367,71 @@ pub fn longest_make() -> Duration {
 /// the branch moved
 fn merge_ask(method: &str, head: Option<&str>) -> Value {
     let mut ask = json!({"merge_method": method});
-    if let Some(sha) = head.map(str::trim).filter(|h| h.len() == 40 && h.bytes().all(|b| b.is_ascii_hexdigit())) {
+    if let Some(sha) = whole_sha(head) {
         ask["sha"] = sha.into();
     }
     ask
+}
+
+/// A commit named in full (40 hex digits), or nothing
+fn whole_sha(head: Option<&str>) -> Option<&str> {
+    head.map(str::trim).filter(|h| h.len() == 40 && h.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+/// What a pull request and its repository say about merging it, asked
+/// before a merge: whether its base branch takes changes only through a
+/// merge queue, and whether the repository lets a merge wait for checks
+const MERGE_WAY: &str = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){autoMergeAllowed pullRequest(number:$number){id headRefOid isMergeQueueEnabled isInMergeQueue}}}";
+
+/// How a pull request is to be merged, read from GitHub's answer to
+/// [`MERGE_WAY`]
+#[derive(Debug, PartialEq)]
+enum MergeWay {
+    /// Merged at once: its base branch has no merge queue
+    Now,
+    /// Already waiting in the queue: nothing more to ask
+    Queued,
+    /// Put in the queue as soon as its checks pass (the repository lets a
+    /// merge wait); asked of a pull request whose checks have passed,
+    /// GitHub says so, and it is put in the queue itself
+    WhenReady { id: String, head: String },
+    /// Put in the queue now (the repository does not let a merge wait)
+    Enqueue { id: String, head: String },
+}
+
+fn merge_way(answer: &Value) -> MergeWay {
+    let repo = answer.pointer("/data/repository");
+    let pull = repo.and_then(|r| r.get("pullRequest"));
+    let Some(pull) = pull.filter(|p| p.get("isMergeQueueEnabled").and_then(Value::as_bool) == Some(true)) else {
+        return MergeWay::Now;
+    };
+    if pull.get("isInMergeQueue").and_then(Value::as_bool) == Some(true) {
+        return MergeWay::Queued;
+    }
+    let text = |k: &str| pull.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
+    let (id, head) = (text("id"), text("headRefOid"));
+    if repo.and_then(|r| r.get("autoMergeAllowed")).and_then(Value::as_bool) == Some(true) {
+        MergeWay::WhenReady { id, head }
+    } else {
+        MergeWay::Enqueue { id, head }
+    }
+}
+
+/// The reason GitHub gave for refusing a change it was asked for over
+/// GraphQL. A refused change comes back with its `data` there and empty,
+/// so [`Hub::graphql`] alone does not see it
+fn refused(answer: &Value, field: &str) -> Option<String> {
+    if answer.pointer(&format!("/data/{field}")).is_some_and(|v| !v.is_null()) {
+        return None;
+    }
+    Some(answer.pointer("/errors/0/message").and_then(Value::as_str).unwrap_or("GitHub refused the change").to_string())
 }
 
 impl Hub {
     pub fn new(token: String) -> Hub {
         let agent = ureq::Agent::config_builder()
             .timeout_global(Some(REQUEST_LIMIT))
+            .outward("https://api.github.com/")
             // The answer to a refusal says why; read it rather than turning it
             // into a status code nobody can act on
             .http_status_as_error(false)
@@ -1120,8 +1176,54 @@ impl Hub {
                 &[("method", other)]
             )),
         };
+        // A base branch with a merge queue refuses a merge straight in: the
+        // pull request is put in its queue, and GitHub merges it when the
+        // queue's checks pass. Not known (the question itself failed), it is
+        // merged the plain way, and GitHub's refusal says why when it must be
+        let way = self
+            .graphql(MERGE_WAY, json!({"owner": repo.owner, "name": repo.name, "number": number}))
+            .map(|answer| merge_way(&answer))
+            .unwrap_or(MergeWay::Now);
+        // The commit it is put in the queue at: the one it was looked at,
+        // when the caller says -- a commit pushed since is then refused by
+        // GitHub, as a merge straight in would be
+        let at = |current: &str| whole_sha(head).unwrap_or(current).to_string();
+        match way {
+            MergeWay::Now => {}
+            MergeWay::Queued => return Ok(json!({"merged": false, "queued": true})),
+            MergeWay::WhenReady { id, head: current } => {
+                let answer = self.graphql_whole(
+                    "mutation($id:ID!,$method:PullRequestMergeMethod!,$head:GitObjectID){enablePullRequestAutoMerge(input:{pullRequestId:$id,mergeMethod:$method,expectedHeadOid:$head}){pullRequest{id}}}",
+                    json!({"id": id, "method": method.to_uppercase(), "head": at(&current)}),
+                )?;
+                match refused(&answer, "enablePullRequestAutoMerge") {
+                    None => return Ok(json!({"merged": false, "queued": true})),
+                    // Its checks have passed already: nothing to wait for
+                    Some(why) if why.to_lowercase().contains("clean status") => self.enqueue(&id, &at(&current))?,
+                    Some(why) => bail!(crate::i18n::tp("err.github.queue", &[("reason", &why)])),
+                }
+                return Ok(json!({"merged": false, "queued": true}));
+            }
+            MergeWay::Enqueue { id, head: current } => {
+                self.enqueue(&id, &at(&current))?;
+                return Ok(json!({"merged": false, "queued": true}));
+            }
+        }
         let v = self.call("PUT", &format!("repos/{}/pulls/{number}/merge", repo.slug()), Some(merge_ask(method, head)))?;
         Ok(json!({"merged": v.get("merged"), "sha": v.get("sha")}))
+    }
+
+    /// Put a pull request in its base branch's merge queue, at the commit
+    /// given: refused by GitHub when the pull request has moved on since
+    fn enqueue(&self, id: &str, head: &str) -> Result<()> {
+        let answer = self.graphql_whole(
+            "mutation($id:ID!,$head:GitObjectID){enqueuePullRequest(input:{pullRequestId:$id,expectedHeadOid:$head}){mergeQueueEntry{id}}}",
+            json!({"id": id, "head": head}),
+        )?;
+        if let Some(why) = refused(&answer, "enqueuePullRequest") {
+            bail!(crate::i18n::tp("err.github.queue", &[("reason", &why)]));
+        }
+        Ok(())
     }
 
     /// The labels an issue can be given: all of them, a page at a time, so a
@@ -1168,6 +1270,7 @@ impl Hub {
         // A file of a hundred megabytes over a slow line is not twenty seconds
         let agent = ureq::Agent::config_builder()
             .timeout_global(Some(UPLOAD_LIMIT))
+            .outward(&url)
             .http_status_as_error(false)
             .build()
             .new_agent();
@@ -2651,6 +2754,37 @@ mod tests {
         for not_one in [None, Some(""), Some("0123456"), Some("main"), Some("zzzz456789abcdef0123456789abcdef01234567")] {
             assert_eq!(super::merge_ask("rebase", not_one), serde_json::json!({"merge_method": "rebase"}), "{not_one:?}");
         }
+    }
+
+    /// A pull request whose base branch has a merge queue is put in the
+    /// queue -- waiting for its checks where the repository lets a merge
+    /// wait, at once where it does not -- and one already there is left be
+    #[test]
+    fn a_base_branch_with_a_merge_queue_takes_it_into_the_queue() {
+        use super::MergeWay;
+        use serde_json::json;
+        let answer = |auto: Value, queue: Value, queued: Value| {
+            json!({"data": {"repository": {"autoMergeAllowed": auto, "pullRequest": {
+                "id": "PR_1", "headRefOid": "abc", "isMergeQueueEnabled": queue, "isInMergeQueue": queued}}}})
+        };
+        use serde_json::Value;
+        let (id, head) = ("PR_1".to_string(), "abc".to_string());
+        assert_eq!(super::merge_way(&answer(json!(true), json!(false), json!(false))), MergeWay::Now);
+        assert_eq!(super::merge_way(&answer(json!(true), Value::Null, json!(false))), MergeWay::Now);
+        assert_eq!(super::merge_way(&json!({"data": {"repository": null}})), MergeWay::Now);
+        assert_eq!(super::merge_way(&json!({})), MergeWay::Now);
+        assert_eq!(super::merge_way(&answer(json!(true), json!(true), json!(true))), MergeWay::Queued);
+        assert_eq!(
+            super::merge_way(&answer(json!(true), json!(true), json!(false))),
+            MergeWay::WhenReady { id: id.clone(), head: head.clone() }
+        );
+        assert_eq!(super::merge_way(&answer(json!(false), json!(true), json!(false))), MergeWay::Enqueue { id, head });
+
+        // A change refused comes back with its data there and empty
+        let refused = json!({"data": {"enqueuePullRequest": null}, "errors": [{"message": "Head sha didn't match expected head sha"}]});
+        assert_eq!(super::refused(&refused, "enqueuePullRequest").as_deref(), Some("Head sha didn't match expected head sha"));
+        assert_eq!(super::refused(&json!({"data": {"enqueuePullRequest": {"mergeQueueEntry": {"id": "Q"}}}}), "enqueuePullRequest"), None);
+        assert!(super::refused(&json!({"data": null}), "enqueuePullRequest").is_some());
     }
 
     /// A project on MicroVMs whose repository is known is not asked it again:

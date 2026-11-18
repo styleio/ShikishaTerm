@@ -45,6 +45,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
+use crate::netproxy::Outward;
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde::Serialize;
@@ -674,8 +675,11 @@ fn releases_api() -> Option<String> {
     ))
 }
 
-pub(crate) fn agent(body: Duration) -> ureq::Agent {
+/// An agent for a request to this address (Windows' proxy taken where
+/// its setting says), whose body may take this long
+pub(crate) fn agent(body: Duration, url: &str) -> ureq::Agent {
     ureq::Agent::config_builder()
+        .outward(url)
         .timeout_connect(Some(Duration::from_secs(15)))
         .timeout_recv_response(Some(Duration::from_secs(30)))
         .timeout_recv_body(Some(body))
@@ -687,7 +691,7 @@ pub(crate) fn agent(body: Duration) -> ureq::Agent {
 /// Reads the newest release: its version and where its files are
 fn fetch_latest() -> Result<Release> {
     let url = releases_api().ok_or_else(|| anyhow!("no repository"))?;
-    let mut resp = agent(Duration::from_secs(30)).get(&url).call()?;
+    let mut resp = agent(Duration::from_secs(30), &url).get(&url).call()?;
     let v: serde_json::Value = resp.body_mut().read_json()?;
     parse_release(&v).ok_or_else(|| anyhow!("no version in the answer"))
 }
@@ -816,7 +820,7 @@ fn download_into(rel: &Release, dir: &Path) -> Result<()> {
 
 /// Streams a file to disk, keeping the phase's progress current
 fn fetch_file(url: &str, to: &Path, version: &str) -> Result<()> {
-    let mut resp = agent(Duration::from_secs(10 * 60)).get(url).call().with_context(|| format!("get {url}"))?;
+    let mut resp = agent(Duration::from_secs(10 * 60), url).get(url).call().with_context(|| format!("get {url}"))?;
     let total: Option<u64> = resp.headers().get("content-length").and_then(|v| v.to_str().ok()).and_then(|s| s.parse().ok());
     let mut reader = resp.body_mut().as_reader();
     let mut file = std::fs::File::create(to)?;
@@ -835,7 +839,7 @@ fn fetch_file(url: &str, to: &Path, version: &str) -> Result<()> {
 }
 
 fn fetch_small(url: &str) -> Result<String> {
-    let mut resp = agent(Duration::from_secs(30)).get(url).call().with_context(|| format!("get {url}"))?;
+    let mut resp = agent(Duration::from_secs(30), url).get(url).call().with_context(|| format!("get {url}"))?;
     Ok(resp.body_mut().read_to_string()?)
 }
 

@@ -77,8 +77,7 @@ pub(super) fn signed_in() -> bool {
 pub(super) fn ask() -> Option<Limits> {
     let (token, sub) = sign_in(super::now_ms() / 1000)?;
     let cookie = format!("WorkosCursorSessionToken={}%3A%3A{token}", crate::runtime::percent_encode(&sub));
-    let mut resp = super::client()
-        .get("https://cursor.com/api/usage-summary")
+    let mut resp = super::get("https://cursor.com/api/usage-summary")
         .header("Cookie", &cookie)
         .header("Accept", "application/json")
         .header("Origin", "https://cursor.com")

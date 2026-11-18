@@ -4564,7 +4564,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 }
                 for (kind, sent, v) in heard {
                     let report = crate::agenthook::report_of(&kind, &v);
-                    if let Some(id) = report.id.clone() {
+                    if let Some(id) = report.id.clone()
+                        && t.hears_session(&id, report.fresh)
+                    {
                         let s = tab::Session { id, source: tab::SessionSource::Hook };
                         append_hook_log(&format!("\"{}\" (on another machine) is running {}", t.title, s.short()));
                         t.session = Some(s);
@@ -22575,28 +22577,37 @@ pub fn exec_commands(
             // A tab telling us which conversation it is running. Written down
             // against that tab, and beside the exe, so a restart — or a restart
             // of the whole app — can pick the conversation back up
-            Command::SetSession { id, origin } => {
+            Command::SetSession { id, fresh, origin } => {
                 let Some(t) = session_of(origin).and_then(|i| tabs.get_mut(i)) else {
                     append_hook_log(&format!("set_session from tab{origin}: no such tab"));
                     continue;
                 };
+                if !t.hears_session(&id, fresh) {
+                    append_hook_log(&format!(
+                        "tab{origin} \"{}\": a conversation begun inside its own turn (an AI it ran) is not its own",
+                        t.title
+                    ));
+                    continue;
+                }
                 let s = tab::Session { id, source: tab::SessionSource::Hook };
                 append_hook_log(&format!("tab{origin} \"{}\" is running {}", t.title, s.short()));
                 t.session = Some(s);
             }
             // A tab saying what it was just asked. Kept on the tab for its
             // folder's automatic name; the words are not logged
-            Command::ReportPrompt { text, origin } => {
+            Command::ReportPrompt { text, from, origin } => {
                 let Some(t) = session_of(origin).and_then(|i| tabs.get_mut(i)) else {
                     append_hook_log(&format!("report_prompt from tab{origin}: no such tab"));
                     continue;
                 };
-                t.heard_from_program(&text);
+                if t.hears_from(from.as_deref()) {
+                    t.heard_from_program(&text);
+                }
             }
             // A tab saying what it is doing, rather than being read. Believed
             // over the screen, and dropped when it is older than something
             // already applied — hooks are separate processes that race
-            Command::SetState { state, sent_ms, origin } => {
+            Command::SetState { state, sent_ms, from, origin } => {
                 let Some(known) = TabState::from_label(&state) else {
                     append_hook_log(&format!("set_state from tab{origin}: {state:?} is not a state"));
                     continue;
@@ -22605,6 +22616,9 @@ pub fn exec_commands(
                     append_hook_log(&format!("set_state from tab{origin}: no such tab"));
                     continue;
                 };
+                if !t.hears_from(from.as_deref()) {
+                    continue;
+                }
                 if !t.hook_says(known, sent_ms) {
                     append_hook_log(&format!(
                         "tab{origin} \"{}\" said {state} out of order — dropped",
@@ -22612,14 +22626,16 @@ pub fn exec_commands(
                     ));
                 }
             }
-            Command::SetHelper { id, running, origin } => match session_of(origin).and_then(|i| tabs.get_mut(i)) {
+            Command::SetHelper { id, running, from, origin } => match session_of(origin).and_then(|i| tabs.get_mut(i)) {
+                Some(t) if !t.hears_from(from.as_deref()) => {}
                 Some(t) => {
                     append_hook_log(&format!("tab{origin} \"{}\": helper {id} {}", t.title, if running { "began" } else { "ended" }));
                     t.helper_says(&id, running);
                 }
                 None => append_hook_log(&format!("set_helper from tab{origin}: no such tab")),
             },
-            Command::SetRunning { helpers, other, origin } => match session_of(origin).and_then(|i| tabs.get_mut(i)) {
+            Command::SetRunning { helpers, other, from, origin } => match session_of(origin).and_then(|i| tabs.get_mut(i)) {
+                Some(t) if !t.hears_from(from.as_deref()) => {}
                 Some(t) => t.running_says(&crate::agenthook::Running { helpers, other }),
                 None => append_hook_log(&format!("set_running from tab{origin}: no such tab")),
             },

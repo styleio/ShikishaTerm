@@ -30,6 +30,7 @@
 
 use std::collections::HashMap;
 use std::sync::Mutex;
+use crate::netproxy::Outward;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -292,8 +293,9 @@ fn must_be_secure(url: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn agent() -> ureq::Agent {
+fn agent(url: &str) -> ureq::Agent {
     ureq::Agent::config_builder()
+        .outward(url)
         .timeout_global(Some(Duration::from_secs(15)))
         .http_status_as_error(false)
         // Never followed: a board's answer that sends this PC elsewhere would
@@ -317,7 +319,7 @@ fn answer(r: Result<ureq::http::Response<ureq::Body>, ureq::Error>) -> anyhow::R
 /// key it hands this PC in exchange
 pub fn pair_with(url: &str, code: &str, name: &str) -> anyhow::Result<String> {
     must_be_secure(url)?;
-    let v = answer(agent().post(&format!("{url}/pair")).send_json(serde_json::json!({ "code": code, "name": name })))?;
+    let v = answer(agent(url).post(&format!("{url}/pair")).send_json(serde_json::json!({ "code": code, "name": name })))?;
     match (v["ok"].as_bool(), v["key"].as_str(), v["why"].as_str()) {
         (Some(true), Some(key), _) => Ok(key.to_string()),
         (_, _, Some("too_many")) => anyhow::bail!(crate::i18n::t("err.board.too_many")),
@@ -328,20 +330,20 @@ pub fn pair_with(url: &str, code: &str, name: &str) -> anyhow::Result<String> {
 /// A ticket to open the board in a window with, once
 pub fn ticket(url: &str, key: &str) -> anyhow::Result<String> {
     must_be_secure(url)?;
-    let v = answer(agent().post(&format!("{url}/pair/ticket")).header("X-Device-Key", key).send(""))?;
+    let v = answer(agent(url).post(&format!("{url}/pair/ticket")).header("X-Device-Key", key).send(""))?;
     v["ticket"].as_str().map(str::to_string).ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.board.bad_answer")))
 }
 
 /// How the board stands: its tabs, and how many are at work
 pub fn status(url: &str, key: &str) -> anyhow::Result<serde_json::Value> {
     must_be_secure(url)?;
-    answer(agent().get(&format!("{url}/pair/status")).header("X-Device-Key", key).call())
+    answer(agent(url).get(&format!("{url}/pair/status")).header("X-Device-Key", key).call())
 }
 
 /// A new code for a phone, which this PC shows as a QR
 pub fn invite(url: &str, key: &str) -> anyhow::Result<String> {
     must_be_secure(url)?;
-    let v = answer(agent().post(&format!("{url}/pair/invite")).header("X-Device-Key", key).send(""))?;
+    let v = answer(agent(url).post(&format!("{url}/pair/invite")).header("X-Device-Key", key).send(""))?;
     v["code"].as_str().map(str::to_string).ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.board.bad_answer")))
 }
 

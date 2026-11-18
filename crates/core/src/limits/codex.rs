@@ -41,8 +41,7 @@ pub(super) fn account() -> Option<String> {
 /// One ask of the service, the question the CLI's own status asks
 pub(super) fn ask() -> Option<Limits> {
     let (token, account) = sign_in(super::now_ms() / 1000)?;
-    let mut req = super::client()
-        .get("https://chatgpt.com/backend-api/wham/usage")
+    let mut req = super::get("https://chatgpt.com/backend-api/wham/usage")
         .header("Authorization", &format!("Bearer {token}"))
         .header("Accept", "application/json");
     if let Some(a) = &account {

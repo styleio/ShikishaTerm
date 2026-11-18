@@ -53,8 +53,7 @@ fn project(token: &str) -> Option<String> {
     {
         return Some(id.clone());
     }
-    let mut resp = super::client()
-        .post(&format!("{SERVICE}:loadCodeAssist"))
+    let mut resp = super::post(&format!("{SERVICE}:loadCodeAssist"))
         .header("Authorization", &format!("Bearer {token}"))
         .header("Content-Type", "application/json")
         .send_json(serde_json::json!({"metadata": {"ideType": "GEMINI_CLI", "pluginType": "GEMINI"}}))
@@ -70,8 +69,7 @@ fn project(token: &str) -> Option<String> {
 pub(super) fn ask() -> Option<Limits> {
     let token = token_in(&super::read_json(&sign_in_file()?)?, super::now_ms() / 1000)?;
     let project = project(&token)?;
-    let mut resp = super::client()
-        .post(&format!("{SERVICE}:retrieveUserQuota"))
+    let mut resp = super::post(&format!("{SERVICE}:retrieveUserQuota"))
         .header("Authorization", &format!("Bearer {token}"))
         .header("Content-Type", "application/json")
         .send_json(serde_json::json!({"project": project}))

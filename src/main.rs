@@ -1412,24 +1412,28 @@ fn hook_mode(kind: String) -> Result<()> {
     let sent = hooks::epoch_ms() as i64;
 
     let report = hook_report(&kind, &v);
+    // Which conversation says it, with everything it says: a conversation
+    // an AI ran inside the tab (`claude -p`, `codex exec`) reports through
+    // the same hooks, and the app drops what is not the tab's own
+    let from: serde_json::Value = report.from.clone().map_or(serde_json::Value::Null, Into::into);
     let mut calls: Vec<(&str, Vec<serde_json::Value>)> = Vec::new();
     if let Some(id) = report.id {
-        calls.push(("set_session", vec![id.into()]));
+        calls.push(("set_session", vec![id.into(), report.fresh.into()]));
     }
     // What runs beside the conversation goes first: an end of turn that says
     // "done" and "a helper is still running" in one breath must never be read
     // as done for the moment in between
     if let Some(running) = report.running {
-        calls.push(("set_running", vec![running.helpers.into(), running.other.into()]));
+        calls.push(("set_running", vec![running.helpers.into(), running.other.into(), from.clone()]));
     }
     if let Some((id, up)) = report.helper {
-        calls.push(("set_helper", vec![id.into(), up.into()]));
+        calls.push(("set_helper", vec![id.into(), up.into(), from.clone()]));
     }
     if let Some(state) = report.state {
-        calls.push(("set_state", vec![state.into(), sent.into()]));
+        calls.push(("set_state", vec![state.into(), sent.into(), from.clone()]));
     }
     if let Some(prompt) = report.prompt {
-        calls.push(("report_prompt", vec![prompt.into()]));
+        calls.push(("report_prompt", vec![prompt.into(), from]));
     }
     if calls.is_empty() {
         // A hook that quietly does nothing is the worst way for this to fail —
@@ -1543,7 +1547,7 @@ mod hook_report_tests {
     fn the_conversation_is_taken_from_the_event_that_carries_it() {
         assert_eq!(
             hook_report("session", &claude("SessionStart")),
-            Report { id: Some("abc123".into()), ..Default::default() }
+            Report { id: Some("abc123".into()), from: Some("abc123".into()), ..Default::default() }
         );
     }
 
@@ -1551,7 +1555,7 @@ mod hook_report_tests {
     fn a_state_event_says_the_state_and_nothing_else() {
         assert_eq!(
             hook_report("state:BUSY", &claude("UserPromptSubmit")),
-            Report { id: None, state: Some("BUSY".into()), prompt: None, ..Default::default() }
+            Report { id: None, state: Some("BUSY".into()), prompt: None, from: Some("abc123".into()), ..Default::default() }
         );
     }
 
@@ -1564,7 +1568,7 @@ mod hook_report_tests {
         sent["prompt"] = serde_json::json!("  make the sidebar remember what was folded  ");
         assert_eq!(
             hook_report("state:BUSY", &sent),
-            Report { id: None, state: Some("BUSY".into()), prompt: Some("make the sidebar remember what was folded".into()), ..Default::default() }
+            Report { id: None, state: Some("BUSY".into()), prompt: Some("make the sidebar remember what was folded".into()), from: Some("abc123".into()), ..Default::default() }
         );
         sent["agent_id"] = serde_json::json!("agent_42");
         assert_eq!(hook_report("state:BUSY", &sent).prompt, None, "a subagent's prompt was taken for a person's");

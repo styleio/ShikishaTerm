@@ -54,8 +54,7 @@ pub(super) fn ask() -> Option<Limits> {
     let (token, user) = entry(&super::read_json(&sign_in_file()?)?, super::now_ms() / 1000)?;
     let base = std::env::var("GROK_CLI_CHAT_PROXY_BASE_URL").ok().filter(|b| !b.trim().is_empty());
     let base = base.as_deref().unwrap_or("https://cli-chat-proxy.grok.com/v1").trim_end_matches('/');
-    let mut req = super::client()
-        .get(&format!("{base}/billing?format=credits"))
+    let mut req = super::get(&format!("{base}/billing?format=credits"))
         .header("Authorization", &format!("Bearer {token}"))
         .header("X-XAI-Token-Auth", "xai-grok-cli")
         .header("Accept", "application/json");

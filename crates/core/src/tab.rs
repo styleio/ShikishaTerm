@@ -1190,6 +1190,9 @@ pub fn pty_write(writer: &PtyWriter, bytes: &[u8]) -> Result<()> {
 /// takes nothing of what it is typed is not going to take more
 const TYPED_MOST: u64 = 16 * 1024 * 1024;
 
+/// How many conversations begun inside a tab's own turn it remembers
+const NESTED_MOST: usize = 64;
+
 /// What is typed into a tab's program, handed to a thread of the tab's own
 /// and typed there, in order.
 ///
@@ -4156,6 +4159,10 @@ pub struct Tab {
     /// knowing it — a restart that starts the conversation over is the damage
     /// this exists to undo
     pub session: Option<Session>,
+    /// Conversations begun inside this tab's own turn -- a `claude -p` or a
+    /// `codex exec` its AI ran -- which report through the tab's hooks as if
+    /// they were its own (see `hears_session`)
+    nested: Vec<String>,
     /// What this tab's CLI can do about carrying a conversation across a
     /// restart, read from its profile at every launch (so editing a profile
     /// takes effect the next time, like the detection rules do)
@@ -5427,6 +5434,7 @@ impl Tab {
                 && resume_spec.as_ref().is_some_and(|r| r.record.is_some()))
             .then(|| (Instant::now() + std::time::Duration::from_secs(1), 30)),
             session,
+            nested: Vec::new(),
             resume: resume_spec,
             title,
             id: opts.id.clone(),
@@ -6570,7 +6578,46 @@ impl Tab {
     /// The one place both roads a report comes by -- the pipe from a program
     /// here, the terminal from one on another machine -- hand it over, so the
     /// two cannot come to read the same report differently
+    /// Whether a conversation that says it is running in this tab is the
+    /// tab's own, and is taken as the one it is running.
+    ///
+    /// An AI at work runs programs, and some of them are AIs: `claude -p`,
+    /// `codex exec`. They inherit the tab's surroundings and so its hooks,
+    /// and report as the tab: taken for its own, the tab was put down as
+    /// finished when the program it ran finished, and the conversation it
+    /// would be taken up in again after a restart was that program's. What
+    /// gives them away: a conversation begun afresh, other than the tab's,
+    /// while the tab's own is in the middle of a turn -- a person cannot
+    /// start one in a tab whose AI is at work. Such a conversation is
+    /// remembered (here, and on the machine's list of side threads, which
+    /// the hooks read) and nothing it says is the tab's
+    pub fn hears_session(&mut self, id: &str, fresh: bool) -> bool {
+        if self.nested.iter().any(|n| n == id) {
+            return false;
+        }
+        let another = self.session.as_ref().is_some_and(|s| s.id != id);
+        if another && fresh && self.hook_word() == Some(TabState::Busy) {
+            if self.nested.len() >= NESTED_MOST {
+                self.nested.remove(0);
+            }
+            self.nested.push(id.to_string());
+            crate::agenthook::note_side_thread(id);
+            return false;
+        }
+        true
+    }
+
+    /// Whether what a conversation says is the tab's to act on: anything
+    /// but a conversation its AI ran inside it (`hears_session`). A report
+    /// that does not say which conversation it is of is the tab's
+    pub fn hears_from(&self, conversation: Option<&str>) -> bool {
+        conversation.is_none_or(|c| !self.nested.iter().any(|n| n == c))
+    }
+
     pub fn take_report(&mut self, report: &crate::agenthook::Report, sent_ms: u64) -> bool {
+        if !self.hears_from(report.from.as_deref()) {
+            return true;
+        }
         if let Some((id, up)) = &report.helper {
             self.helper_says(id, *up);
         }
@@ -7423,6 +7470,40 @@ mod capture_probe {
         println!("=== end ===");
         println!("contains AAA: {}", got.contains("AAA"));
         println!("contains CCC: {}", got.contains("CCC"));
+    }
+}
+
+#[cfg(test)]
+mod nested_conversations {
+    use super::{Session, SessionSource, Tab, TabState};
+
+    /// A conversation an AI runs inside its own turn (`claude -p`, `codex
+    /// exec`) reports through the tab's hooks; none of it is the tab's
+    #[test]
+    fn a_conversation_begun_inside_the_tabs_turn_is_not_the_tabs() {
+        let mut t = Tab::spawn("otter".into(), &[crate::test_shell()], None, 10, 40, Default::default()).unwrap();
+        let now = crate::hooks::epoch_ms();
+        t.session = Some(Session { id: "main-conv".into(), source: SessionSource::Hook });
+        // Between turns a new conversation is a person's: started over, cleared
+        assert!(t.hears_session("person-new", true));
+        // In the middle of a turn, one begun afresh is a program the AI ran...
+        assert!(t.hook_says(TabState::Busy, now));
+        assert!(!t.hears_session("nested-conv", true), "a program the AI ran was taken for the tab's conversation");
+        // ...and nothing it says afterwards is the tab's, even once begun
+        assert!(!t.hears_session("nested-conv", false));
+        assert!(!t.hears_from(Some("nested-conv")));
+        let done = crate::agenthook::Report { state: Some("DONE".into()), from: Some("nested-conv".into()), ..Default::default() };
+        t.take_report(&done, now + 10);
+        assert_eq!(t.hook_word(), Some(TabState::Busy), "the program finishing put the tab down as finished");
+        // The tab's own conversation carries on, packed down or not
+        assert!(t.hears_session("main-conv", false) && t.hears_session("main-conv", true));
+        assert!(t.hears_from(Some("main-conv")) && t.hears_from(None));
+        let own = crate::agenthook::Report { state: Some("DONE".into()), from: Some("main-conv".into()), ..Default::default() };
+        t.take_report(&own, now + 20);
+        assert_eq!(t.hook_word(), Some(TabState::Done));
+        // A conversation taken up again mid-turn is not a fresh one
+        assert!(t.hears_session("resumed", false));
+        t.kill();
     }
 }
 

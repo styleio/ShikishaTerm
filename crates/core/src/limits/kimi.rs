@@ -36,8 +36,7 @@ pub(super) fn ask() -> Option<Limits> {
     let token = token_in(&super::read_json(&sign_in_file()?)?, super::now_ms() / 1000)?;
     let base = std::env::var("KIMI_CODE_BASE_URL").ok().filter(|b| !b.trim().is_empty());
     let base = base.as_deref().unwrap_or("https://api.kimi.com/coding/v1").trim_end_matches('/');
-    let mut resp = super::client()
-        .get(&format!("{base}/usages"))
+    let mut resp = super::get(&format!("{base}/usages"))
         .header("Authorization", &format!("Bearer {token}"))
         .header("Accept", "application/json")
         .call()
