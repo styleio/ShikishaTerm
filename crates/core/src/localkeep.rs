@@ -288,10 +288,12 @@ fn outlived(home: &std::path::Path) -> bool {
 /// anybody any more; said in the log and to the person all the same, since
 /// programs of theirs ended with it.
 ///
-/// Only one app runs from a folder at a time (`crate::instance`), and only
-/// the app makes this line, on one thread (`connect_soon`): there is no
-/// second app still speaking to the resident process that is ended, and no
-/// second thread ending the one started in its place. One at a time all
+/// Only one app runs from a folder at a time in a session
+/// (`crate::instance`), and only the app makes this line, on one thread
+/// (`connect_soon`): there is no second app still speaking to the resident
+/// process that is ended, and no second thread ending the one started in
+/// its place. A resident process of another session -- the same person
+/// logged in twice -- is left alone: the app there may be speaking to it. One at a time all
 /// the same, and the key looked for once more first: a resident process
 /// that has its key by now is not the one this is for
 #[cfg(windows)]
@@ -318,6 +320,9 @@ fn end_outlived(home: &std::path::Path, door: &std::path::Path, answered: u64) -
         .filter(|p| p.pid().as_u32() != std::process::id())
         // Running since before it was found answering: not one started since
         .filter(|p| p.start_time() <= answered)
+        // ...and in this session: where one person is logged in more than
+        // once, the app of another session may still be speaking to its own
+        .filter(|p| session_of(p.pid().as_u32()).is_some_and(|s| Some(s) == session_of(std::process::id())))
         .filter(|p| p.exe().is_some_and(|e| e.to_string_lossy().eq_ignore_ascii_case(&me.to_string_lossy())))
         .filter(|p| {
             let said: Vec<String> = p.cmd().iter().map(|a| a.to_string_lossy().to_lowercase()).collect();
@@ -342,6 +347,14 @@ fn end_outlived(home: &std::path::Path, door: &std::path::Path, answered: u64) -
     crate::append_hook_log(&format!("this PC's resident process: {} that outlived its folder ended, with what it held; a new one is started", mine.len()));
     crate::caps::tell(crate::i18n::t("msg.localkeep.outlived"));
     Ok(())
+}
+
+/// The session a process runs in: each time a person is logged in is one
+#[cfg(windows)]
+fn session_of(pid: u32) -> Option<u32> {
+    let mut session = 0u32;
+    // SAFETY: the number is ours to be written into
+    (unsafe { windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId(pid, &mut session) } != 0).then_some(session)
 }
 
 #[cfg(not(windows))]
