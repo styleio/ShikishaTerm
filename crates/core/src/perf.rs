@@ -272,6 +272,11 @@ mod counters {
             }
         }
 
+        /// Whether each process has a name of its own
+        pub fn apart(&self) -> bool {
+            self.apart
+        }
+
         /// The processes there are now, by name and number
         pub fn seen(&self) -> Vec<(String, f64)> {
             many(self.pid)
@@ -289,13 +294,23 @@ mod counters {
                 true => known.contains(&(ids[i].0.as_str(), ids[i].1 as u64)),
                 false => before.get(i).is_some_and(|was| was.0 == ids[i].0 && was.1 as u64 == ids[i].1 as u64),
             };
-            // The same programs in the same order under every counter of one
-            // look; one that is not is left at nothing rather than given
-            // another program's number
+            // Each counter is asked by itself, and the programs it answers for
+            // are the ones there at that moment: with programs coming and
+            // going, two counters of one look do not hold the same programs
+            // in the same places. So a program's numbers are found by its
+            // name where each has a name of its own; where the copies of one
+            // share a name, by its place -- and only when the places agree,
+            // or it would be given another program's number
+            let names = &ids;
             let beside = |c: Option<Counter>| {
                 let all = many(c);
-                let same = all.len() == ids.len() && all.iter().zip(&ids).all(|(a, b)| a.0 == b.0);
-                move |i: usize| if same { all[i].1 } else { 0.0 }
+                let same = all.len() == names.len() && all.iter().zip(names).all(|(a, b)| a.0 == b.0);
+                let by_name: Option<std::collections::HashMap<String, f64>> = self.apart.then(|| all.iter().cloned().collect());
+                move |i: usize| match &by_name {
+                    Some(found) => found.get(&names[i].0).copied().unwrap_or(0.0),
+                    None if same => all[i].1,
+                    None => 0.0,
+                }
             };
             let (parent, cpu, memory, commit) = (beside(self.parent), beside(self.cpu), beside(self.memory), beside(self.commit));
             let (disk, threads, handles, age) = (beside(self.disk), beside(self.threads), beside(self.handles), beside(self.age));
@@ -371,6 +386,15 @@ pub fn sample(over: Duration) -> (Rates, Vec<Proc>) {
     let Some(q) = counters::Query::open() else { return Default::default() };
     let (machine, programs) = (counters::Machine::on(&q), counters::Programs::on(&q));
     q.collect();
+    // A Windows that does not name each process apart cannot say which of
+    // the copies of a program a number is for once one of them has gone: the
+    // programs are opened and asked there instead, which leaves out the
+    // ones this app may not open, and the machine's own rates still stand
+    if !programs.apart() {
+        let procs = by_opening(over);
+        q.collect();
+        return (machine.read(), procs);
+    }
     let before = programs.seen();
     std::thread::sleep(over);
     if !q.collect() {
@@ -384,9 +408,17 @@ pub fn sample(over: Duration) -> (Rates, Vec<Proc>) {
 
 #[cfg(not(windows))]
 pub fn sample(over: Duration) -> (Rates, Vec<Proc>) {
+    (Rates::default(), by_opening(over))
+}
+
+/// Every program this app may open and ask, and what it used over `over`:
+/// the way there is where the system keeps no count of its own for each.
+/// One it may not open is there by name, and reads as using nothing
+fn by_opening(over: Duration) -> Vec<Proc> {
     use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
-    // A program can call itself anything here -- a service named after the
-    // customer it serves -- so the file it was started from is read instead
+    // Outside Windows a program can call itself anything -- a service named
+    // after the customer it serves -- so the file it was started from is
+    // read instead
     let kind = ProcessRefreshKind::nothing().with_cpu().with_memory().with_disk_usage().with_exe(sysinfo::UpdateKind::OnlyIfNotSet).without_tasks();
     let mut sys = System::new();
     // All the machine's processors, known before the programs are looked at
@@ -404,7 +436,11 @@ pub fn sample(over: Duration) -> (Rates, Vec<Proc>) {
         .processes()
         .values()
         .map(|p| {
+            #[cfg(not(windows))]
             let name = p.exe().and_then(|e| e.file_name()).map(|n| n.to_string_lossy().into_owned()).filter(|n| !n.is_empty());
+            // On Windows the system's own name for it is its file's, less the ending
+            #[cfg(windows)]
+            let name = Some(p.name().to_string_lossy().trim_end_matches(".exe").to_string()).filter(|n| !n.is_empty());
             let used = p.disk_usage();
             Proc {
                 name: name.unwrap_or_else(|| UNNAMED.to_string()),
@@ -422,7 +458,7 @@ pub fn sample(over: Duration) -> (Rates, Vec<Proc>) {
         })
         .collect();
     mark_ours(&mut procs, &own);
-    (Rates::default(), procs)
+    procs
 }
 
 /// What stands for the programs whose file cannot be read
@@ -519,6 +555,15 @@ mod tests {
         mark_ours(&mut all, &std::collections::HashSet::from([10, 30]));
         let ours: Vec<&str> = all.iter().filter(|p| p.ours).map(|p| p.name.as_str()).collect();
         assert_eq!(ours, ["app", "shell", "node", "app", "held shell"]);
+    }
+
+    /// Where the system keeps no count for each process, they are opened
+    /// and asked: this program is found that way too, and marked
+    #[test]
+    fn the_programs_are_found_by_opening_them_too() {
+        let procs = by_opening(Duration::from_millis(300));
+        let me = procs.iter().find(|p| p.pid == std::process::id()).expect("this program is not among them");
+        assert!(me.ours && me.memory > 0 && !me.name.ends_with(".exe"), "{me:?}");
     }
 
     /// Every program on the machine is seen, this one among them and marked
