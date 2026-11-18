@@ -884,13 +884,17 @@ const INSTALLED_HOLDS: std::time::Duration = std::time::Duration::from_secs(5);
 /// installed or taken off shows within these few seconds
 fn installed_lately(name: &str) -> bool {
     static FOUND: std::sync::Mutex<Vec<(String, std::time::Instant, bool)>> = std::sync::Mutex::new(Vec::new());
-    let mut found = FOUND.lock().unwrap_or_else(|e| e.into_inner());
     // (a test changes what is installed and asks again at once)
     let holds = if cfg!(test) { std::time::Duration::ZERO } else { INSTALLED_HOLDS };
-    if let Some(there) = found.iter().find(|(n, at, _)| n == name && at.elapsed() < holds).map(|(_, _, there)| *there) {
+    let kept = FOUND.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(n, at, _)| n == name && at.elapsed() < holds).map(|(_, _, there)| *there);
+    if let Some(there) = kept {
         return there;
     }
+    // Looked for with nothing held: a folder on the PATH that is slow to
+    // answer holds up whoever asks about this AI, and nobody asking about
+    // another whose answer is already kept
     let there = crate::tab::resolve_command(name).is_some();
+    let mut found = FOUND.lock().unwrap_or_else(|e| e.into_inner());
     found.retain(|(n, _, _)| n != name);
     found.push((name.to_string(), std::time::Instant::now(), there));
     there

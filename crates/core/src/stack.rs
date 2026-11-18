@@ -14,7 +14,6 @@
 //! files carry. One of this program's is told by its place in the program's
 //! file -- the program is shipped without the names of its functions -- and
 //! that place is turned into a name by whoever has the build it came from.
-//! A build made for trying things out carries the names, and says them.
 
 /// The most functions told, from the innermost out
 #[cfg_attr(not(all(windows, target_arch = "x86_64")), allow(dead_code))]
@@ -70,9 +69,10 @@ mod native {
     use super::MOST;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU8, Ordering};
-    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, HMODULE};
+    use windows_sys::Win32::Foundation::{CloseHandle, FreeLibrary, HANDLE, HMODULE};
     use windows_sys::Win32::System::Diagnostics::Debug::{CONTEXT, GetThreadContext, ReadProcessMemory, RtlLookupFunctionEntry, RtlVirtualUnwind, UNW_FLAG_NHANDLER};
-    use windows_sys::Win32::System::LibraryLoader::{GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, GetModuleFileNameW, GetModuleHandleExW};
+    use windows_sys::Win32::System::LibraryLoader::{GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GetModuleFileNameW, GetModuleHandleExW};
+    use windows_sys::Win32::System::Memory::{MEMORY_BASIC_INFORMATION, VirtualQuery};
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenThread, ResumeThread, SuspendThread, THREAD_GET_CONTEXT, THREAD_QUERY_INFORMATION, THREAD_SUSPEND_RESUME};
 
     /// The registers that say where a thread is and how to step out of it
@@ -80,11 +80,17 @@ mod native {
     /// How long the reading may take before the thread is let go on without it
     const GIVEN: std::time::Duration = std::time::Duration::from_millis(1500);
 
-    // Who lets the thread go on: nobody yet, the one reading, or the one
-    // who asked and stopped waiting
-    const READING: u8 = 0;
-    const READ: u8 = 1;
-    const GIVEN_UP: u8 = 2;
+    // Where the reading stands. The thread is held still exactly once, by
+    // the reader, and let go exactly once: by the reader when it is done, or
+    // by whoever asked when the reader is held up -- and which of the two is
+    // settled by who moves this on from HELD. Nobody lets go of a thread
+    // that is not held, and nobody holds one after the asker has given up
+    const NOT_BEGUN: u8 = 0;
+    const HOLDING: u8 = 1;
+    const HELD: u8 = 2;
+    const LETTING_GO: u8 = 3;
+    const DONE: u8 = 4;
+    const GIVEN_UP: u8 = 5;
 
     /// The thread is held still while it is read, and a thread held still
     /// keeps whatever it holds -- the lock on the memory everybody
@@ -95,79 +101,134 @@ mod native {
     /// wait for it for ever, with the thread it is waiting for held still
     /// by itself. Then whoever asked lets the thread go on, and does without
     pub fn places(thread: u32) -> Vec<u64> {
+        if thread == 0 || thread == super::this_thread() {
+            return Vec::new();
+        }
         // SAFETY: a thread of this process, opened to be held and read; the handle is closed below
         let handle = unsafe { OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, 0, thread) };
-        if handle.is_null() || thread == super::this_thread() {
+        if handle.is_null() {
             return Vec::new();
         }
         let handle = handle as usize;
-        let who = Arc::new(AtomicU8::new(READING));
+        let state = Arc::new(AtomicU8::new(NOT_BEGUN));
         let (tx, rx) = std::sync::mpsc::channel::<Vec<u64>>();
         let reader = {
-            let who = who.clone();
+            let state = state.clone();
             std::thread::Builder::new().name("shikisha-stack".into()).spawn(move || {
                 let mut found = Vec::with_capacity(MOST);
                 // SAFETY: zeroes are a context to be filled in, and the box keeps it lined up as the system wants
                 let mut context: Box<CONTEXT> = Box::new(unsafe { std::mem::zeroed() });
                 context.ContextFlags = WHERE;
                 let handle = handle as HANDLE;
-                // SAFETY: the handle is open; from here to the resume nothing is allocated
+                // Begun too late, after whoever asked stopped waiting: the thread is not touched
+                if state.compare_exchange(NOT_BEGUN, HOLDING, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+                    return;
+                }
+                // SAFETY: the handle is open for as long as the state says the reader may use it;
+                // from the hold to the letting go nothing is allocated
                 unsafe {
                     if SuspendThread(handle) == u32::MAX {
+                        state.store(DONE, Ordering::SeqCst);
                         let _ = tx.send(found);
                         return;
                     }
+                    state.store(HELD, Ordering::SeqCst);
+                    let held = || state.load(Ordering::SeqCst) == HELD;
                     if GetThreadContext(handle, &mut *context) != 0 {
-                        while found.len() < MOST && who.load(Ordering::SeqCst) == READING {
-                            let at = context.Rip;
-                            if at == 0 {
+                        // Its stack, from where it stands to the top: a step
+                        // that leads outside it is not taken
+                        let mut region: MEMORY_BASIC_INFORMATION = std::mem::zeroed();
+                        let top = match VirtualQuery(context.Rsp as *const _, &mut region, std::mem::size_of::<MEMORY_BASIC_INFORMATION>()) {
+                            0 => 0,
+                            _ => region.BaseAddress as u64 + region.RegionSize as u64,
+                        };
+                        while found.len() < MOST && held() {
+                            let (at, stack) = (context.Rip, context.Rsp);
+                            if at == 0 || stack < 8 || stack + 8 > top {
                                 break;
                             }
                             found.push(at);
                             let mut base = 0u64;
                             let entry = RtlLookupFunctionEntry(at, &mut base, std::ptr::null_mut());
+                            // The looking up is where a reader can be held up: whoever asked
+                            // may have let the thread go on meanwhile, and what was read of it is stale
+                            if !held() {
+                                break;
+                            }
                             if entry.is_null() {
                                 // A function that keeps nothing on the stack: where it goes back to is on top
                                 let (mut back, mut got) = (0u64, 0usize);
-                                if ReadProcessMemory(GetCurrentProcess(), context.Rsp as *const _, &mut back as *mut u64 as *mut _, 8, &mut got) == 0 || got != 8 {
+                                if ReadProcessMemory(GetCurrentProcess(), stack as *const _, &mut back as *mut u64 as *mut _, 8, &mut got) == 0 || got != 8 {
                                     break;
                                 }
                                 context.Rip = back;
-                                context.Rsp += 8;
+                                context.Rsp = stack + 8;
                             } else {
                                 let (mut data, mut frame) = (std::ptr::null_mut(), 0u64);
                                 RtlVirtualUnwind(UNW_FLAG_NHANDLER, base, at, entry, &mut *context, &mut data, &mut frame, std::ptr::null_mut());
                             }
+                            // Out of a function, the stack is further up, never back down
+                            if context.Rsp <= stack {
+                                break;
+                            }
                         }
                     }
-                    if who.compare_exchange(READING, READ, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
-                        ResumeThread(handle);
+                    match state.compare_exchange(HELD, LETTING_GO, Ordering::SeqCst, Ordering::SeqCst) {
+                        Ok(_) => {
+                            ResumeThread(handle);
+                            state.store(DONE, Ordering::SeqCst);
+                        }
+                        // Whoever asked let it go on, part of the way through: nothing of what was read is told
+                        Err(_) => return,
                     }
                 }
                 let _ = tx.send(found);
             })
         };
+        // SAFETY (for every close below): the handle was opened above, and is closed only once the
+        // state says the reader will not use it again
+        let close = || unsafe { CloseHandle(handle as HANDLE) };
         if reader.is_err() {
-            // SAFETY: opened above
-            unsafe { CloseHandle(handle as HANDLE) };
+            close();
             return Vec::new();
         }
-        let found = rx.recv_timeout(GIVEN).unwrap_or_default();
-        if who.compare_exchange(READING, GIVEN_UP, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
-            // The reader is held up: the thread goes on, and the reader stops at its next step.
-            // The handle is left open for it
-            // SAFETY: opened above
-            unsafe { ResumeThread(handle as HANDLE) };
-            return Vec::new();
+        if let Ok(found) = rx.recv_timeout(GIVEN) {
+            close();
+            return found;
         }
-        // SAFETY: opened above, and the reader is done with it
-        unsafe { CloseHandle(handle as HANDLE) };
-        found
+        loop {
+            match state.load(Ordering::SeqCst) {
+                // Not begun: it never will be
+                NOT_BEGUN => {
+                    if state.compare_exchange(NOT_BEGUN, GIVEN_UP, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
+                        close();
+                        return Vec::new();
+                    }
+                }
+                // Held, and the reader held up: the thread goes on, and the reader stops at its next step
+                HELD => {
+                    if state.compare_exchange(HELD, GIVEN_UP, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
+                        // SAFETY: held by the reader, once, and let go here, once
+                        unsafe { ResumeThread(handle as HANDLE) };
+                        close();
+                        return Vec::new();
+                    }
+                }
+                // Done in the moment the waiting ended: what it read is on its way
+                DONE => {
+                    let found = rx.recv_timeout(std::time::Duration::from_millis(200)).unwrap_or_default();
+                    close();
+                    return found;
+                }
+                // Being held, or being let go, this instant
+                _ => std::thread::sleep(std::time::Duration::from_millis(1)),
+            }
+        }
     }
 
     /// A value out of a file of the program as it is laid out in memory
     ///
-    /// SAFETY: `base + at` has to be inside a file the system has laid out
+    /// SAFETY: `base + at` has to be inside a file the system has laid out and is keeping there
     unsafe fn read<T: Copy>(base: u64, at: u64) -> T {
         unsafe { std::ptr::read_unaligned((base + at) as *const T) }
     }
@@ -175,12 +236,16 @@ mod native {
     /// The function of a system's file that `place` is in, by the names the
     /// file itself gives out, and how far into it
     fn named(base: u64, place: u64) -> Option<(String, u64)> {
-        // SAFETY: `base` is where the system laid a file out; every place read is checked against the file's own size
+        // SAFETY: `base` is where the system laid a file out, kept there by whoever calls;
+        // every place read is checked against the file's own size
         unsafe {
             if read::<u16>(base, 0) != 0x5a4d {
                 return None;
             }
             let head = read::<u32>(base, 0x3c) as u64;
+            if head > 0x1000 {
+                return None;
+            }
             // Only the kind of file a 64-bit program is made of
             if read::<u32>(base, head) != 0x4550 || read::<u16>(base, head + 24) != 0x20b {
                 return None;
@@ -193,7 +258,7 @@ mod native {
             let count = read::<u32>(base, names_at + 0x18) as u64;
             let (functions, names, numbers) = (read::<u32>(base, names_at + 0x1c) as u64, read::<u32>(base, names_at + 0x20) as u64, read::<u32>(base, names_at + 0x24) as u64);
             let all = read::<u32>(base, names_at + 0x14) as u64;
-            if count > 100_000 || names + count * 4 > size || numbers + count * 2 > size || functions + all * 4 > size {
+            if count > 100_000 || all > 200_000 || names + count * 4 > size || numbers + count * 2 > size || functions + all * 4 > size {
                 return None;
             }
             let mut best: Option<(u64, u64)> = None;
@@ -230,8 +295,10 @@ mod native {
 
     pub fn told(place: u64) -> String {
         let mut module: HMODULE = std::ptr::null_mut();
-        // SAFETY: asked by a place, and the file's count of users left as it is
-        let found = unsafe { GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, place as *const u16, &mut module) };
+        // The file is kept where it is until it has been read: asked for
+        // this way, the system counts one more user of it, given back below
+        // SAFETY: asked by a place inside it
+        let found = unsafe { GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, place as *const u16, &mut module) };
         if found == 0 || module.is_null() {
             return format!("{place:#x}");
         }
@@ -243,78 +310,13 @@ mod native {
         let file = whole.rsplit(['\\', '/']).next().unwrap_or(&whole).to_string();
         let base = module as u64;
         let at = place.saturating_sub(base);
-        #[cfg(debug_assertions)]
-        if let Some(said) = symbols::of(place, base, &name[..len.min(name.len())]) {
-            return format!("{file}!{said}");
-        }
-        match named(base, at) {
+        let said = match named(base, at) {
             Some((function, into)) => format!("{file}!{function}+{into:#x}"),
             None => format!("{file}+{at:#x}"),
-        }
-    }
-
-    /// In a build made for trying things out, the names of this program's
-    /// own functions are beside it, and Windows' own reader of them says
-    /// which one a place is in
-    #[cfg(debug_assertions)]
-    mod symbols {
-        use windows_sys::Win32::System::Diagnostics::Debug::{
-            IMAGEHLP_LINEW64, SYMBOL_INFOW, SYMOPT_DEFERRED_LOADS, SYMOPT_LOAD_LINES, SYMOPT_UNDNAME, SymFromAddrW, SymGetLineFromAddrW64, SymInitializeW, SymLoadModuleExW, SymSetOptions,
         };
-        use windows_sys::Win32::System::Threading::GetCurrentProcess;
-
-        /// The reader is not one two threads may use at once. With it, whether
-        /// it has been started, and the files it has been told of
-        static TURN: std::sync::Mutex<(bool, Vec<u64>)> = std::sync::Mutex::new((false, Vec::new()));
-
-        /// The function `place` is in, with how far in and the line of the
-        /// source; `base` and `file` are the file of the program it is in
-        pub fn of(place: u64, base: u64, file: &[u16]) -> Option<String> {
-            let mut turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
-            let (ready, told) = &mut *turn;
-            // SAFETY: this process, and room of the size said
-            unsafe {
-                let process = GetCurrentProcess();
-                if !*ready {
-                    SymSetOptions(SYMOPT_UNDNAME | SYMOPT_LOAD_LINES);
-                    // Each file is told to it as it comes up, rather than all of them at once
-                    if SymInitializeW(process, std::ptr::null(), 0) == 0 {
-                        return None;
-                    }
-                    *ready = true;
-                }
-                if !told.contains(&base) {
-                    told.push(base);
-                    let path: Vec<u16> = file.iter().cloned().chain(std::iter::once(0)).collect();
-                    SymLoadModuleExW(process, std::ptr::null_mut(), path.as_ptr(), std::ptr::null(), base, 0, std::ptr::null(), 0);
-                }
-                const NAME: usize = 512;
-                let mut room = vec![0u64; (std::mem::size_of::<SYMBOL_INFOW>() + NAME * 2) / 8 + 1];
-                let symbol = room.as_mut_ptr() as *mut SYMBOL_INFOW;
-                (*symbol).SizeOfStruct = std::mem::size_of::<SYMBOL_INFOW>() as u32;
-                (*symbol).MaxNameLen = NAME as u32;
-                let mut into = 0u64;
-                if SymFromAddrW(process, place, &mut into, symbol) == 0 {
-                    return None;
-                }
-                let name = String::from_utf16_lossy(std::slice::from_raw_parts((*symbol).Name.as_ptr(), ((*symbol).NameLen as usize).min(NAME)));
-                let mut line: IMAGEHLP_LINEW64 = std::mem::zeroed();
-                line.SizeOfStruct = std::mem::size_of::<IMAGEHLP_LINEW64>() as u32;
-                let mut across = 0u32;
-                let at = match SymGetLineFromAddrW64(process, place, &mut across, &mut line) != 0 && !line.FileName.is_null() {
-                    true => {
-                        let mut len = 0;
-                        while *line.FileName.add(len) != 0 {
-                            len += 1;
-                        }
-                        let file = String::from_utf16_lossy(std::slice::from_raw_parts(line.FileName, len));
-                        format!(" ({}:{})", file.rsplit(['\\', '/']).next().unwrap_or(&file), line.LineNumber)
-                    }
-                    false => String::new(),
-                };
-                Some(format!("{name}+{into:#x}{at}"))
-            }
-        }
+        // SAFETY: the one use counted above
+        unsafe { FreeLibrary(module) };
+        said
     }
 }
 
@@ -354,5 +356,42 @@ mod tests {
         assert!(found.is_empty());
         // A thread cannot hold itself still to be read
         assert!(of(this_thread()).is_empty());
+    }
+
+    /// A thread that is busy is read over and over and goes on every time:
+    /// held once and let go once, however the reading and the waiting for
+    /// it fall together
+    #[test]
+    fn a_busy_thread_goes_on_after_every_reading() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+        let (stop, turns) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicU64::new(0)));
+        let (tx, rx) = std::sync::mpsc::channel::<u32>();
+        let busy = {
+            let (stop, turns) = (stop.clone(), turns.clone());
+            std::thread::spawn(move || {
+                let _ = tx.send(this_thread());
+                let mut kept = Vec::new();
+                while !stop.load(Ordering::Relaxed) {
+                    // Allocating all the while, so it is often found holding the lock on the memory
+                    kept.push(vec![0u8; 64]);
+                    if kept.len() > 256 {
+                        kept.clear();
+                    }
+                    turns.fetch_add(1, Ordering::Relaxed);
+                }
+            })
+        };
+        let thread = rx.recv().unwrap();
+        for _ in 0..300 {
+            let _ = places(thread);
+        }
+        let before = turns.load(Ordering::Relaxed);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(turns.load(Ordering::Relaxed) > before, "the thread was left held still");
+        stop.store(true, Ordering::Relaxed);
+        busy.join().unwrap();
+        // A thread that is gone is not read, and nothing is the worse for asking
+        assert!(places(thread).is_empty() || cfg!(all(windows, target_arch = "x86_64")));
     }
 }

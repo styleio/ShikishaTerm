@@ -1557,11 +1557,11 @@ fn private(text: &str, known: &[String], names: &[(String, String)], kind: Kind)
 /// What kind of file each one in the report is
 fn kind_of(name: &str) -> Kind {
     match name {
-        "health.log" | "findings.txt" | "now.txt" | "about.txt" | "storage.txt" | "files.txt" | "settings.txt" | "dumps.txt" | "short-runs.txt" => Kind::Record,
+        // (where a part stopped is the names of functions and of the
+        // program's files, written by this program: kept whole, as it is)
+        "health.log" | "findings.txt" | "now.txt" | "about.txt" | "storage.txt" | "files.txt" | "settings.txt" | "dumps.txt" | "short-runs.txt" | "hang.json" => Kind::Record,
         "events.txt" => Kind::Events,
-        // (where a part stopped is the names of functions: not the app's
-        // vocabulary, and what the file is for)
-        "crash.log" | "last-run-ended.txt" | "memory.log" | "hang.json" => Kind::Ending,
+        "crash.log" | "last-run-ended.txt" | "memory.log" => Kind::Ending,
         _ => Kind::Log,
     }
 }
@@ -1653,7 +1653,8 @@ pub fn bundle() -> Result<(String, Vec<u8>, usize)> {
     let sources: [(&str, std::path::PathBuf, usize); 6] = [
         ("crash.log", logs.join("crash.log"), CRASH_LINES),
         // The last time a part of the app stopped answering
-        ("hang.json", logs.join("hang.json"), 50),
+        // (with where each part was: a function a line)
+        ("hang.json", logs.join("hang.json"), 400),
         ("running.json", state("running.json"), 50),
         ("short-runs.txt", state("short-runs"), 5),
         ("update-trial.json", state("update").join("trial.json"), 50),

@@ -225,7 +225,9 @@ fn connect_or(starting: bool) -> Result<Arc<Link>> {
         Err(e) if starting && outlived(&home) => {
             drop(reader);
             drop(conn);
-            end_outlived(&home, &door).with_context(|| format!("{e:#}"))?;
+            // It answered before now: one started from now on is another
+            let answered = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+            end_outlived(&home, &door, answered).with_context(|| format!("{e:#}"))?;
             return connect_or(starting);
         }
         Err(e) => return Err(e),
@@ -281,14 +283,27 @@ fn outlived(home: &std::path::Path) -> bool {
 ///
 /// It cannot be asked to end: asking takes the key. So it is found among
 /// the processes -- a copy of this very program, started to keep this very
-/// folder -- and ended with what it started. What it held could not be
-/// reached by anybody any more; said in the log and to the person all the
-/// same, since programs of theirs ended with it
+/// folder, before `answered` (the moment it was found answering) -- and
+/// ended with what it started. What it held could not be reached by
+/// anybody any more; said in the log and to the person all the same, since
+/// programs of theirs ended with it.
+///
+/// Only one app runs from a folder at a time (`crate::instance`), and only
+/// the app makes this line, on one thread (`connect_soon`): there is no
+/// second app still speaking to the resident process that is ended, and no
+/// second thread ending the one started in its place. One at a time all
+/// the same, and the key looked for once more first: a resident process
+/// that has its key by now is not the one this is for
 #[cfg(windows)]
-fn end_outlived(home: &std::path::Path, door: &std::path::Path) -> Result<()> {
+fn end_outlived(home: &std::path::Path, door: &std::path::Path, answered: u64) -> Result<()> {
     use std::os::windows::process::CommandExt as _;
     use std::sync::atomic::{AtomicU32, Ordering};
     use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
+    if crate::fardaemon::run_dir(home).join("keep.key").exists() {
+        return Ok(());
+    }
     static ENDED: AtomicU32 = AtomicU32::new(0);
     if ENDED.fetch_add(1, Ordering::SeqCst) >= OUTLIVED_MOST {
         bail!("this PC's resident process has outlived its folder, and too many were ended for that already");
@@ -301,6 +316,8 @@ fn end_outlived(home: &std::path::Path, door: &std::path::Path) -> Result<()> {
         .processes()
         .values()
         .filter(|p| p.pid().as_u32() != std::process::id())
+        // Running since before it was found answering: not one started since
+        .filter(|p| p.start_time() <= answered)
         .filter(|p| p.exe().is_some_and(|e| e.to_string_lossy().eq_ignore_ascii_case(&me.to_string_lossy())))
         .filter(|p| {
             let said: Vec<String> = p.cmd().iter().map(|a| a.to_string_lossy().to_lowercase()).collect();
@@ -328,7 +345,7 @@ fn end_outlived(home: &std::path::Path, door: &std::path::Path) -> Result<()> {
 }
 
 #[cfg(not(windows))]
-fn end_outlived(_home: &std::path::Path, _door: &std::path::Path) -> Result<()> {
+fn end_outlived(_home: &std::path::Path, _door: &std::path::Path, _answered: u64) -> Result<()> {
     bail!("this PC's resident process is only kept on Windows")
 }
 
