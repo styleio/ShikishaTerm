@@ -123,6 +123,14 @@ once it reaches its first tagged release.
   having got part of the way, and the folder was then deleted file by file.
   It is now refused, with words saying to remove the worktree's own folder.
   The same is checked on a server.
+- **A long first command in a terminal on a server runs whole.** The
+  command a tab on a server starts with is typed into the shell there; on
+  a Mac a terminal takes no more than 1024 bytes of a line typed before the
+  shell edits it, and the rest -- the Enter with it -- was dropped, so a
+  long one (a deep folder, a conversation taken up again) never started. A
+  long one is now handed to the shell in its environment as it starts, and
+  only a few words are typed to run it. This is done by the SHIKISHA bridge
+  on the server.
 
 ## [0.31.0] - 2026-11-17
 

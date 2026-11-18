@@ -78,6 +78,29 @@ const SCROLLBACK_KEPT: usize = 5000;
 /// never dropped from the terminal: the owner, attaching again, is handed
 /// the state with all of it in
 const QUEUED_MOST: u64 = 32 * 1024 * 1024;
+
+/// How long a first line is typed as it is. A terminal takes one line of no
+/// more than 1024 bytes on a Mac while the program reading it is not
+/// editing it (a shell still starting, `sh` with no line editor), and drops
+/// the rest -- the end of the line and the Enter with it. A longer one is
+/// handed to the shell in its environment and run from there
+/// ([`typed_then`])
+const THEN_TYPED_MOST: usize = 512;
+
+/// The variable a long first line is handed over in
+const THEN_VAR: &str = "SHIKISHA_THEN";
+
+/// What is typed for the first line `then`, and what goes into the shell's
+/// environment for it: the line itself, while it is short, and otherwise a
+/// few words that run it from the environment. Only where a shell reads a
+/// POSIX line (not on Windows, where nothing of the kind limits a line)
+fn typed_then(then: &str) -> (String, Option<(&'static str, String)>) {
+    match cfg!(unix) && then.len() > THEN_TYPED_MOST {
+        true => (format!("eval \"${THEN_VAR}\""), Some((THEN_VAR, then.to_string()))),
+        false => (then.to_string(), None),
+    }
+}
+
 /// How long a terminal whose owner went is kept when it is to end with its
 /// owner: long enough for a line that dropped to come back and attach again,
 /// short enough that an app that is gone does not leave its AI running
@@ -935,6 +958,12 @@ impl Terms {
         if let Ok(exe) = std::env::current_exe() {
             cmd.env(crate::farlink::ENV_PROGRAM, exe);
         }
+        // The first line, as it will be typed: a long one is put in the
+        // shell's environment now, as it starts, and run from there
+        let then = m["then"].as_str().filter(|t| !t.is_empty()).map(typed_then);
+        if let Some((_, Some((k, v)))) = &then {
+            cmd.env(k, v);
+        }
         #[cfg_attr(unix, allow(unused_mut))]
         let mut child = pty.slave.spawn_command(cmd)?;
         let session = child.process_id();
@@ -1053,7 +1082,7 @@ impl Terms {
                 }
             });
         }
-        if let Some(then) = m["then"].as_str().filter(|t| !t.is_empty()) {
+        if let Some((then, _)) = then {
             let line = format!("{then}\n").into_bytes();
             #[cfg(unix)]
             {
@@ -1519,6 +1548,21 @@ fn login_shell() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A short first line is typed as it is; a long one is run from the
+    /// shell's environment where a shell reads POSIX lines
+    #[test]
+    fn a_long_first_line_is_handed_over_in_the_environment() {
+        assert_eq!(typed_then("cd '/srv/a' && claude"), ("cd '/srv/a' && claude".to_string(), None));
+        let long = "x".repeat(THEN_TYPED_MOST + 1);
+        let (typed, env) = typed_then(&long);
+        if cfg!(unix) {
+            assert_eq!(typed, "eval \"$SHIKISHA_THEN\"");
+            assert_eq!(env, Some((THEN_VAR, long)));
+        } else {
+            assert_eq!((typed, env), (long, None));
+        }
+    }
 
     #[test]
     fn a_reply_names_the_requested_lifetime_and_preserves_its_request() {

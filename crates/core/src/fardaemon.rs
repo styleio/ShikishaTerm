@@ -2520,6 +2520,27 @@ mod tests {
         let screen = screen_of(&at, &outs);
         assert!(screen.contains("profile-took:[]"), "a question for one key took the first letter of the line: {screen}");
         term(&mut pc, json!({ "do": "stop", "term": id, "owner": at["owner"] }));
+
+        // A first line longer than a terminal takes in one piece is run from
+        // the shell's environment: a few words are typed, and all of it runs
+        let long = format!(": {}; echo long-$((40+2))-done", "x".repeat(1500));
+        term(
+            &mut pc,
+            json!({ "do": "open", "ref": 3, "tab": "t3", "rows": 24, "cols": 80, "then": long,
+                "env": { "HOME": account.to_string_lossy() } }),
+        );
+        let id = term_said(&mut pc, |m| m["did"] == "opened" && m["ref"] == 3).expect("not opened")["term"].as_u64().unwrap();
+        let at = term_said(&mut pc, |m| m["did"] == "attached" && m["term"] == id).expect("not attached");
+        let mut outs = Vec::new();
+        while !screen_of(&at, &outs).contains("long-42-done") {
+            match term_said(&mut pc, |m| m["did"] == "out" && m["term"] == id) {
+                Some(out) => outs.push(out),
+                None => panic!("the long first line never ran: {}", screen_of(&at, &outs)),
+            }
+        }
+        let screen = screen_of(&at, &outs);
+        assert!(!screen.contains("xxxxxxxxxx"), "the long line was typed rather than handed over: {screen}");
+        term(&mut pc, json!({ "do": "stop", "term": id, "owner": at["owner"] }));
         drop(pc);
         let _ = resident.join();
         let _ = std::fs::remove_dir_all(&home);
