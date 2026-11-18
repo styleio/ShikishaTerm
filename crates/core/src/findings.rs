@@ -133,19 +133,23 @@ fn stretch(s: &Stretch) -> String {
     let (memory, paging, disk) = (!short.is_empty(), looks.iter().any(|l| l.paging()), looks.iter().any(|l| l.disk_busy()));
     let measured = looks.iter().any(|l| l.paged.is_some());
     let mut reading: Vec<String> = Vec::new();
-    if memory && paging {
+    // At one and the same look: a machine short of memory at one, and
+    // reading pages for a program that starts at the next, did not run out
+    let ran_out = looks.iter().any(|l| l.short_of_memory() && l.paging());
+    let short_and_busy = looks.iter().any(|l| l.short_of_memory() && l.disk_busy());
+    if ran_out {
         reading.push("the machine ran out of memory and was reading it back from its disk; every program on it is slow while that lasts, whichever one a person is looking at".into());
-    } else if memory && disk {
+    } else if short_and_busy {
         reading.push("memory was short and the disk was busy at the same time, but the record does not show memory being read back from the disk: the two may have nothing to do with each other, and the programs reading and writing most are named above".into());
     } else if memory && !measured {
         reading.push("memory was short. This part of the record was written by a version that did not yet note the disk or the paging, so it cannot say whether the machine was slowed by it".into());
     } else if memory {
         reading.push("memory was short, but the machine was not working its disk for it: tight, not yet slowed".into());
     }
-    if paging && !memory {
+    if paging && !ran_out {
         reading.push("memory was being read back from the disk while the record shows memory free: a large program was starting, or coming back after being idle".into());
     }
-    if disk && !memory {
+    if disk && !ran_out && !short_and_busy {
         reading.push("the disk could not keep up with what was asked of it; the programs reading and writing most are named above".into());
     }
     if busy > 0 {
@@ -294,6 +298,16 @@ pub fn of_log(hooks: &str) -> String {
 pub fn of_now(look: &Look, top: &crate::health::Top) -> String {
     let mut out = String::from("== At the moment this report was made (now.txt) ==\n");
     out.push_str(&format!("{}\n", crate::health::line(look, Some(top)).replace(" | ", "\n  ")));
+    // How late the app answered is the most since the record last looked,
+    // up to a minute ago: it is not of this moment, and is not read against it
+    if look.late_app() {
+        out.push_str(&format!(
+            "A part of the app answered late at some point in the last minute (its work part by up to {:.1} s, its window part by up to {:.1} s). Whether the machine was short then is in the week's record, not here.\n",
+            look.late[0] as f64 / 1000.0,
+            look.late[1] as f64 / 1000.0
+        ));
+    }
+    let look = &Look { late: [0, 0], ..look.clone() };
     if !look.off() {
         out.push_str("Nothing was off at that moment. If the trouble was not happening then, the week's record below is what says when it was.\n");
     } else {
@@ -373,6 +387,21 @@ mod tests {
         let read = |name: &str| std::fs::read(dir.join(name)).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
         println!("{}
 {}", of_week(&read("health.log")), of_log(&read("hooks.log")));
+    }
+
+    /// The moment a report is made is read for what is true of that moment:
+    /// an app that was late a while ago is said, and not blamed on a machine
+    /// that is calm now
+    #[test]
+    fn the_moment_is_not_read_for_what_happened_before_it() {
+        let look = Look { cpu: 6.0, free: 20 << 30, total: 32 << 30, late: [0, 9_000], kernel: Some(1.0), busy: Some(1.0), queue: Some(0.0), paged: Some(0.0), ..Default::default() };
+        let told = of_now(&look, &crate::health::Top::default());
+        assert!(told.contains("answered late at some point in the last minute") && told.contains("up to 9.0 s"), "{told}");
+        assert!(told.contains("Nothing was off at that moment") && !told.contains("the fault is in the app"), "{told}");
+        // Short at one look and reading pages at the next is not running out
+        let apart = "[pid 1 at 100] 2026-11-18T10:00:00 cpu 6%, memory 500 MB free of 7.8 GB, late: work 0.0 s window 2.0 s, kernel 1%, disk busy 1%, disk queue 0.0, paged in 0/s\n[pid 1 at 160] 2026-11-18T10:01:00 cpu 6%, memory 4.0 GB free of 7.8 GB, late: work 0.0 s window 2.0 s, kernel 1%, disk busy 1%, disk queue 0.0, paged in 3000/s\n";
+        let told = of_week(apart);
+        assert!(!told.contains("ran out of memory") && told.contains("a large program was starting"), "{told}");
     }
 
     /// The log's known troubles are named with what clears them, and what

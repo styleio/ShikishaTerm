@@ -653,75 +653,118 @@ fn events() -> String {
     const WEEK: &str = "TimeCreated[timediff(@SystemTime) <= 604800000]";
     const MONTH: &str = "TimeCreated[timediff(@SystemTime) <= 2592000000]";
     /// The most of one asking that goes in, the newest
-    const EVENTS: &str = "/c:150";
     const ROOM: usize = 100 * 1024;
+    // Only what is written by the parts of Windows named here. An event is
+    // words, and any program may write its own: a database writes the name
+    // of the account that could not log in. The ones named write which
+    // program, which disk, which code -- what a fault is told by
     let asks = [
         (
-            "memory, disks, processors and sleep, over the last month",
+            "memory, disks, processors, power and sleep, over the last month",
             "System",
             format!(
-                "*[System[{MONTH} and (Provider[@Name='Microsoft-Windows-Resource-Exhaustion-Detector' or @Name='disk' or @Name='Ntfs' or @Name='volmgr' \
-                 or @Name='stornvme' or @Name='storahci' or @Name='Microsoft-Windows-WHEA-Logger' or @Name='Microsoft-Windows-Power-Troubleshooter'] \
-                 or (Provider[@Name='Microsoft-Windows-Kernel-Processor-Power'] and EventID=37) or (Provider[@Name='Microsoft-Windows-Kernel-Power'] and EventID=41))]]"
+                "*[System[{MONTH} and (Provider[@Name='Microsoft-Windows-Resource-Exhaustion-Detector' or @Name='disk' or @Name='Ntfs' or @Name='volmgr' or @Name='volsnap' \
+                 or @Name='stornvme' or @Name='storahci' or @Name='Microsoft-Windows-WHEA-Logger' or @Name='Microsoft-Windows-Power-Troubleshooter' \
+                 or @Name='Microsoft-Windows-WER-SystemErrorReporting' or @Name='Microsoft-Windows-MemoryDiagnostics-Results' or @Name='Display'] \
+                 or (Provider[@Name='Microsoft-Windows-Kernel-Processor-Power'] and EventID=37) or (Provider[@Name='Microsoft-Windows-Kernel-Power'] and EventID=41) \
+                 or (Provider[@Name='EventLog'] and EventID=6008))]]"
             ),
+            "/c:150",
+            "",
         ),
-        ("the system's errors, over the last week", "System", format!("*[System[{WEEK} and (Level=1 or Level=2)]]")),
         (
             "programs that crashed or stopped answering, over the last week",
             "Application",
-            format!("*[System[{WEEK} and (Level=1 or Level=2 or Provider[@Name='Windows Error Reporting' or @Name='Application Hang'])]]"),
+            format!("*[System[{WEEK} and Provider[@Name='Application Error' or @Name='Application Hang' or @Name='Windows Error Reporting']]]"),
+            "/c:150",
+            "",
         ),
-        // Where an install or an update from the Store says why it failed
-        ("what the Store could not do with this app, over the last month", "Microsoft-Windows-AppXDeploymentServer/Operational", format!("*[System[{MONTH} and (Level=1 or Level=2 or Level=3)]]")),
+        // Where an install or an update from the Store says why it failed.
+        // Of what the Store did, only what it did with this app: asked for
+        // widely, since the other apps' are not counted against it
+        (
+            "what the Store could not do with this app, over the last month",
+            "Microsoft-Windows-AppXDeploymentServer/Operational",
+            format!("*[System[{MONTH} and (Level=1 or Level=2 or Level=3)]]"),
+            "/c:1500",
+            "shikisha",
+        ),
     ];
     let pc = std::env::var("COMPUTERNAME").ok().filter(|n| n.chars().count() >= 3);
     let mut out = String::new();
     out.push_str("What Windows wrote down, the newest first. Its times are the world's (UTC); the app's own records are in this PC's time.\n\n");
-    for (what, log, ask) in asks {
-        // Of what the Store did, only what it did with this app
-        let ours_only = log.starts_with("Microsoft-Windows-AppX");
+    for (what, log, ask, most, about) in asks {
         out.push_str(&format!("== {what} ==\n"));
-        let Some(bytes) = said_by("wevtutil", &["qe", log, &format!("/q:{ask}"), "/f:text", EVENTS, "/rd:true"], std::time::Duration::from_secs(10)) else {
+        let Some(bytes) = said_by("wevtutil", &["qe", log, &format!("/q:{ask}"), "/f:text", most, "/rd:true"], std::time::Duration::from_secs(10)) else {
             out.push_str("Windows did not answer in time.\n\n");
             continue;
         };
-        let mut text = String::new();
-        for line in console_text(&bytes).lines() {
-            let l = line.trim_start();
-            if l.starts_with("User:") || l.starts_with("User Name:") || l.starts_with("Computer:") {
-                continue;
-            }
-            if text.len() + line.len() > ROOM {
-                text.push_str("(the rest is left out)\n");
-                break;
-            }
-            text.push_str(line.trim_end());
-            text.push('\n');
-        }
+        // Who was logged in and what the PC is called are not for a report
+        let mut text: String = console_text(&bytes)
+            .lines()
+            .filter(|line| {
+                let l = line.trim_start();
+                !(l.starts_with("User:") || l.starts_with("User Name:") || l.starts_with("Computer:"))
+            })
+            .map(|line| format!("{}\n", line.trim_end()))
+            .collect();
         if let Some(pc) = &pc {
             text = replace_ignoring_case(&text, &format!(r"\b{}\b", regex::escape(pc)), "[this PC]");
         }
-        if ours_only {
-            text = events_about(&text, "shikisha");
+        if !about.is_empty() {
+            text = events_about(&text, about);
         }
-        let text = events_once(&folders_out(&text));
+        let mut text = events_once(&folders_out(&text).0);
+        if text.len() > ROOM {
+            let end = (0..=ROOM).rev().find(|i| text.is_char_boundary(*i)).unwrap_or(0);
+            let cut = text[..end].rfind("\nEvent[").unwrap_or(0);
+            text.truncate(cut);
+            text.push_str("\n(the older ones are left out)\n");
+        }
         out.push_str(if text.trim().is_empty() { "Nothing.\n" } else { &text });
         out.push('\n');
     }
     out
 }
 
-/// A path as a file's name: the folders above it are where somebody keeps
-/// their work -- `D:\customers\<who>\app.exe` in the event of a program
-/// that crashed -- and the program is the file
-#[cfg_attr(not(windows), allow(dead_code))]
-fn folders_out(text: &str) -> String {
-    static PATH: LazyLock<Regex> = LazyLock::new(|| {
-        // From a drive or a share, every folder on the way. A folder's name
-        // does not end in a space or hold a comma: words after a path do
-        Regex::new(r#"(?:\b[A-Za-z]:|\\\\[^\\\s]+\\[^\\\s]+)\\(?:[^\\/:*?"<>|\r\n,;]*[^\\/:*?"<>|\r\n,;\s]\\)*"#).expect("the path pattern does not compile")
+/// What stands for the folders of a path
+const FOLDER: &str = "[a folder]";
+
+/// The endings of files that are programs or parts of them. Such a file is
+/// told by its name wherever it is: which program it was is the thing to know
+const PROGRAM_ENDINGS: [&str; 8] = ["exe", "dll", "sys", "drv", "so", "dylib", "node", "com"];
+
+/// A path as no more than its file's name, and that only when the file is a
+/// program or one of the app's own: the folders above it are where somebody
+/// keeps their work -- `D:\customers\<who>\app.exe` in the event of a
+/// program that crashed, the folder that would not be removed in the app's
+/// log -- and so is the name of a document. With it, how many paths there were
+fn folders_out(text: &str) -> (String, usize) {
+    // From a drive, the home folder or a share, every folder on the way and
+    // then the file. A folder's name does not end in a space: the words
+    // after a path do. (Written into JSON, a path has each of its marks twice)
+    static WINDOWS: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#"(?:\b[A-Za-z]:[\\/]+|~\\+|\\\\[^\\/\s.?][^\\/\s]*[\\/]+[^\\/\s]+[\\/]+)(?:[^\\/:*?"<>|\r\n]*[^\\/:*?"<>|\r\n\s][\\/]+)*([^\\/:*?"<>|\r\n\s,;)\]'`]*)"#).expect("the path pattern does not compile")
     });
-    PATH.replace_all(text, regex::NoExpand(r"[a folder]\")).into_owned()
+    // ...and from the places a person's files are kept on the other systems
+    static ELSEWHERE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#"(?m)(^|[\s"'(=:\[,])(?:~|/(?:home|Users|mnt|srv|opt|var|tmp|root|media|Volumes))(?:/[^/\s:"'<>|,;)\]]+)*/([^/\s:"'<>|,;)\]]*)"#).expect("the path pattern does not compile")
+    });
+    let told = |leaf: &str, by: char| match named_file(leaf) {
+        true => format!("{FOLDER}{by}{leaf}"),
+        false => FOLDER.to_string(),
+    };
+    let found = WINDOWS.find_iter(text).count();
+    let out = WINDOWS.replace_all(text, |c: &regex::Captures| told(&c[1], if c[0].contains('\\') { '\\' } else { '/' }));
+    let found = found + ELSEWHERE.find_iter(&out).count();
+    let out = ELSEWHERE.replace_all(&out, |c: &regex::Captures| format!("{}{}", &c[1], told(&c[2], '/')));
+    (out.into_owned(), found)
+}
+
+/// Whether a file's name is a program's or one the app gave it
+fn named_file(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    !lower.is_empty() && (PROGRAM_ENDINGS.contains(&lower.rsplit_once('.').map_or("", |(_, e)| e)) || own_file(&lower))
 }
 
 /// The events of a log, one by one
@@ -745,20 +788,22 @@ fn events_about(text: &str, word: &str) -> String {
 
 /// The events with a run of the same one said once: a processor held back
 /// is written once for each processor, and thirty-two of them say no more
-/// than one. The same means the same words but for their numbers -- two
-/// programs that crashed are two events, whatever number the event has
+/// than one. The same means the same words -- two programs that crashed are
+/// two events, and so are two disks that failed -- but for the number of
+/// the processor in the one event that is written for each of them
 #[cfg_attr(not(windows), allow(dead_code))]
 fn events_once(text: &str) -> String {
     let blocks = events_apart(text);
     let what = |block: &[&str]| -> String {
+        let each_processor = block.iter().any(|l| l.trim_start().starts_with("Source:") && l.contains("Kernel-Processor-Power"));
         block
             .iter()
             .filter(|l| !l.starts_with("Event[") && !l.trim_start().starts_with("Date:"))
-            // The event's own number is part of what it is; the numbers in
-            // its words are which processor, which address
+            // A number in an event's words is which disk, which code: part
+            // of what it says -- but in this one it is which processor
             .flat_map(|l| {
-                let number = l.trim_start().starts_with("Event ID:");
-                l.chars().map(move |c| if c.is_ascii_digit() && !number { '#' } else { c }).chain(std::iter::once('\n'))
+                let any = each_processor && !l.trim_start().starts_with("Event ID:");
+                l.chars().map(move |c| if c.is_ascii_digit() && any { '#' } else { c }).chain(std::iter::once('\n'))
             })
             .collect()
     };
@@ -800,36 +845,52 @@ fn ago(meta: &std::fs::Metadata) -> String {
     }
 }
 
-/// The folders of the app's own that are told by name, and how the names of
-/// its own files begin: what the app put there. Anything else in a folder a
-/// person can also keep things in -- the folder a download was unpacked
-/// into, the settings folder, where a key file of any name can be put -- is
-/// counted and not named
+/// The folders of the app's own that are told by name: what the app put
+/// there. Anything else in a folder a person can also keep things in -- the
+/// folder a download was unpacked into, the settings folder, where a key
+/// file of any name can be put, the logs, where a tab's record is named
+/// after the tab -- is counted and not named
 const OWN_FOLDERS: [&str; 14] = ["config", "data", "logs", "desks", "lang", "profiles", "bridge", "docs", "scripts", "debug", "run", "keys", "assets", "appxmetadata"];
-const OWN_FILES: [&str; 22] = [
-    "shikisha",
-    "openconsole",
-    "conpty",
-    "webview2loader",
+/// The files the app gives these very names, in small letters
+const OWN_NAMES: [&str; 30] = [
     "license",
-    "readme",
-    "security",
-    "third-party-notices",
+    "readme.md",
+    "readme.ja.md",
+    "security.md",
+    "third-party-notices.txt",
     "settings.cmd",
-    "update-and-start",
-    "start-as-new-user",
-    "config.example",
-    "secrets.example",
+    "update-and-start.cmd",
+    "start-as-new-user.cmd",
+    "config.example.json",
+    "secrets.example.json",
     "config.json",
+    "config.json.pre-desks",
     "secrets.json",
     "ideas.json",
     "held.json",
-    "keep.",
-    "appxmanifest",
-    "appxblockmap",
-    "appxsignature",
+    "keep.log",
+    "keep.log.1",
+    "keep.key",
+    "hooks.log",
+    "hooks.log.1",
+    "crash.log",
+    "health.log",
+    "memory.log",
+    "hang.json",
+    "deployed-commit.txt",
+    "appxmanifest.xml",
+    "appxblockmap.xml",
+    "appxsignature.p7x",
     "resources.pri",
+    "running.json",
 ];
+/// ...and how the names of its programs begin
+const OWN_STARTS: [&str; 4] = ["shikisha", "openconsole", "conpty", "webview2loader"];
+
+/// Whether a file's name, in small letters, is one the app gave it
+fn own_file(lower: &str) -> bool {
+    OWN_NAMES.contains(&lower) || OWN_STARTS.iter().any(|own| lower.starts_with(own))
+}
 
 /// Which names of a folder are told
 #[derive(Clone, Copy, PartialEq)]
@@ -855,7 +916,7 @@ fn listing(title: &str, dir: &std::path::Path, told: Told, left: &mut u64, until
         let name = e.file_name().to_string_lossy().into_owned();
         let is_dir = meta.is_dir();
         let lower = name.to_lowercase();
-        let named = told == Told::All || if is_dir { OWN_FOLDERS.contains(&lower.as_str()) } else { OWN_FILES.iter().any(|own| lower.starts_with(own)) };
+        let named = told == Told::All || if is_dir { OWN_FOLDERS.contains(&lower.as_str()) } else { own_file(&lower) };
         let (bytes, what) = if meta.file_type().is_symlink() {
             (0, "a link".to_string())
         } else if is_dir {
@@ -896,9 +957,10 @@ fn inventory() -> String {
     let (mut left, until) = (FILES_MOST / 2, std::time::Instant::now() + COUNT_FOR);
     let root = crate::config::root_dir();
     let mut out = listing("the app's folder", &root, Told::Own, &mut left, until);
-    // The settings folder is one a person puts files into; the data and the
-    // logs are written by the app alone
-    for (part, told) in [("config", Told::Own), ("data", Told::All), ("logs", Told::All)] {
+    // The settings folder is one a person puts files into, and a tab's
+    // record in the logs is named after the tab; the data is written by the
+    // app alone, under names of its own
+    for (part, told) in [("config", Told::Own), ("data", Told::All), ("logs", Told::Own)] {
         out.push_str(&listing(&format!("the app's folder: {part}"), &root.join(part), told, &mut left, until));
     }
     let program = crate::config::exe_dir();
@@ -913,8 +975,9 @@ fn inventory() -> String {
 }
 
 /// The settings whose words are safe to say: a choice out of a few the app
-/// offers, never something a person typed
-const CHOICES: [&str; 11] = ["theme", "access", "language", "ai", "kind", "mode", "engine", "how", "shell", "type", "state"];
+/// offers, never something a person typed or named -- a theme can be one
+/// they made, an AI one they set up
+const CHOICES: [&str; 3] = ["access", "language", "kind"];
 
 /// The settings that are lists by name: what each is filed under is a name
 /// a person chose -- a folder, a machine, a provider, a key -- and is not
@@ -1005,7 +1068,8 @@ fn settings() -> String {
 /// Whether a program of that name is on the PATH this process has
 fn on_path(name: &str) -> bool {
     let endings: &[&str] = if cfg!(windows) { &[".exe", ".cmd", ".bat", ".ps1", ".com"] } else { &[""] };
-    std::env::var_os("PATH").is_some_and(|path| std::env::split_paths(&path).any(|dir| endings.iter().any(|e| dir.join(format!("{name}{e}")).is_file())))
+    // A folder on a share is not asked: one that has stopped answering holds whoever asks
+    std::env::var_os("PATH").is_some_and(|path| std::env::split_paths(&path).filter(|dir| disk_name(dir) != SHARE).any(|dir| endings.iter().any(|e| dir.join(format!("{name}{e}")).is_file())))
 }
 
 /// How many minutes this PC's clock is ahead of the world's (UTC)
@@ -1126,23 +1190,172 @@ fn machine(git: Option<String>) -> String {
     }
     // The programs the app starts for a person, as the app would find them:
     // found or not, never where
-    let found: Vec<String> = ["git", "node", "claude", "codex", "gemini", "gh", "pwsh", "powershell", "wsl", "ssh"]
-        .iter()
-        .map(|name| format!("{name} {}", if on_path(name) { "yes" } else { "no" }))
-        .collect();
-    line("found on the PATH the app was started with", found.join(", "));
+    // (a folder on it that has stopped answering holds whoever asks it)
+    let found = later("path", || {
+        ["git", "node", "claude", "codex", "gemini", "gh", "pwsh", "powershell", "wsl", "ssh"].iter().map(|name| format!("{name} {}", if on_path(name) { "yes" } else { "no" })).collect::<Vec<String>>()
+    });
+    line(
+        "found on the PATH the app was started with",
+        found.recv_timeout(std::time::Duration::from_secs(4)).map(|f| f.join(", ")).unwrap_or_else(|_| "a folder on it did not answer in time".into()),
+    );
     line("git", git.map(|g| g.trim().to_string()).filter(|g| !g.is_empty()).unwrap_or_else(|| "did not answer".into()));
     // What is set around the app, by name only: a proxy changes every
     // connection it makes, and its address is not for a report
     let set: Vec<String> = std::env::vars_os()
         .map(|(k, _)| k.to_string_lossy().into_owned())
-        .filter(|k| {
-            let k = k.to_ascii_uppercase();
-            k.starts_with("SHIKISHA") || ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "NODE_OPTIONS", "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "WEBVIEW2_USER_DATA_FOLDER"].contains(&k.as_str())
-        })
+        .map(|k| k.to_ascii_uppercase())
         .collect();
-    line("set in the environment (names only)", if set.is_empty() { "none of the ones that matter".into() } else { set.join(", ") });
+    // Only names the app or the system gave: a name somebody made up is
+    // theirs, whatever it begins with
+    const KNOWN: [&str; 19] = [
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "NODE_OPTIONS",
+        "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+        "WEBVIEW2_USER_DATA_FOLDER",
+        "SHIKISHA_DOWNLOADS",
+        "SHIKISHA_DEBUG_STALL",
+        "SHIKISHA_TAB",
+        "SHIKISHA_PIPE",
+        "SHIKISHA_TOKEN",
+        "SHIKISHA_BRIDGE_SOCK",
+        "SHIKISHA_BRIDGE_PROGRAM",
+        "SHIKISHA_KEY_FILE",
+        "SHIKISHA_GIT_HOST",
+        "SHIKISHA_GIT_LOGIN",
+        "SHIKISHA_GIT_TOKEN",
+        "SHIKISHA_DIAG_OUT",
+    ];
+    let known: Vec<&str> = KNOWN.iter().filter(|k| set.iter().any(|s| s == *k)).cloned().collect();
+    let others = set.iter().filter(|s| s.starts_with("SHIKISHA") && !KNOWN.contains(&s.as_str())).count();
+    let mut said = if known.is_empty() { "none of the ones that matter".to_string() } else { known.join(", ") };
+    if others > 0 {
+        said.push_str(&format!("; and {others} more beginning SHIKISHA that the app does not know"));
+    }
+    line("set in the environment (names only)", said);
     s
+}
+
+/// Words too common to stand for somebody's own name: a desk called "test"
+/// is not hidden, since hiding it would hide the word wherever it is said
+const COMMON: [&str; 40] = [
+    "main", "master", "test", "tests", "work", "desk", "default", "check", "home", "temp", "data", "logs", "config", "user", "users", "windows", "system", "claude", "codex", "gemini",
+    "shell", "powershell", "pwsh", "terminal", "browser", "develop", "development", "project", "folder", "issue", "build", "debug", "release", "local", "server", "client", "source",
+    "docs", "demo", "sample",
+];
+
+/// The names a person gave to their own things -- desks, folders, tabs,
+/// machines, projects, the branch each folder is on -- each with what
+/// stands for it in a report. They are what a customer's name is most
+/// often in, and the app knows every one of them; the logs say them all the
+/// time (which desk is in front, which folder would not be removed).
+///
+/// A folder is numbered as `storage` numbers it, so a line of the log that
+/// names "[folder 2]" is about the folder `storage.txt` says holds so much.
+/// The longest first, so a folder's whole path goes before its last part
+fn own_names() -> Vec<(String, String)> {
+    let Some(cfg) = crate::config::load() else { return Vec::new() };
+    let (desks, _) = cfg.resolve_desks();
+    let mut names: Vec<(String, String)> = Vec::new();
+    let mut add = |name: &str, stands: &str| {
+        let name = name.trim();
+        // A short name in plain letters is a word of the language as often
+        // as it is somebody's; one in other letters is a name at two
+        let least = if name.is_ascii() { 4 } else { 2 };
+        if name.chars().count() >= least && !COMMON.contains(&name.to_lowercase().as_str()) && !names.iter().any(|(n, _)| n.eq_ignore_ascii_case(name)) {
+            names.push((name.to_string(), stands.to_string()));
+        }
+    };
+    let mut local: Vec<std::path::PathBuf> = Vec::new();
+    let mut machines: Vec<String> = Vec::new();
+    for (d, desk) in desks.iter().enumerate() {
+        let stands = format!("[desk {}]", d + 1);
+        add(&desk.name, &stands);
+        add(&desk.id, &stands);
+        for folder in &desk.folders {
+            // The same numbers as `storage`: the folders on this machine, each once
+            let stands = match (&folder.host, &folder.cwd) {
+                (None, Some(at)) => {
+                    let n = local.iter().position(|p| p == at).unwrap_or_else(|| {
+                        local.push(at.clone());
+                        local.len() - 1
+                    });
+                    format!("[folder {}]", n + 1)
+                }
+                _ => "[a folder on another machine]".to_string(),
+            };
+            if let Some(at) = &folder.cwd {
+                let whole = at.to_string_lossy().into_owned();
+                add(&whole, &stands);
+                add(&whole.replace('\\', "/"), &stands);
+                if let Some(last) = at.file_name() {
+                    add(&last.to_string_lossy(), &stands);
+                }
+                // The branch it is on, where asking does not mean asking a share
+                if folder.host.is_none() && disk_name(at) != SHARE
+                    && let Some(branch) = crate::repo::branch_of(at)
+                {
+                    add(&branch, &format!("[the branch of {}]", stands.trim_matches(['[', ']'])));
+                }
+            }
+            for name in [&folder.name, &folder.id, &folder.project, &folder.work_item].into_iter().flatten() {
+                add(name, &stands);
+            }
+            if let Some(host) = &folder.host {
+                let n = machines.iter().position(|m| *m == host.name).unwrap_or_else(|| {
+                    machines.push(host.name.clone());
+                    machines.len() - 1
+                });
+                // Its name, and where it is reached
+                for name in [&host.name, &host.at] {
+                    add(name, &format!("[machine {}]", n + 1));
+                }
+            }
+        }
+        for tab in &desk.tabs {
+            for name in [&tab.cfg.name, &tab.cfg.id].into_iter().flatten() {
+                add(name, "[a tab]");
+            }
+        }
+    }
+    names.sort_by(|a, b| b.0.chars().count().cmp(&a.0.chars().count()).then_with(|| a.0.cmp(&b.0)));
+    names
+}
+
+/// `text` with each of the person's own names put as what stands for it,
+/// and how many times that was done. A name is taken as a word of its own,
+/// in any case
+fn names_out(text: &str, names: &[(String, String)]) -> (String, usize) {
+    let mut out = text.to_string();
+    let mut n = 0;
+    for (name, stands) in names {
+        // A word of its own, where the name begins and ends in what a word is made of
+        let edge = |c: Option<char>| if c.is_some_and(|c| c.is_alphanumeric() || c == '_') { r"\b" } else { "" };
+        let pattern = format!("(?i){}{}{}", edge(name.chars().next()), regex::escape(name), edge(name.chars().last()));
+        let Ok(re) = Regex::new(&pattern) else { continue };
+        let found = re.find_iter(&out).count();
+        if found > 0 {
+            n += found;
+            out = re.replace_all(&out, regex::NoExpand(stands)).into_owned();
+        }
+    }
+    // What is inside one of their folders is theirs too: the folder stands,
+    // and the way further in is left out
+    static INSIDE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(\[folder \d+\])(?:[\\/]+[^\\/\s:"'<>|,;)\]]+)+"#).expect("the inside pattern does not compile"));
+    out = INSIDE.replace_all(&out, "${1}\\...").into_owned();
+    (out, n)
+}
+
+/// What a report may hold of a text: the person's own names put as
+/// numbers, then what `hidden_lines` hides, then every path left told by
+/// no more than its file. With how many things were hidden
+fn private(text: &str, known: &[String], names: &[(String, String)], cut: bool) -> (String, usize) {
+    let (text, named) = names_out(text, names);
+    let (text, hid) = hidden_lines(&text, known, cut);
+    let (text, paths) = folders_out(&text);
+    (text, named + hid + paths)
 }
 
 /// The zip, its name, and how many things were hidden in it.
@@ -1157,7 +1370,12 @@ fn machine(git: Option<String>) -> String {
 /// the records the app writes as it runs stay as small as they were
 pub fn bundle() -> Result<(String, Vec<u8>, usize)> {
     use std::time::Duration;
+    // One at a time: a second one begun while the first counts the folders
+    // would measure the first one's work on the disk as the machine's trouble
+    static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
     let known = known_keys();
+    let names = own_names();
     let mut hid = 0;
     // The moment first and by itself: counting the folders works the disk,
     // and measured beside it that work would be told as the machine's trouble
@@ -1183,7 +1401,7 @@ pub fn bundle() -> Result<(String, Vec<u8>, usize)> {
     // Hidden before it is read for the first page: what the first page
     // quotes of it has to be what a person may read
     let hooks = log(logs.join("hooks.log"), LOG_LINES).map(|text| {
-        let (text, n) = hidden(&text, &known);
+        let (text, n) = private(&text, &known, &names, true);
         hid += n;
         text
     });
@@ -1258,7 +1476,7 @@ pub fn bundle() -> Result<(String, Vec<u8>, usize)> {
     // ...and what Windows wrote keeps its own, which say which programs it was
     const WHOLE: [&str; 4] = ["health.log", "findings.txt", "now.txt", "events.txt"];
     for (name, text) in files {
-        let (text, n) = hidden_lines(&text, &known, !WHOLE.contains(&name));
+        let (text, n) = private(&text, &known, &names, !WHOLE.contains(&name));
         hid += n;
         zip.start_file(name, opts)?;
         zip.write_all(text.as_bytes())?;
@@ -1441,7 +1659,7 @@ mod tests {
         assert!(said.contains("providers:\n    (a name):\n      kind: openai\n      stream: true"), "{said}");
         assert!(said.contains("far_hooks:\n    (a name):\n      (a name): text, 3 letters"), "{said}");
         assert!(!said.contains("nas") && !said.contains("claude"), "{said}");
-        for kept in ["keep_terminals: false", "max_chain: 4", "theme: dark", "font: text, 13 letters", "desks: 1 of them", "#1:", "auto: true", "name: text, 9 letters", "language: text, 25 letters"] {
+        for kept in ["keep_terminals: false", "max_chain: 4", "theme: text, 4 letters", "font: text, 13 letters", "desks: 1 of them", "#1:", "auto: true", "name: text, 9 letters", "language: text, 25 letters"] {
             assert!(said.contains(kept), "{kept} is not in:\n{said}");
         }
         for gone in ["Acme", "acme", "Cascadia", "s3cr3t", "a note", "Somebody"] {
@@ -1453,7 +1671,11 @@ mod tests {
     /// A run of the same event is said once, with how many more there were
     #[test]
     fn a_run_of_the_same_event_is_said_once() {
-        let one = |n: u32, id: u32| format!("Event[{n}]\n  Source: Kernel-Processor-Power\n  Date: 2026-11-1{n}\n  Event ID: {id}\n  Description:\nprocessor {n} is held back\n\n");
+        let one = |n: u32, id: u32| format!("Event[{n}]\n  Source: Microsoft-Windows-Kernel-Processor-Power\n  Date: 2026-11-1{n}\n  Event ID: {id}\n  Description:\nprocessor {n} is held back\n\n");
+        // Two disks that failed are two events
+        let disk = |n: u32| format!("Event[{n}]\n  Source: disk\n  Event ID: 7\n  Description:\nthe device Harddisk{n} has a bad block\n\n");
+        let said = events_once(&format!("{}{}{}", disk(0), disk(1), disk(1)));
+        assert!(said.contains("Harddisk0") && said.contains("Harddisk1") && said.contains("(the same event 1 more times before it)"), "{said}");
         let said = events_once(&format!("{}{}{}{}", one(0, 37), one(1, 37), one(2, 37), one(3, 41)));
         assert_eq!(said.matches("Event[").count(), 2, "{said}");
         assert!(said.contains("processor 0 is held back") && said.contains("(the same event 2 more times before it)") && said.contains("processor 3"), "{said}");
@@ -1467,25 +1689,51 @@ mod tests {
         assert!(ours.contains("could not be registered") && !ours.contains("another app"), "{ours}");
     }
 
-    /// A path in what Windows wrote is told by its file: the folders above
-    /// it are where somebody keeps their work
+    /// A path is told by no more than its file, and that only when the file
+    /// is a program or the app's own: the folders above it are where
+    /// somebody keeps their work, and so is the name of what they keep
     #[test]
-    fn a_path_is_told_by_its_file() {
-        let said = folders_out(r"Faulting application path: D:\customers\acme\app.exe and C:\Program Files\Some App\helper.dll, on \\nas01\projects\shop\tool.exe; version 1:2");
-        assert_eq!(said, r"Faulting application path: [a folder]\app.exe and [a folder]\helper.dll, on [a folder]\tool.exe; version 1:2");
+    fn a_path_is_told_by_no_more_than_its_file() {
+        for (path, told) in [
+            (r"Faulting application path: D:\customers\acme\app.exe and more", r"Faulting application path: [a folder]\app.exe and more"),
+            (r"in C:\Program Files\Some App\helper.dll, on \\nas01\projects\shop\tool.exe; version 1:2", r"in [a folder]\helper.dll, on [a folder]\tool.exe; version 1:2"),
+            // The other way of writing it, a folder with a comma in its name, one in quotes
+            ("at D:/customers/acme/app.exe now", "at [a folder]/app.exe now"),
+            (r"at D:\Acme, Inc\repo\app.exe now", r"at [a folder]\app.exe now"),
+            (r#"ran "D:\customers\acme corp\tool.exe" twice"#, r#"ran "[a folder]\tool.exe" twice"#),
+            // A folder, and a document: nothing of them is left
+            (r"could not remove D:\customers\acme\repo: it is in use", "could not remove [a folder]: it is in use"),
+            (r"opened ~\work\acme\offer.docx", "opened [a folder]"),
+            // The app's own file is told
+            (r"~\AppData\Local\ShikishaTerm\keeper\ab12\run\keep.key is not there", r"[a folder]\keep.key is not there"),
+            // ...and the other systems' places for a person's files
+            ("left /home/someone/acme/repo behind", "left [a folder] behind"),
+            ("ran ~/work/acme/tool.so (twice)", "ran [a folder]/tool.so (twice)"),
+            // What is not a path stays: a door, a link's own path, a share of something
+            (r"listening on \\.\pipe\shikisha-14804 (Children)", r"listening on \\.\pipe\shikisha-14804 (Children)"),
+            ("GET /api/diagnostics took 3 s, 2/3 done", "GET /api/diagnostics took 3 s, 2/3 done"),
+        ] {
+            assert_eq!(folders_out(path).0, told, "{path}");
+        }
+        assert_eq!(folders_out(r"D:\a\b.exe and D:\c\d").1, 2);
     }
 
-    /// Every setting that is a list by name is known as one: a new one that
-    /// is not would have its names -- a customer's, a machine's -- in the report
+    /// The person's own names are put as what stands for them, as words of
+    /// their own, the longest first
     #[test]
-    fn every_setting_filed_by_name_is_known_as_one() {
-        let source = include_str!("config.rs");
-        let filed = Regex::new(r"pub (\w+): (?:Option<)?std::collections::(?:HashMap|BTreeMap)<String").unwrap();
-        let found: Vec<&str> = filed.captures_iter(source).map(|c| c.get(1).unwrap().as_str()).collect();
-        assert!(found.len() >= 10, "the settings' lists by name were not found in their source: {found:?}");
-        for name in found {
-            assert!(BY_NAME.contains(&name), "the setting {name} is a list by name and is not in BY_NAME: its names would be in a report");
-        }
+    fn the_persons_own_names_are_put_as_numbers() {
+        let names = vec![
+            (r"D:\work\acme-payroll".to_string(), "[folder 1]".to_string()),
+            ("acme-payroll".to_string(), "[folder 1]".to_string()),
+            ("Acme".to_string(), "[desk 1]".to_string()),
+            ("\u{7d4c}\u{7406}".to_string(), "[desk 2]".to_string()),
+        ];
+        let (said, n) = names_out("Sending state: 2 tabs, desk \"ACME\"; could not remove d:\\work\\Acme-Payroll\\target: in use; branch acme-payroll; desk \"\u{7d4c}\u{7406}\"; acmeish stays", &names);
+        assert_eq!(said, "Sending state: 2 tabs, desk \"[desk 1]\"; could not remove [folder 1]\\...: in use; branch [folder 1]; desk \"[desk 2]\"; acmeish stays");
+        assert_eq!(n, 4);
+        // And through the whole of what a report may hold: nothing of the folder is left
+        let (said, _) = private("could not remove d:\\work\\acme-payroll\\target\\debug: in use", &[], &names, true);
+        assert_eq!(said.trim_end(), "could not remove [folder 1]\\...: in use");
     }
 
     /// What a console program printed is read in the letters it was printed in
@@ -1512,10 +1760,14 @@ mod tests {
         // key file of their own naming
         std::fs::write(dir.join("acme-merger-plan.txt"), [0u8; 10]).unwrap();
         std::fs::write(dir.join("acme-secrets.json"), [0u8; 10]).unwrap();
+        // ...one named after the app's own, and a tab's record in the logs
+        std::fs::write(dir.join("secrets.json-acme.backup"), [0u8; 10]).unwrap();
+        std::fs::write(dir.join("acme-payroll-20261118.log"), [0u8; 10]).unwrap();
+        std::fs::write(dir.join("hooks.log"), [0u8; 10]).unwrap();
         let far = std::time::Instant::now() + std::time::Duration::from_secs(60);
         let said = listing("a folder", &dir, Told::Own, &mut 1000, far);
         assert!(said.contains("logs/") && said.contains("in 1 files") && said.contains("SHIKISHA-TERM.exe"), "{said}");
-        assert!(!said.contains("acme") && said.contains("(3 more that are not the app's own"), "{said}");
+        assert!(!said.contains("acme") && said.contains("(5 more that are not the app's own") && said.contains("hooks.log"), "{said}");
         let all = listing("a folder", &dir, Told::All, &mut 1000, far);
         assert!(all.contains("acme-shop/"), "{all}");
         let _ = std::fs::remove_dir_all(&dir);
