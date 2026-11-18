@@ -1433,10 +1433,10 @@ fn hook_mode(kind: String) -> Result<()> {
         calls.push(("set_state", vec![state.into(), sent.into(), from.clone()]));
     }
     if let Some((call, count)) = report.asked {
-        calls.push(("report_asked", vec![call.into(), count.into(), from.clone()]));
+        calls.push(("report_asked", vec![call.into(), count.into(), from.clone(), sent.into()]));
     }
     if let Some(prompt) = report.prompt {
-        calls.push(("report_prompt", vec![prompt.into(), from]));
+        calls.push(("report_prompt", vec![prompt.into(), from, sent.into()]));
     }
     if calls.is_empty() {
         // A hook that quietly does nothing is the worst way for this to fail —

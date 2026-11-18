@@ -409,16 +409,21 @@ fn look(
         })
         .collect();
     let parent = match none_here.is_empty() {
-        true => None,
-        false => hub.parent_of(&r).ok().flatten(),
+        true => Ok(None),
+        false => hub.parent_of(&r),
     };
-    let theirs = parent.as_ref().and_then(|p| {
+    let theirs = parent.as_ref().ok().and_then(Option::as_ref).map(|p| {
         let names: Vec<&str> = none_here.iter().map(|i| branches[*i].0.as_str()).collect();
         let (query, mut vars) = question(&names);
         vars["o"] = json!(p.owner);
         vars["n"] = json!(p.name);
-        hub.graphql(&query, vars).ok()
+        hub.graphql(&query, vars)
     });
+    // The parent not answered (the network, a refusal): what was known of
+    // those branches stays, as it does when the fork is not answered
+    let parent_unknown = parent.is_err() || theirs.as_ref().is_some_and(Result::is_err);
+    let parent = parent.ok().flatten();
+    let theirs = theirs.and_then(Result::ok);
     let file = prnews::path();
     let mut mems = prnews::read(&file);
     let handed = crate::handed::path();
@@ -442,6 +447,14 @@ fn look(
             if read.is_some() {
                 at = p.clone();
             }
+        }
+        if read.is_none() && parent_unknown && none_here.contains(&i) {
+            if let Ok(mut k) = known.lock()
+                && let Some(slot) = k.get_mut(&(account.to_string(), repo.to_string(), branch.clone()))
+            {
+                slot.asked = Instant::now();
+            }
+            continue;
         }
         let mut news = News::default();
         let pr = read.as_ref().map(|(pr, _)| *pr);

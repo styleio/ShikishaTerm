@@ -1005,7 +1005,11 @@ impl Screen {
 
     // ESC c
     pub(crate) fn ris(&mut self) {
+        // NOTE (vendored patch): what kind of terminal this is outlives a
+        // reset of what it shows
+        let keeps_top = self.reflow_keeps_top();
         *self = Self::new(self.grid.size(), self.grid.scrollback_len());
+        self.set_reflow_keeps_top(keeps_top);
     }
 
     // csi codes

@@ -385,7 +385,7 @@ fn finish(view: wry::WebView, wiring: Wiring, user_agent: Option<&str>, whole: b
         port.call("Emulation.setUserAgentOverride", &ua_override(ua));
     }
     if let Some(died) = wiring.died {
-        on_process_failed(&port.0, move |memory| died(memory));
+        on_process_failed(&port.0, move |memory, whole| died(memory, whole));
     }
     if let Some(closing) = wiring.closing {
         on_close_requested(&port.0, move || closing());
@@ -457,10 +457,15 @@ fn adopt_windows(popups: Popups, window: std::rc::Rc<tao::window::Window>) -> Wi
 /// The reason matters more than the fact. `OUT_OF_MEMORY` means the
 /// machine had nothing left to give, and a program that answers that by
 /// building another browser is a program making it worse on a timer
-fn on_process_failed<F: Fn(bool) + 'static>(webview: &ICoreWebView2, f: F) {
+/// `whole` says it was the page's own process that went -- the one drawing
+/// the page, or the browser under it -- and not one of a frame inside it, or
+/// one of the browser's helpers: a page whose frame died is still there,
+/// with what was typed into it
+fn on_process_failed<F: Fn(bool, bool) + 'static>(webview: &ICoreWebView2, f: F) {
     use webview2_com::Microsoft::Web::WebView2::Win32::{
-        COREWEBVIEW2_PROCESS_FAILED_REASON, COREWEBVIEW2_PROCESS_FAILED_REASON_OUT_OF_MEMORY,
-        ICoreWebView2ProcessFailedEventArgs2,
+        COREWEBVIEW2_PROCESS_FAILED_KIND, COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED,
+        COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED, COREWEBVIEW2_PROCESS_FAILED_REASON,
+        COREWEBVIEW2_PROCESS_FAILED_REASON_OUT_OF_MEMORY, ICoreWebView2ProcessFailedEventArgs2,
     };
     use windows::core::Interface as _;
     let handler = webview2_com::ProcessFailedEventHandler::create(Box::new(move |_sender, args| {
@@ -471,7 +476,11 @@ fn on_process_failed<F: Fn(bool) + 'static>(webview: &ICoreWebView2, f: F) {
             let mut reason = COREWEBVIEW2_PROCESS_FAILED_REASON::default();
             unsafe { a2.Reason(&mut reason) }.is_ok() && reason == COREWEBVIEW2_PROCESS_FAILED_REASON_OUT_OF_MEMORY
         });
-        f(memory);
+        let mut kind = COREWEBVIEW2_PROCESS_FAILED_KIND::default();
+        let read = args.as_ref().is_some_and(|a| unsafe { a.ProcessFailedKind(&mut kind) }.is_ok());
+        let whole = read
+            && (kind == COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED || kind == COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED);
+        f(memory, whole);
         Ok(())
     }));
     let mut token = 0i64;

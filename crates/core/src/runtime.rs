@@ -4571,11 +4571,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         append_hook_log(&format!("\"{}\" (on another machine) is running {}", t.title, s.short()));
                         t.session = Some(s);
                     }
+                    let stamped = if sent == 0 { crate::hooks::epoch_ms() } else { sent };
+                    t.take_report(&report, stamped);
                     if let Some(prompt) = report.prompt.as_deref().filter(|_| t.hears_from(report.from.as_deref())) {
-                        t.heard_prompt(prompt);
+                        t.heard_prompt(prompt, sent);
                     }
-                    let sent = if sent == 0 { crate::hooks::epoch_ms() } else { sent };
-                    t.take_report(&report, sent);
                 }
             }
 
@@ -5738,7 +5738,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             .caller
                             .as_deref()
                             .and_then(|c| tabs.iter().find(|t| t.called() == c))
-                            .filter(|t| t.hears_from(from));
+                            .filter(|t| t.hears_from(from) && !from.is_some_and(crate::agenthook::is_side_thread));
                         let line_max = config::confer().line_max;
                         let mut hold = serde_json::Value::Null;
                         if let Some(t) = me {
@@ -11001,10 +11001,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 let (project, name, sha, url, folder) = (text("project"), text("name"), text("sha"), text("url"), text("folder"));
                 let seq = args.get("seq").cloned().unwrap_or(serde_json::Value::Null);
                 let running = args.get("running").and_then(|v| v.as_bool()).unwrap_or(false);
+                // A check of a pull request sent to the repository this one is
+                // a fork of ran there
+                let upstream = args.get("upstream").and_then(|u| u.as_bool()) == Some(true);
                 if let Some(job) = args.get("job").and_then(|v| v.as_u64()).filter(|_| !running) {
                     let tx = ci_log_tx.clone();
                     std::thread::spawn(move || {
-                        let result = crate::github::ci_log(&sources, &project, job, &|k| tokens.get(k).cloned());
+                        let result = crate::github::ci_log(&sources, &project, upstream, job, &|k| tokens.get(k).cloned());
                         let _ = tx.send(CiLog { seq, name, job, sha, folder, result });
                     });
                     continue;
@@ -22601,13 +22604,13 @@ pub fn exec_commands(
             }
             // A tab saying what it was just asked. Kept on the tab for its
             // folder's automatic name; the words are not logged
-            Command::ReportPrompt { text, from, origin } => {
+            Command::ReportPrompt { text, from, sent_ms, origin } => {
                 let Some(t) = session_of(origin).and_then(|i| tabs.get_mut(i)) else {
                     append_hook_log(&format!("report_prompt from tab{origin}: no such tab"));
                     continue;
                 };
                 if t.hears_from(from.as_deref()) {
-                    t.heard_prompt(&text);
+                    t.heard_prompt(&text, sent_ms);
                 }
             }
             // A tab saying what it is doing, rather than being read. Believed
@@ -22622,7 +22625,7 @@ pub fn exec_commands(
                     append_hook_log(&format!("set_state from tab{origin}: no such tab"));
                     continue;
                 };
-                if !t.hears_from(from.as_deref()) {
+                if !t.hears_state(from.as_deref(), known) {
                     continue;
                 }
                 if !t.hook_says(known, sent_ms) {
@@ -22640,11 +22643,11 @@ pub fn exec_commands(
                 }
                 None => append_hook_log(&format!("set_helper from tab{origin}: no such tab")),
             },
-            Command::ReportAsked { call, count, from, origin } => match session_of(origin).and_then(|i| tabs.get_mut(i)) {
+            Command::ReportAsked { call, count, from, sent_ms, origin } => match session_of(origin).and_then(|i| tabs.get_mut(i)) {
                 Some(t) if !t.hears_from(from.as_deref()) => {}
                 Some(t) => {
                     append_hook_log(&format!("tab{origin} \"{}\": asked {count} question(s) without stopping its turn", t.title));
-                    t.asked_aside(&call, count);
+                    t.asked_aside(&call, count, sent_ms);
                 }
                 None => append_hook_log(&format!("report_asked from tab{origin}: no such tab")),
             },

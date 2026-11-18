@@ -641,6 +641,10 @@ fn toml_skip_value(value: &str) -> Option<&str> {
         let at = rest.find(['"', '\'', '[', ']', '{', '}', ','])?;
         let c = rest.as_bytes()[at];
         match c {
+            // A text in three quotes: to its own closing three, on this line
+            // (one running over lines is not a table written on one line)
+            b'"' if rest[at..].starts_with("\"\"\"") => rest = toml_closes(&rest[at + 3..], "\"\"\"")?,
+            b'\'' if rest[at..].starts_with("'''") => rest = toml_closes(&rest[at + 3..], "'''")?,
             b'"' | b'\'' => rest = toml_key(&rest[at..])?.2,
             b'[' | b'{' => {
                 depth += 1;
@@ -1051,6 +1055,9 @@ mod tests {
         assert_eq!(toml_text(beside, &path).as_deref(), Some("https://d.example"));
         assert_eq!(toml_text(beside, &["providers", "managed:kimi-code", "base_url"]).as_deref(), Some("https://b.example"));
         assert_eq!(toml_text("[providers.\"managed:kimi-code\"]\noauth = { other = 1 }\n", &path), None);
+        // A text in three quotes holding what looks like the key is read through
+        let tripled = "[providers.\"managed:kimi-code\"]\noauth = { note = \"\"\"a\", oauth_host = 'https://wrong.example', b\"\"\", oauth_host = 'https://right.example' }\n";
+        assert_eq!(toml_text(tripled, &path).as_deref(), Some("https://right.example"));
     }
 
     struct Scratch(PathBuf);

@@ -38,7 +38,9 @@ pub(super) struct Wiring {
     /// The page started (true) or finished (false) loading
     pub loading: Option<std::rc::Rc<dyn Fn(bool)>>,
     /// The page's own processes died; `true` when it was for want of memory
-    pub died: Option<std::rc::Rc<dyn Fn(bool)>>,
+    /// `(memory, whole)`: `whole` when it was the page's own process, not
+    /// one of a frame in it or of a helper
+    pub died: Option<std::rc::Rc<dyn Fn(bool, bool)>>,
     /// The page asked to close its window (`window.close()`)
     pub closing: Option<std::rc::Rc<dyn Fn()>>,
     /// What to do when the page asks to open a window
@@ -437,7 +439,7 @@ pub(super) fn run_window(
                     // where the page is made, so that a page made again after
                     // one died is watched too -- the second failure is the one
                     // that matters
-                    died: Some(std::rc::Rc::new(move |memory| {
+                    died: Some(std::rc::Rc::new(move |memory, _whole| {
                         let _ = wake.send_event(Cmd::DisplayDied { memory });
                     })),
                     closing: None,
@@ -822,8 +824,12 @@ pub(super) fn run_window(
                             loading: Some(std::rc::Rc::new(move |busy| {
                                 let _ = load_tx.send(Ev::Loading { from: Some(load_who.clone()), busy });
                             })),
-                            died: Some(std::rc::Rc::new(move |memory| {
-                                let _ = died_wake.send_event(Cmd::PageDied { name: died_who.clone(), memory });
+                            // Only the page's own process: a frame of it that
+                            // died leaves the page, and what was typed in it
+                            died: Some(std::rc::Rc::new(move |memory, whole| {
+                                if whole {
+                                    let _ = died_wake.send_event(Cmd::PageDied { name: died_who.clone(), memory });
+                                }
                             })),
                             closing: None,
                             // What to do when this page asks to open a window.

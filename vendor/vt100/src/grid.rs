@@ -157,17 +157,18 @@ impl Grid {
             }
             line.extend(cells);
             if !runs_on {
-                if let Some(offset) = top_in_line.take() {
-                    top_at = Some(laid.len() + offset / cols.max(1));
-                }
-                let at = lay_out(
+                let (at, top) = lay_out(
                     std::mem::take(&mut line),
                     cursor_in_line.take(),
+                    top_in_line.take(),
                     cols,
                     &mut laid,
                 );
                 if at.is_some() {
                     cursor = at;
+                }
+                if top.is_some() {
+                    top_at = top;
                 }
             }
         }
@@ -918,12 +919,17 @@ pub struct Pos {
 /// laid out again `cols` wide onto the end of `out`. `cursor` is how many
 /// cells into the line the cursor stood, when it stood on this line; the
 /// answer is where it stands now (row in `out`, column)
+/// NOTE (vendored patch): one line laid out at `cols` into `out`: where
+/// the cell `cursor` lands (row, column), and the row the cell `top`
+/// lands on -- found the way the cells are placed, a wide character that
+/// does not fit at the end of a row going to the next one
 fn lay_out(
     mut line: Vec<crate::Cell>,
     cursor: Option<usize>,
+    top: Option<usize>,
     cols: usize,
     out: &mut Vec<crate::row::Row>,
-) -> Option<(usize, usize)> {
+) -> (Option<(usize, usize)>, Option<usize>) {
     fn close(
         row: &mut Vec<crate::Cell>,
         runs_on: bool,
@@ -942,6 +948,7 @@ fn lay_out(
     }
     let mut row: Vec<crate::Cell> = Vec::with_capacity(cols);
     let mut found = None;
+    let mut top_row = None;
     let mut i = 0;
     while i < line.len() {
         // A wide character's right half travels with it
@@ -966,6 +973,9 @@ fn lay_out(
         } else if half && cursor == Some(i + 1) {
             found = Some((out.len(), row.len() + 1));
         }
+        if top.is_some_and(|t| t == i || (half && t == i + 1)) {
+            top_row = Some(out.len());
+        }
         row.push(line[i].clone());
         if wide {
             let right = if half {
@@ -988,8 +998,12 @@ fn lay_out(
             found = Some((out.len(), col));
         }
     }
+    // A top past the written text: the row it ends on
+    if top.is_some() && top_row.is_none() {
+        top_row = Some(out.len());
+    }
     close(&mut row, false, cols, out);
-    found
+    (found, top_row)
 }
 
 // NOTE (vendored patch): written out and read back (see `snapshot`).

@@ -956,6 +956,16 @@ mod tests {
         assert_ne!(read(&dialog("cargo build", 1)).1, asked, "another command, the same question");
         let code = r#"let dialog = "Would you like to run the following command?\n\n  $ pnpm test\n\n› 1. Yes, proceed (y)";"#;
         assert_ne!(read(code).0, TabState::Question, "a line of code read as a dialog");
+        // The other dialogs Codex asks a person, and any of them wrapped at a
+        // narrow width
+        for screen in [
+            "  Do you want to approve network access to \"api.example.com\"?\n\n› 1. Yes\n  2. No",
+            "  Do you want to approve network access to\n  \"api.example.com\"?\n› 1. Yes\n  2. No",
+            "  Approve app tool call?\n\n  github.create_issue\n\n› 1. Approve\n  2. Cancel this tool call.",
+            "  Would you like to run the\n  following command?\n\n  $ pnpm test\n\n› 1. Yes, proceed (y)",
+        ] {
+            assert_eq!(read(screen).0, TabState::Question, "not read as a question: {screen:?}");
+        }
     }
 
     /// Claude Code shows what it asks about above the question, and its

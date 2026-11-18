@@ -1388,7 +1388,7 @@ pub enum Command {
     SetSession { id: String, fresh: bool, origin: usize },
     /// "I was just asked this." Reported by the tab itself, the same way as
     /// `SetSession`. What a folder's automatic name is written from
-    ReportPrompt { text: String, from: Option<String>, origin: usize },
+    ReportPrompt { text: String, from: Option<String>, sent_ms: u64, origin: usize },
     /// "This is what I am doing", from the program itself. The state dot is
     /// otherwise read off the screen, which is a guess -- a good one, and
     /// still a guess. A program that will say so outright is believed
@@ -1399,7 +1399,7 @@ pub enum Command {
     /// "This is everything I still have running beside the conversation":
     /// the helpers by id, and whether anything else is still going
     SetRunning { helpers: Vec<String>, other: bool, from: Option<String>, origin: usize },
-    ReportAsked { call: String, count: usize, from: Option<String>, origin: usize },
+    ReportAsked { call: String, count: usize, from: Option<String>, sent_ms: u64, origin: usize },
     /// "This is what I am doing." The caller's own tab unless it names another
     /// — a build script run by hand is nobody's tab and still has something to
     /// say. An empty value takes the entry away, so finishing needs no second verb
@@ -3754,9 +3754,10 @@ impl HookEngine {
             shikisha
                 .set(
                     "report_prompt",
-                    // A second argument: the conversation it was asked in
-                    lua.create_function(move |_, (text, from): (String, Option<String>)| {
-                        c.borrow_mut().push(Command::ReportPrompt { text, from, origin: o.get() });
+                    // A second argument: the conversation it was asked in;
+                    // a third, the sender's clock
+                    lua.create_function(move |_, (text, from, sent): (String, Option<String>, Option<i64>)| {
+                        c.borrow_mut().push(Command::ReportPrompt { text, from, sent_ms: sent.map_or(0, |v| v.max(0) as u64), origin: o.get() });
                         Ok(())
                     })
                     .map_err(lerr)?,
@@ -3861,8 +3862,9 @@ impl HookEngine {
             shikisha
                 .set(
                     "report_asked",
-                    lua.create_function(move |_, (call, count, from): (String, usize, Option<String>)| {
-                        c.borrow_mut().push(Command::ReportAsked { call: call.trim().to_string(), count, from, origin: o.get() });
+                    lua.create_function(move |_, (call, count, from, sent): (String, usize, Option<String>, Option<i64>)| {
+                        let sent_ms = sent.map_or(0, |v| v.max(0) as u64);
+                        c.borrow_mut().push(Command::ReportAsked { call: call.trim().to_string(), count, from, sent_ms, origin: o.get() });
                         Ok(())
                     })
                     .map_err(lerr)?,

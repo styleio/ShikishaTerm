@@ -1433,7 +1433,7 @@ fn side_threads() -> Vec<String> {
 }
 
 /// Whether the conversation `id` is a side thread heard of before
-fn is_side_thread(id: &str) -> bool {
+pub fn is_side_thread(id: &str) -> bool {
     side_threads().iter().any(|s| s == id)
 }
 

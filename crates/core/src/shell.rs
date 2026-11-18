@@ -28499,7 +28499,7 @@ function gitNext() {
   if (form) return form;
   const ready = open.find(p => gitPrAction(p));
   if (ready) return Object.assign({icon:"check", pr: ready.number}, gitPrAction(ready),
-    G.armed === ready.number ? {} : {label: (T["git.prs.merge"] || "").replaceAll("{base}", ready.base || "")});
+    G.armed === gitPrKey(ready) ? {} : {label: (T["git.prs.merge"] || "").replaceAll("{base}", ready.base || "")});
   return {icon:"refresh", label: T["git.fetch"] || "", run:() => gitAsk("fetch")};
 }
 // Why a pull request cannot be made from here yet, or nothing
@@ -28583,6 +28583,11 @@ function gitPrChecking(p) {
 }
 // The one thing that can be done to a pull request from here, or nothing:
 // settle its conflict, or merge it -- armed by the first press, done by the second
+// Which pull request a press is about: its number, and whether it is in the
+// repository this one is a fork of -- the two can both have a #12
+function gitPrKey(p) {
+  return (p && p.upstream ? "upstream#" : "#") + (p ? p.number : "");
+}
 function gitPrAction(p) {
   if (p.state !== "open" || gitPrChecking(p)) return null;
   // Bringing the base in is done against this checkout's own base, which is
@@ -28592,7 +28597,7 @@ function gitPrAction(p) {
     return {label: T["git.prs.resolve.short"] || "", run:() => gitPrResolve(p)};
   }
   if (!p.draft && PR_MERGEABLE.includes(p.merge_state)) {
-    return {label: G.armed === p.number ? (T["issues.merge.sure"] || "") : (T["git.prs.merge.short"] || ""),
+    return {label: G.armed === gitPrKey(p) ? (T["issues.merge.sure"] || "") : (T["git.prs.merge.short"] || ""),
             run:() => gitPrMerge(p)};
   }
   return null;
@@ -28658,7 +28663,7 @@ function gitMergeMethod() {
 function gitPrMerge(p) {
   const g = gitGroup();
   if (!g || G.busy) return;
-  if (G.armed !== p.number) { G.armed = p.number; G.said = ""; drawGit(); return; }
+  if (G.armed !== gitPrKey(p)) { G.armed = gitPrKey(p); G.said = ""; drawGit(); return; }
   G.armed = 0; G.busy = "pr_merge"; G.said = ""; G.merging = p.base || "";
   drawGit();
   gitIssuesAsk("merge", {project: g.project, number: p.number, method: gitMergeMethod(), head: p.sha || "", upstream: !!p.upstream});
@@ -28703,7 +28708,7 @@ function gitCiLog(item) {
   drawGit();
   gitIssuesAsk("ci_log", {project: g.project, job: item.job == null ? null : item.job, name: item.name || "",
     sha: G.checks.sha || (gitPrsOpen()[0] || {}).sha || "", url: item.url || "", folder: g.key || "",
-    running: item.verdict === "pending"});
+    running: item.verdict === "pending", upstream: !!(G.checks && G.checks.upstream)});
 }
 // Its base brought into this folder; a conflict opens an AI tab in the middle
 function gitPrResolve(p) {
@@ -28759,7 +28764,7 @@ function gitIssues(d) {
       G.prsTries = 0;
       G.prsWatch = false;
     }
-    if (!G.prs.some(p => p.number === G.armed)) G.armed = 0;
+    if (!G.prs.some(p => gitPrKey(p) === G.armed)) G.armed = 0;
     gitPrFormFit();
     drawGit();
     return;
@@ -28806,7 +28811,11 @@ function gitIssues(d) {
     I.pr = {from:"", project:"", folder:"", head:"", base:"", bases:null, title:"", body:"", draft:false, close:false, issue:null, kept:"", files:null, open:{}, more:false};
     G.prsTries = 3;
   } else if (d.act === "merge") {
-    G.said = (T["git.prs.merged"] || "").replaceAll("{base}", G.merging || "");
+    // Into the queue, or waiting for its checks to go in, where the base
+    // branch has a merge queue
+    const m = d.data || {};
+    G.said = m.queued ? (T["issues.queued"] || "") : m.when_ready ? (T["issues.when_ready"] || "")
+      : (T["git.prs.merged"] || "").replaceAll("{base}", G.merging || "");
     // What it merged into moved on the server
     G.quietFetch = true;
     gitAsk("fetch");
@@ -29153,7 +29162,7 @@ function drawGitPrs(u, next) {
       el("span", {class:"st " + tone}, words));
     const act = gitPrAction(p);
     if (act && next.pr !== p.number) {
-      const go = el("button", {type:"button", class: G.armed === p.number ? "armed" : "", onclick: act.run}, act.label);
+      const go = el("button", {type:"button", class: G.armed === gitPrKey(p) ? "armed" : "", onclick: act.run}, act.label);
       go.disabled = !!G.busy;
       row.append(go);
     }

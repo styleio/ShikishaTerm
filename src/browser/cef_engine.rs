@@ -1281,8 +1281,9 @@ mod hooks {
                 _error_code: ::std::os::raw::c_int,
                 _error_string: Option<&CefString>,
             ) {
+                // The browser's own render process: the page's, not a frame's
                 if let Some(died) = &self.hooks.wiring.died {
-                    died(status == TerminationStatus::PROCESS_OOM);
+                    died(status == TerminationStatus::PROCESS_OOM, true);
                 }
             }
         }

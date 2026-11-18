@@ -4175,6 +4175,10 @@ pub struct Tab {
     /// hooks are told not to wait for each other, and the report of a
     /// question can come in after the answer to it
     early_answers: Vec<(String, usize)>,
+    /// When a message of the person's last left the questions behind (the
+    /// sender's clock): a question heard after it but asked before it is
+    /// one the person has moved on from
+    left_behind_ms: u64,
     /// What this tab's CLI can do about carrying a conversation across a
     /// restart, read from its profile at every launch (so editing a profile
     /// takes effect the next time, like the detection rules do)
@@ -5454,6 +5458,7 @@ impl Tab {
             nested: Vec::new(),
             open_asks: Vec::new(),
             early_answers: Vec::new(),
+            left_behind_ms: 0,
             resume: resume_spec,
             title,
             id: opts.id.clone(),
@@ -6653,6 +6658,24 @@ impl Tab {
     /// said it runs, heard while that one is in the middle of a turn. Only
     /// against a conversation its hook named: one this app worked out for
     /// itself may be out of date, and would shut the real one out
+    /// Whether what a conversation says of its state is the tab's
+    /// ([`hears_from`]), with one more road: a conversation taken for one an
+    /// AI ran, that begins a turn of its own once the tab's own has none
+    /// running, is the person's -- they stopped the turn and took that one
+    /// up, and the stop was heard after the start. It becomes the tab's
+    pub fn hears_state(&mut self, conversation: Option<&str>, state: TabState) -> bool {
+        if let Some(c) = conversation
+            && state == TabState::Busy
+            && self.hook_word() != Some(TabState::Busy)
+            && self.nested.iter().any(|n| n == c)
+        {
+            self.nested.retain(|n| n != c);
+            self.session = Some(Session { id: c.to_string(), source: SessionSource::Hook });
+            crate::append_hook_log(&format!("tab \"{}\": a conversation taken for a run inside it begins a turn of its own; it is the tab's", self.title));
+        }
+        self.hears_from(conversation)
+    }
+
     fn another_mid_turn(&self, id: &str) -> bool {
         self.session.as_ref().is_some_and(|s| s.source == SessionSource::Hook && s.id != id)
             && self.hook_word() == Some(TabState::Busy)
@@ -6660,8 +6683,9 @@ impl Tab {
 
     /// The tab's AI asked the person `count` questions in the call `call`,
     /// and went on working
-    pub fn asked_aside(&mut self, call: &str, count: usize) {
-        if call.is_empty() || count == 0 {
+    /// `sent_ms` is when the hook said it (0: not said)
+    pub fn asked_aside(&mut self, call: &str, count: usize, sent_ms: u64) {
+        if call.is_empty() || count == 0 || (sent_ms != 0 && sent_ms < self.left_behind_ms) {
             return;
         }
         self.open_asks.retain(|(c, _)| c != call);
@@ -6680,7 +6704,8 @@ impl Tab {
     /// answers to questions it asked without stopping (`agenthook::answers_in`),
     /// or a message of its own -- which leaves no question waiting, the way
     /// the CLI itself drops them, and is what the tab was asked
-    pub fn heard_prompt(&mut self, text: &str) {
+    /// `sent_ms` is when the hook said it (0: not said)
+    pub fn heard_prompt(&mut self, text: &str, sent_ms: u64) {
         match crate::agenthook::answers_in(text) {
             Some(answers) => {
                 for (call, at) in answers {
@@ -6699,6 +6724,7 @@ impl Tab {
             }
             None => {
                 self.open_asks.clear();
+                self.left_behind_ms = self.left_behind_ms.max(sent_ms);
                 self.heard_from_program(text);
             }
         }
@@ -6715,11 +6741,12 @@ impl Tab {
     /// here, the terminal from one on another machine -- hand it over, so the
     /// two cannot come to read the same report differently
     pub fn take_report(&mut self, report: &crate::agenthook::Report, sent_ms: u64) -> bool {
-        if !self.hears_from(report.from.as_deref()) {
+        let state = report.state.as_deref().and_then(TabState::from_label).unwrap_or(TabState::Wait);
+        if !self.hears_state(report.from.as_deref(), state) {
             return true;
         }
         if let Some((call, count)) = &report.asked {
-            self.asked_aside(call, *count);
+            self.asked_aside(call, *count, sent_ms);
         }
         if let Some((id, up)) = &report.helper {
             self.helper_says(id, *up);
@@ -7616,6 +7643,15 @@ mod nested_conversations {
         // Between turns a person may take another conversation up
         assert!(t.hook_says(TabState::Done, now + 50));
         assert!(t.hears_session("person-picked", false));
+        // The person stops a turn and takes another up, and the stop is heard
+        // after the start: taken for a run at first, it is the tab's once it
+        // begins a turn of its own
+        assert!(t.hook_says(TabState::Busy, now + 60));
+        assert!(!t.hears_session("taken-up", false));
+        assert!(t.hook_says(TabState::Wait, now + 70));
+        assert!(t.hears_state(Some("taken-up"), TabState::Busy));
+        assert_eq!(t.session.as_ref().map(|s| s.id.as_str()), Some("taken-up"));
+        assert!(t.hears_from(Some("taken-up")));
         t.kill();
     }
 
@@ -7636,26 +7672,34 @@ mod nested_conversations {
                 .collect();
             format!("<send_user_message_question_reply>\n{}\n</send_user_message_question_reply>", serde_json::Value::Array(list))
         };
-        t.asked_aside("call_3_1", 2);
+        t.asked_aside("call_3_1", 2, 0);
         assert_eq!(t.tick(start).1, TabState::Question, "a question asked on the side did not want a person");
-        t.heard_prompt(&reply(&[("call_3_1", 0)]));
+        t.heard_prompt(&reply(&[("call_3_1", 0)]), 0);
         assert_eq!(t.tick(start).1, TabState::Question, "half the questions answered let the person go");
-        t.heard_prompt(&reply(&[("call_3_1", 1)]));
+        t.heard_prompt(&reply(&[("call_3_1", 1)]), 0);
         assert_eq!(t.tick(start).1, TabState::Busy);
         // A message of the person's own leaves the questions behind
-        t.asked_aside("call_4_1", 1);
+        t.asked_aside("call_4_1", 1, 0);
         assert!(t.asks_open());
-        t.heard_prompt("never mind, use Postgres");
+        t.heard_prompt("never mind, use Postgres", 0);
         assert!(!t.asks_open());
         // An answer heard before its question: the question is not left open
         assert!(t.hook_says(TabState::Busy, now + 5));
-        t.heard_prompt(&reply(&[("call_6_1", 0)]));
-        t.asked_aside("call_6_1", 2);
+        t.heard_prompt(&reply(&[("call_6_1", 0)]), 0);
+        t.asked_aside("call_6_1", 2, 0);
         assert!(t.asks_open(), "the question not answered was dropped with the one that was");
-        t.heard_prompt(&reply(&[("call_6_1", 1)]));
+        t.heard_prompt(&reply(&[("call_6_1", 1)]), 0);
         assert!(!t.asks_open(), "a question answered before it was heard was left open");
+        // A question asked before a message that left the questions behind,
+        // heard after it, is not opened again
+        t.heard_prompt("forget the questions", now + 1000);
+        t.asked_aside("call_7_1", 1, now + 900);
+        assert!(!t.asks_open(), "a question the person had moved on from came back");
+        t.asked_aside("call_8_1", 1, now + 1100);
+        assert!(t.asks_open());
+        t.heard_prompt("never mind", now + 1200);
         // So does the end of the turn
-        t.asked_aside("call_5_1", 1);
+        t.asked_aside("call_5_1", 1, 0);
         assert!(t.hook_says(TabState::Done, now + 10));
         assert!(!t.asks_open(), "a question the CLI dropped at the end of the turn stayed open");
         t.kill();
@@ -8969,6 +9013,23 @@ mod width_change {
         // The long line laid out at fifty, whole
         let a = rows.iter().position(|r| r.starts_with("AAAA")).expect("the long line is gone");
         assert_eq!(rows[a..a + 3].concat(), format!("{}{}{}", "A".repeat(60), "B".repeat(60), "C".repeat(30)), "{rows:#?}");
+    }
+
+    /// The top row is found where its first character is laid out, wide
+    /// characters that do not fit at a row's end included
+    #[test]
+    fn the_top_row_is_found_among_wide_characters() {
+        let mut p = vt100::Parser::new(3, 2, 100);
+        p.screen_mut().set_reflow_keeps_top(true);
+        p.process("あいうえおかきく".as_bytes());
+        p.process(b"\x1b[1;1H");
+        p.screen_mut().set_size(3, 3);
+        let shown: Vec<String> = p.screen().rows(0, 3).map(|r| r.trim_end().to_string()).collect();
+        assert_eq!(shown, vec!["か", "き", "く"], "what was on the screen went: {shown:?}");
+        assert_eq!(p.screen().cursor_position(), (0, 0));
+        // A reset of the screen leaves the kind of terminal as it was
+        p.process(b"\x1bc");
+        assert!(p.screen().reflow_keeps_top(), "a reset forgot how this terminal lays itself out");
     }
 
     #[test]

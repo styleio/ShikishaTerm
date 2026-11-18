@@ -211,6 +211,8 @@ fn far_hook(which: &str) -> i32 {
         return 0;
     }
     let answer = match which {
+        // A side thread's end is no line of the tab's
+        "line" if crate::agenthook::of_a_side_thread(&event) => None,
         "line" => {
             let said = event.get("last_assistant_message").and_then(|m| m.as_str()).unwrap_or_default().to_string();
             // Which conversation ended (see `Tab::hears_from`)

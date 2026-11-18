@@ -2026,9 +2026,12 @@ pub fn answer(
                 true => hub.parent_of(&repo).ok().flatten().unwrap_or_else(|| repo.clone()),
                 false => repo.clone(),
             };
+            let upstream = checked.slug() != repo.slug();
             let checks = sha.as_deref().and_then(|sha| {
                 hub.checks(&checked, sha).ok().map(|mut c| {
                     c["sha"] = json!(sha);
+                    // Read in the parent: a log of one is asked for there
+                    c["upstream"] = json!(upstream);
                     c
                 })
             });
@@ -2515,6 +2518,7 @@ fn open_threads(threads: &Value, clean: &[String]) -> Vec<Value> {
 pub fn ci_log(
     sources: &[Source],
     project: &str,
+    upstream: bool,
     job: u64,
     look: &dyn Fn(&str) -> Option<String>,
 ) -> Result<crate::readview::Tail> {
@@ -2523,7 +2527,9 @@ pub fn ci_log(
         .find(|s| s.name == project)
         .ok_or_else(|| anyhow!(crate::i18n::t("err.github.no_project")))?;
     let (repo, token) = target_of(source, look)?;
-    Hub::new(token).job_log(&repo, job)
+    let hub = Hub::new(token);
+    let repo = hub.pull_repo(repo, upstream)?;
+    hub.job_log(&repo, job)
 }
 
 /// A job's log as an editor shows it, and the line of its first error

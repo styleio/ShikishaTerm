@@ -13,6 +13,8 @@
  *   back     the page is there again, at the address it had moved to
  *   once     the form was sent once: what came back is asked for, not sent
  *   said     the log says what was done
+ *   frame    a frame of another site in the page dying leaves the page --
+ *            and what was typed into it -- as it was
  *
  * Needs Windows and Node. Nothing of a copy somebody is using is read,
  * written or stopped.
@@ -63,11 +65,18 @@ const server = http.createServer((req, res) => {
     res.writeHead(303, { location: '/done' });
     return res.end();
   }
-  if (req.url.startsWith('/done')) { asked.results += 1; return html('<h1 id="done">Ordered</h1>'); }
+  if (req.url.startsWith('/done')) {
+    asked.results += 1;
+    // A frame from another site (another name for this same server), which
+    // the browser draws in a process of its own
+    return html('<h1 id="done">Ordered</h1><input id="note"><iframe id="side" src="' + elsewhere + '/frame"></iframe>');
+  }
+  if (req.url.startsWith('/frame')) return html('<p>a frame</p>');
   html('<form method="post" action="/order"><button id="go">Order</button></form>');
 });
 await new Promise((r) => server.listen(0, '127.0.0.1', r));
 const site = `http://127.0.0.1:${server.address().port}`;
+var elsewhere = `http://localhost:${server.address().port}`;
 
 console.log('starting this checkout\'s build, isolated');
 stopApp();
@@ -129,7 +138,9 @@ try {
   await until(async () => (again = await shopPage()) && again.url === `${site}/done`, 'the page there again', 10000).catch(() => {});
   if (again) {
     const back = await connectCdp(again);
-    const shown = await back.run('document.getElementById("done") && document.getElementById("done").textContent').catch(() => null);
+    let shown = null;
+    await until(async () => (shown = await back.run('document.getElementById("done") && document.getElementById("done").textContent').catch(() => null)) === 'Ordered',
+      'the page\'s text', 10000).catch(() => {});
     check(shown === 'Ordered', 'it shows what it showed: ' + shown);
     back.ws.close();
   } else {
@@ -137,6 +148,29 @@ try {
   }
   const log = fs.existsSync(HOOKS_LOG) ? fs.readFileSync(HOOKS_LOG, 'utf8') : '';
   check(/the process of the page '[^']*shop' died; it is opened again at its address/.test(log), 'the log says what was done');
+
+  console.log('3. a frame in the page dies');
+  const holder = await connectCdp(await shopPage());
+  await until(() => holder.run('!!document.getElementById("note")'), 'the field');
+  await holder.run('document.getElementById("note").value = "UNSAVED"');
+  let frame;
+  await until(async () => {
+    const list = await (await fetch(`http://127.0.0.1:${portOf()}/json/list`)).json();
+    return (frame = list.find((t) => t.type === 'iframe' && t.url.startsWith(elsewhere)));
+  }, 'the frame as a target of its own', 15000).catch(() => {});
+  if (!frame) {
+    check(false, 'the frame was drawn in a process of its own (no target for it)');
+  } else {
+    const inFrame = await connectCdp(frame);
+    const asks = asked.results;
+    inFrame.send('Page.crash').catch(() => {});
+    await sleep(3000);
+    try { inFrame.ws.close(); } catch {}
+    check(asked.results === asks, `the page was not asked for again (${asks} -> ${asked.results})`);
+    const kept = await holder.run('document.getElementById("note").value').catch(() => null);
+    check(kept === 'UNSAVED', 'what was typed into the page is still there: ' + kept);
+  }
+  holder.ws.close();
 } catch (e) {
   failures += 1;
   console.error(e);
