@@ -4170,7 +4170,7 @@ pub struct Tab {
     /// `request_user_input_async`), by the call that asked them, with the
     /// places of the ones not answered yet. While any is open a person is
     /// wanted, though the AI goes on working
-    open_asks: Vec<(String, Vec<usize>)>,
+    open_asks: Vec<(String, Vec<usize>, u64)>,
     /// Answers heard to questions not heard asked yet, by call and place:
     /// hooks are told not to wait for each other, and the report of a
     /// question can come in after the answer to it
@@ -6658,22 +6658,16 @@ impl Tab {
     /// said it runs, heard while that one is in the middle of a turn. Only
     /// against a conversation its hook named: one this app worked out for
     /// itself may be out of date, and would shut the real one out
-    /// Whether what a conversation says of its state is the tab's
-    /// ([`hears_from`]), with one more road: a conversation taken for one an
-    /// AI ran, that begins a turn of its own once the tab's own has none
-    /// running, is the person's -- they stopped the turn and took that one
-    /// up, and the stop was heard after the start. It becomes the tab's
-    pub fn hears_state(&mut self, conversation: Option<&str>, state: TabState) -> bool {
-        if let Some(c) = conversation
-            && state == TabState::Busy
-            && self.hook_word() != Some(TabState::Busy)
-            && self.nested.iter().any(|n| n == c)
-        {
-            self.nested.retain(|n| n != c);
-            self.session = Some(Session { id: c.to_string(), source: SessionSource::Hook });
-            crate::append_hook_log(&format!("tab \"{}\": a conversation taken for a run inside it begins a turn of its own; it is the tab's", self.title));
+    /// Whether `conversation` is the one the tab's hook said it runs: what
+    /// a turn's end is asked for a line of. Any other -- a run inside it, a
+    /// side thread whose start was not heard yet -- is not, whatever the
+    /// tab is doing. Not known (no conversation said, or none heard of the
+    /// tab): it is
+    pub fn is_its_conversation(&self, conversation: Option<&str>) -> bool {
+        match (conversation, self.session.as_ref()) {
+            (Some(c), Some(s)) if s.source == SessionSource::Hook => s.id == c,
+            _ => true,
         }
-        self.hears_from(conversation)
     }
 
     fn another_mid_turn(&self, id: &str) -> bool {
@@ -6688,7 +6682,7 @@ impl Tab {
         if call.is_empty() || count == 0 || (sent_ms != 0 && sent_ms < self.left_behind_ms) {
             return;
         }
-        self.open_asks.retain(|(c, _)| c != call);
+        self.open_asks.retain(|(c, _, _)| c != call);
         if self.open_asks.len() >= OPEN_ASKS_MOST {
             self.open_asks.remove(0);
         }
@@ -6696,7 +6690,7 @@ impl Tab {
         let left: Vec<usize> = (0..count.min(64)).filter(|n| !self.early_answers.iter().any(|(c, a)| c == call && a == n)).collect();
         self.early_answers.retain(|(c, _)| c != call);
         if !left.is_empty() {
-            self.open_asks.push((call.to_string(), left));
+            self.open_asks.push((call.to_string(), left, sent_ms));
         }
     }
 
@@ -6709,8 +6703,8 @@ impl Tab {
         match crate::agenthook::answers_in(text) {
             Some(answers) => {
                 for (call, at) in answers {
-                    match self.open_asks.iter_mut().find(|(c, _)| *c == call) {
-                        Some((_, left)) => left.retain(|n| *n != at),
+                    match self.open_asks.iter_mut().find(|(c, _, _)| *c == call) {
+                        Some((_, left, _)) => left.retain(|n| *n != at),
                         // Its question not heard yet: kept for when it is
                         None => {
                             if self.early_answers.len() >= OPEN_ASKS_MOST * 4 {
@@ -6720,10 +6714,13 @@ impl Tab {
                         }
                     }
                 }
-                self.open_asks.retain(|(_, left)| !left.is_empty());
+                self.open_asks.retain(|(_, left, _)| !left.is_empty());
             }
+            // A message of the person's leaves behind what was asked before
+            // it, not what was asked after it (heard before it, the hooks
+            // being told not to wait for each other)
             None => {
-                self.open_asks.clear();
+                self.open_asks.retain(|(_, _, asked)| sent_ms != 0 && *asked != 0 && *asked > sent_ms);
                 self.left_behind_ms = self.left_behind_ms.max(sent_ms);
                 self.heard_from_program(text);
             }
@@ -6741,8 +6738,7 @@ impl Tab {
     /// here, the terminal from one on another machine -- hand it over, so the
     /// two cannot come to read the same report differently
     pub fn take_report(&mut self, report: &crate::agenthook::Report, sent_ms: u64) -> bool {
-        let state = report.state.as_deref().and_then(TabState::from_label).unwrap_or(TabState::Wait);
-        if !self.hears_state(report.from.as_deref(), state) {
+        if !self.hears_from(report.from.as_deref()) {
             return true;
         }
         if let Some((call, count)) = &report.asked {
@@ -7643,15 +7639,14 @@ mod nested_conversations {
         // Between turns a person may take another conversation up
         assert!(t.hook_says(TabState::Done, now + 50));
         assert!(t.hears_session("person-picked", false));
-        // The person stops a turn and takes another up, and the stop is heard
-        // after the start: taken for a run at first, it is the tab's once it
-        // begins a turn of its own
+        t.session = Some(Session { id: "person-picked".into(), source: SessionSource::Hook });
+        // A run whose first turn is heard once the tab's own is over is still
+        // a run: nothing but the tab's own start makes a conversation its own
         assert!(t.hook_says(TabState::Busy, now + 60));
-        assert!(!t.hears_session("taken-up", false));
-        assert!(t.hook_says(TabState::Wait, now + 70));
-        assert!(t.hears_state(Some("taken-up"), TabState::Busy));
-        assert_eq!(t.session.as_ref().map(|s| s.id.as_str()), Some("taken-up"));
-        assert!(t.hears_from(Some("taken-up")));
+        assert!(!t.hears_session("a-run", true));
+        assert!(t.hook_says(TabState::Question, now + 70));
+        assert!(!t.hears_from(Some("a-run")));
+        assert_eq!(t.session.as_ref().map(|s| s.id.as_str()), Some("person-picked"));
         t.kill();
     }
 
@@ -7698,6 +7693,12 @@ mod nested_conversations {
         t.asked_aside("call_8_1", 1, now + 1100);
         assert!(t.asks_open());
         t.heard_prompt("never mind", now + 1200);
+        // ...and a message heard late leaves a question asked after it open
+        t.asked_aside("call_9_1", 1, now + 1500);
+        t.heard_prompt("an old message", now + 1300);
+        assert!(t.asks_open(), "a message sent before the question left it behind");
+        t.heard_prompt("a new message", now + 1600);
+        assert!(!t.asks_open());
         // So does the end of the turn
         t.asked_aside("call_5_1", 1, 0);
         assert!(t.hook_says(TabState::Done, now + 10));

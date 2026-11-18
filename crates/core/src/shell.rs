@@ -28498,7 +28498,7 @@ function gitNext() {
   }
   if (form) return form;
   const ready = open.find(p => gitPrAction(p));
-  if (ready) return Object.assign({icon:"check", pr: ready.number}, gitPrAction(ready),
+  if (ready) return Object.assign({icon:"check", pr: ready.number, prKey: gitPrKey(ready)}, gitPrAction(ready),
     G.armed === gitPrKey(ready) ? {} : {label: (T["git.prs.merge"] || "").replaceAll("{base}", ready.base || "")});
   return {icon:"refresh", label: T["git.fetch"] || "", run:() => gitAsk("fetch")};
 }
@@ -29161,7 +29161,7 @@ function drawGitPrs(u, next) {
       el("button", {type:"button", class:"link num", title: p.title || "", onclick:() => gitPrShow(p)}, "#" + p.number),
       el("span", {class:"st " + tone}, words));
     const act = gitPrAction(p);
-    if (act && next.pr !== p.number) {
+    if (act && next.prKey !== gitPrKey(p)) {
       const go = el("button", {type:"button", class: G.armed === gitPrKey(p) ? "armed" : "", onclick: act.run}, act.label);
       go.disabled = !!G.busy;
       row.append(go);

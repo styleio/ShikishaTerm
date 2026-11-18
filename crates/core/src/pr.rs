@@ -421,7 +421,10 @@ fn look(
     });
     // The parent not answered (the network, a refusal): what was known of
     // those branches stays, as it does when the fork is not answered
-    let parent_unknown = parent.is_err() || theirs.as_ref().is_some_and(Result::is_err);
+    // An answer that carries errors is not taken for "none there" either:
+    // a branch's list left empty beside an error is one GitHub did not read
+    let parent_unknown = parent.is_err()
+        || theirs.as_ref().is_some_and(|t| t.as_ref().map_or(true, |v| v.get("errors").is_some_and(|e| !e.is_null())));
     let parent = parent.ok().flatten();
     let theirs = theirs.and_then(Result::ok);
     let file = prnews::path();

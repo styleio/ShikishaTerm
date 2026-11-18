@@ -5738,7 +5738,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             .caller
                             .as_deref()
                             .and_then(|c| tabs.iter().find(|t| t.called() == c))
-                            .filter(|t| t.hears_from(from) && !from.is_some_and(crate::agenthook::is_side_thread));
+                            .filter(|t| t.is_its_conversation(from) && !from.is_some_and(crate::agenthook::is_side_thread));
                         let line_max = config::confer().line_max;
                         let mut hold = serde_json::Value::Null;
                         if let Some(t) = me {
@@ -22625,7 +22625,7 @@ pub fn exec_commands(
                     append_hook_log(&format!("set_state from tab{origin}: no such tab"));
                     continue;
                 };
-                if !t.hears_state(from.as_deref(), known) {
+                if !t.hears_from(from.as_deref()) {
                     continue;
                 }
                 if !t.hook_says(known, sent_ms) {
