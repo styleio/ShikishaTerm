@@ -91,7 +91,8 @@ fn stretch(s: &Stretch) -> String {
     let (first, last) = (s.looks[0], s.looks[n - 1]);
     let mut out = match n {
         1 => format!("{} (one look)\n", first.when),
-        _ => format!("{} to {} ({n} looks, {} min)\n", first.when, last.when, (last.at - first.at) / 60 + 1),
+        // (a clock put back in between makes the last look the earlier one)
+        _ => format!("{} to {} ({n} looks, {} min)\n", first.when, last.when, last.at.saturating_sub(first.at) / 60 + 1),
     };
     let mut say = |text: String| out.push_str(&format!("  {text}\n"));
     let short: Vec<&&Look> = looks.iter().filter(|l| l.short_of_memory()).collect();
@@ -132,8 +133,10 @@ fn stretch(s: &Stretch) -> String {
     let (memory, paging, disk) = (!short.is_empty(), looks.iter().any(|l| l.paging()), looks.iter().any(|l| l.disk_busy()));
     let measured = looks.iter().any(|l| l.paged.is_some());
     let mut reading: Vec<String> = Vec::new();
-    if memory && (paging || disk) {
-        reading.push("the machine ran out of memory and was working its disk to make room; every program on it is slow while that lasts, whichever one a person is looking at".into());
+    if memory && paging {
+        reading.push("the machine ran out of memory and was reading it back from its disk; every program on it is slow while that lasts, whichever one a person is looking at".into());
+    } else if memory && disk {
+        reading.push("memory was short and the disk was busy at the same time, but the record does not show memory being read back from the disk: the two may have nothing to do with each other, and the programs reading and writing most are named above".into());
     } else if memory && !measured {
         reading.push("memory was short. This part of the record was written by a version that did not yet note the disk or the paging, so it cannot say whether the machine was slowed by it".into());
     } else if memory {
@@ -149,8 +152,13 @@ fn stretch(s: &Stretch) -> String {
         let first = named(&s.looks, "most cpu").into_iter().next().map(|(n, _, most)| format!("; {n} used the most, up to {most} of the whole machine")).unwrap_or_default();
         reading.push(format!("the processors were the limit{first}"));
     }
-    if was_late && !memory && !disk && busy == 0 {
-        reading.push("the app answered late while the machine had room to spare: the fault is in the app itself, and hang.json and crash.log say where it was".into());
+    if was_late && !memory && !disk && busy == 0 && !measured {
+        reading.push("the app answered late while the processors and the memory had room. This part of the record was written by a version that did not yet note the disk, so a disk that could not keep up is not ruled out".into());
+    } else if was_late && !memory && !disk && busy == 0 {
+        // The app writes down where a part of it was only once it has been
+        // silent for a good while (`crate::watchdog`)
+        let where_ = if late.iter().any(|l| *l >= 20_000) { "hang.json says which part, and names the dump that holds where it was" } else { "it was not late for long enough for the app to write down where it was" };
+        reading.push(format!("the app answered late while the machine had room to spare: the fault is in the app itself; {where_}"));
     } else if was_late {
         reading.push("the app answered late while the machine was short; it may be no more than the machine".into());
     }
@@ -323,7 +331,7 @@ mod tests {
         assert!(told.contains("up to 5210 pages a second") && told.contains("up to 100% of it, with up to 6.1 requests waiting"), "{told}");
         assert!(told.contains("holding the most memory: chrome (in 2 of 2 looks, up to 2.1 GB), node (in 2 of 2 looks, up to 2.0 GB)"), "{told}");
         assert!(told.contains("this app and everything it started: up to 9.5% of the processors and 4.2 GB of memory"), "{told}");
-        assert!(told.contains("reading: the machine ran out of memory and was working its disk"), "{told}");
+        assert!(told.contains("reading: the machine ran out of memory and was reading it back from its disk"), "{told}");
         assert!(told.contains("reading: half or more of the memory in use was this app's"), "{told}");
         assert!(told.contains("reading: the processors were the limit; rustc used the most, up to 88% of the whole machine"), "{told}");
         assert!(told.contains("2026-11-13T14:01:40 removing a folder took 95 s (it stayed)"), "{told}");
@@ -340,7 +348,18 @@ mod tests {
         assert!(told.contains("did not yet note the disk or the paging"), "{told}");
         let stuck = "[pid 1 at 100] 2026-11-18T09:57:13 cpu 6%, memory 20.0 GB free of 32.0 GB, late: work 41.0 s window 2.0 s, kernel 1%, disk busy 1%, disk queue 0.0, paged in 0/s | most cpu: chrome 1.4%\n";
         let told = of_week(stuck);
-        assert!(told.contains("its work part by up to 41.0 s") && told.contains("the fault is in the app itself"), "{told}");
+        assert!(told.contains("its work part by up to 41.0 s") && told.contains("the fault is in the app itself; hang.json says which part"), "{told}");
+        // Late for a few seconds: nothing was written down about where
+        assert!(of_week(&stuck.replace("work 41.0 s", "work 6.0 s")).contains("not late for long enough"), "{}", of_week(&stuck.replace("work 41.0 s", "work 6.0 s")));
+        // Late in a part of the record that did not note the disk: the disk is not ruled out
+        let unknown = "[pid 1 at 100] 2026-11-18T09:57:13 cpu 6%, memory 20.0 GB free of 32.0 GB, late: work 0.0 s window 6.0 s | most cpu: chrome 1.4%\n";
+        assert!(of_week(unknown).contains("is not ruled out") && !of_week(unknown).contains("the fault is in the app"), "{}", of_week(unknown));
+        // Little left to promise and a busy disk, with nothing read back: not called running out
+        let both = "[pid 1 at 100] 2026-11-18T09:57:13 cpu 6%, memory 20.0 GB free of 32.0 GB, late: work 0.0 s window 2.0 s, commit 1.0 GB left of 40.0 GB, kernel 1%, disk busy 97%, disk queue 2.0, paged in 0/s | most io: robocopy 80.0 MB/s\n";
+        assert!(of_week(both).contains("may have nothing to do with each other") && !of_week(both).contains("ran out of memory"), "{}", of_week(both));
+        // A clock put back between two looks of one stretch does not break the telling
+        let back = "[pid 1 at 500] 2026-11-18T10:00:00 cpu 96%, memory 20.0 GB free of 32.0 GB, late: work 0.0 s window 2.0 s\n[pid 1 at 440] 2026-11-18T09:59:00 cpu 97%, memory 20.0 GB free of 32.0 GB, late: work 0.0 s window 2.0 s\n";
+        assert!(of_week(back).contains("(2 looks, 1 min)"), "{}", of_week(back));
         let calm = "[pid 1 at 100] 2026-11-18T09:57:13 cpu 6%, memory 20.0 GB free of 32.0 GB, late: work 0.0 s window 2.0 s\n";
         assert!(of_week(calm).contains("No look found the machine short of anything"));
     }

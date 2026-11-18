@@ -43,10 +43,11 @@ const SHORT: u64 = 10;
 const LATE: u64 = 3_000;
 /// How busy the disks are, in hundredths of the time, from which a look is
 const DISK_BUSY: f32 = 90.0;
-/// How many pages of memory a second are read back from the disk before a
-/// look is: a machine with memory to spare reads a few when a program
-/// starts, one without reads thousands and does little else
-const PAGED: f32 = 500.0;
+/// How many pages of memory a second, over the minute, are read back from
+/// the disk before a look is: a machine with memory to spare reads a few
+/// hundred while a large program starts, one without reads thousands and
+/// does little else
+const PAGED: f32 = 2000.0;
 /// How many programs are named for the processors and the memory they use,
 /// and for what they are promised and what they read and write
 const NAMED: usize = 5;

@@ -536,8 +536,8 @@ fn now() -> (String, crate::health::Look, crate::health::Top) {
         free: sys.available_memory(),
         total: sys.total_memory(),
         commit: crate::pressure::room(),
-        // Left for the record that is kept: taking it here would take it from there
-        late: [0, 0],
+        // Read and left where it is: the record that is kept takes it
+        late: crate::watchdog::late_so_far(),
         disk: crate::health::disk_room(&crate::config::root_dir()),
         kernel: rates.kernel,
         busy: rates.busy,
@@ -615,53 +615,72 @@ fn now() -> (String, crate::health::Look, crate::health::Top) {
             p.handles
         ));
     }
-    // Which part of the app itself was working
-    let mut threads: Vec<(String, f64)> = after
-        .iter()
-        .map(|(id, (name, ms))| {
-            let was = before.get(id).map_or(*ms, |(_, was)| *was);
-            (if name.is_empty() { "(unnamed)".to_string() } else { name.clone() }, ms.saturating_sub(was) as f64 * 100.0 / over)
-        })
-        .collect();
+    // Which part of the app itself was working. A thread is told by the
+    // first word of its name, which is the app's word for its kind: the rest
+    // of a name can be the machine it speaks to. One begun while this was
+    // measured has used all its time since
+    let mut threads: std::collections::BTreeMap<String, (u32, f64)> = Default::default();
+    for (id, (name, ms)) in &after {
+        let was = before.get(id).map_or(0, |(_, was)| *was);
+        let kind = name.split_whitespace().next().unwrap_or("(unnamed)").to_string();
+        let sum = threads.entry(kind).or_default();
+        sum.0 += 1;
+        sum.1 += ms.saturating_sub(was) as f64 * 100.0 / over;
+    }
     if !threads.is_empty() {
-        threads.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        s.push_str(&format!("\nthe app's own threads ({}; the ones that used a hundredth of a processor or more)\n", threads.len()));
-        for (name, share) in threads.iter().filter(|t| t.1 >= 1.0).take(20) {
-            s.push_str(&format!("{name:<40} {share:>6.1} % of one processor\n"));
+        let mut threads: Vec<(String, (u32, f64))> = threads.into_iter().collect();
+        threads.sort_by(|a, b| b.1.1.partial_cmp(&a.1.1).unwrap_or(std::cmp::Ordering::Equal).then_with(|| a.0.cmp(&b.0)));
+        s.push_str(&format!("\nthe app's own threads, by kind ({} threads; % of one processor)\n", after.len()));
+        for (kind, (copies, share)) in threads.iter().take(60) {
+            s.push_str(&format!("{kind:<40} {copies:>4} {share:>7.1}\n"));
         }
     }
     (s, look, top)
 }
 
-/// What Windows itself wrote down over the week: programs that crashed or
-/// stopped answering, the system saying it ran out of memory (and which
-/// programs held it), a disk reporting errors, the processors being held
-/// back, the machine waking from sleep. It is kept by Windows, not by this
-/// app, so it is there for the days before this app kept any record, and
-/// after the app was taken off and put on again.
+/// What Windows itself wrote down: the system saying it ran out of memory
+/// (and which programs held it), a disk reporting errors, the processors
+/// being held back, the machine waking from sleep -- over a month, since
+/// there are few of them and one is often the whole answer -- and, over the
+/// week, the system's errors and the programs that crashed or stopped
+/// answering. It is kept by Windows, not by this app, so it is there for
+/// the days before this app kept any record, and after the app was taken
+/// off and put on again; and nothing of it adds to what this app keeps.
 ///
 /// Who was logged in and what the PC is called are left out
 #[cfg(windows)]
 fn events() -> String {
     const WEEK: &str = "TimeCreated[timediff(@SystemTime) <= 604800000]";
-    /// The most of one log that goes in, the newest
+    const MONTH: &str = "TimeCreated[timediff(@SystemTime) <= 2592000000]";
+    /// The most of one asking that goes in, the newest
     const EVENTS: &str = "/c:150";
-    const ROOM: usize = 150 * 1024;
+    const ROOM: usize = 100 * 1024;
     let asks = [
         (
+            "memory, disks, processors and sleep, over the last month",
             "System",
             format!(
-                "*[System[{WEEK} and (Level=1 or Level=2 or Provider[@Name='Microsoft-Windows-Resource-Exhaustion-Detector' or @Name='disk' or @Name='Ntfs' or @Name='volmgr' \
+                "*[System[{MONTH} and (Provider[@Name='Microsoft-Windows-Resource-Exhaustion-Detector' or @Name='disk' or @Name='Ntfs' or @Name='volmgr' \
                  or @Name='stornvme' or @Name='storahci' or @Name='Microsoft-Windows-WHEA-Logger' or @Name='Microsoft-Windows-Power-Troubleshooter'] \
-                 or (Provider[@Name='Microsoft-Windows-Kernel-Processor-Power'] and EventID=37))]]"
+                 or (Provider[@Name='Microsoft-Windows-Kernel-Processor-Power'] and EventID=37) or (Provider[@Name='Microsoft-Windows-Kernel-Power'] and EventID=41))]]"
             ),
         ),
-        ("Application", format!("*[System[{WEEK} and (Level=1 or Level=2 or Provider[@Name='Windows Error Reporting' or @Name='Application Hang'])]]")),
+        ("the system's errors, over the last week", "System", format!("*[System[{WEEK} and (Level=1 or Level=2)]]")),
+        (
+            "programs that crashed or stopped answering, over the last week",
+            "Application",
+            format!("*[System[{WEEK} and (Level=1 or Level=2 or Provider[@Name='Windows Error Reporting' or @Name='Application Hang'])]]"),
+        ),
+        // Where an install or an update from the Store says why it failed
+        ("what the Store could not do with this app, over the last month", "Microsoft-Windows-AppXDeploymentServer/Operational", format!("*[System[{MONTH} and (Level=1 or Level=2 or Level=3)]]")),
     ];
     let pc = std::env::var("COMPUTERNAME").ok().filter(|n| n.chars().count() >= 3);
     let mut out = String::new();
-    for (log, ask) in asks {
-        out.push_str(&format!("== {log}: the last week, the newest first. Its times are the world's (UTC); the app's own records are in this PC's time ==\n"));
+    out.push_str("What Windows wrote down, the newest first. Its times are the world's (UTC); the app's own records are in this PC's time.\n\n");
+    for (what, log, ask) in asks {
+        // Of what the Store did, only what it did with this app
+        let ours_only = log.starts_with("Microsoft-Windows-AppX");
+        out.push_str(&format!("== {what} ==\n"));
         let Some(bytes) = said_by("wevtutil", &["qe", log, &format!("/q:{ask}"), "/f:text", EVENTS, "/rd:true"], std::time::Duration::from_secs(10)) else {
             out.push_str("Windows did not answer in time.\n\n");
             continue;
@@ -682,18 +701,32 @@ fn events() -> String {
         if let Some(pc) = &pc {
             text = replace_ignoring_case(&text, &format!(r"\b{}\b", regex::escape(pc)), "[this PC]");
         }
-        let text = events_once(&text);
+        if ours_only {
+            text = events_about(&text, "shikisha");
+        }
+        let text = events_once(&folders_out(&text));
         out.push_str(if text.trim().is_empty() { "Nothing.\n" } else { &text });
         out.push('\n');
     }
     out
 }
 
-/// The events with a run of the same one said once: a processor held back
-/// is written once for each processor, and thirty-two of them say no more
-/// than one
+/// A path as a file's name: the folders above it are where somebody keeps
+/// their work -- `D:\customers\<who>\app.exe` in the event of a program
+/// that crashed -- and the program is the file
 #[cfg_attr(not(windows), allow(dead_code))]
-fn events_once(text: &str) -> String {
+fn folders_out(text: &str) -> String {
+    static PATH: LazyLock<Regex> = LazyLock::new(|| {
+        // From a drive or a share, every folder on the way. A folder's name
+        // does not end in a space or hold a comma: words after a path do
+        Regex::new(r#"(?:\b[A-Za-z]:|\\\\[^\\\s]+\\[^\\\s]+)\\(?:[^\\/:*?"<>|\r\n,;]*[^\\/:*?"<>|\r\n,;\s]\\)*"#).expect("the path pattern does not compile")
+    });
+    PATH.replace_all(text, regex::NoExpand(r"[a folder]\")).into_owned()
+}
+
+/// The events of a log, one by one
+#[cfg_attr(not(windows), allow(dead_code))]
+fn events_apart(text: &str) -> Vec<Vec<&str>> {
     let mut blocks: Vec<Vec<&str>> = Vec::new();
     for line in text.lines() {
         match blocks.last_mut() {
@@ -701,7 +734,34 @@ fn events_once(text: &str) -> String {
             _ => blocks.push(vec![line]),
         }
     }
-    let what = |block: &[&str]| -> String { block.iter().filter(|l| l.starts_with("  Source:") || l.starts_with("  Event ID:")).cloned().collect::<Vec<_>>().join("|") };
+    blocks
+}
+
+/// Only the events that name `word`, in any case
+#[cfg_attr(not(windows), allow(dead_code))]
+fn events_about(text: &str, word: &str) -> String {
+    events_apart(text).iter().filter(|b| b.iter().any(|l| l.to_lowercase().contains(word))).map(|b| b.join("\n") + "\n").collect()
+}
+
+/// The events with a run of the same one said once: a processor held back
+/// is written once for each processor, and thirty-two of them say no more
+/// than one. The same means the same words but for their numbers -- two
+/// programs that crashed are two events, whatever number the event has
+#[cfg_attr(not(windows), allow(dead_code))]
+fn events_once(text: &str) -> String {
+    let blocks = events_apart(text);
+    let what = |block: &[&str]| -> String {
+        block
+            .iter()
+            .filter(|l| !l.starts_with("Event[") && !l.trim_start().starts_with("Date:"))
+            // The event's own number is part of what it is; the numbers in
+            // its words are which processor, which address
+            .flat_map(|l| {
+                let number = l.trim_start().starts_with("Event ID:");
+                l.chars().map(move |c| if c.is_ascii_digit() && !number { '#' } else { c }).chain(std::iter::once('\n'))
+            })
+            .collect()
+    };
     let mut out = String::new();
     let mut last: Option<(String, usize)> = None;
     let close = |out: &mut String, last: &Option<(String, usize)>| {
@@ -740,16 +800,48 @@ fn ago(meta: &std::fs::Metadata) -> String {
     }
 }
 
-/// The folders of the app's own that are told by name, and the files told
-/// by their ending: what the app put there. Anything else in a folder a
-/// person can also keep things in is counted and not named
-const OWN_FOLDERS: [&str; 12] = ["config", "data", "logs", "desks", "lang", "profiles", "bridge", "docs", "scripts", "debug", "run", "keys"];
-const OWN_ENDINGS: [&str; 10] = ["exe", "dll", "old", "cmd", "md", "txt", "json", "log", "key", "db"];
+/// The folders of the app's own that are told by name, and how the names of
+/// its own files begin: what the app put there. Anything else in a folder a
+/// person can also keep things in -- the folder a download was unpacked
+/// into, the settings folder, where a key file of any name can be put -- is
+/// counted and not named
+const OWN_FOLDERS: [&str; 14] = ["config", "data", "logs", "desks", "lang", "profiles", "bridge", "docs", "scripts", "debug", "run", "keys", "assets", "appxmetadata"];
+const OWN_FILES: [&str; 22] = [
+    "shikisha",
+    "openconsole",
+    "conpty",
+    "webview2loader",
+    "license",
+    "readme",
+    "security",
+    "third-party-notices",
+    "settings.cmd",
+    "update-and-start",
+    "start-as-new-user",
+    "config.example",
+    "secrets.example",
+    "config.json",
+    "secrets.json",
+    "ideas.json",
+    "held.json",
+    "keep.",
+    "appxmanifest",
+    "appxblockmap",
+    "appxsignature",
+    "resources.pri",
+];
 
-/// What is in a folder: each thing, how much it holds and when it changed.
-/// `all` names everything (a folder only the app writes into); otherwise
-/// only what is the app's own by its name
-fn listing(title: &str, dir: &std::path::Path, all: bool, left: &mut u64, until: std::time::Instant) -> String {
+/// Which names of a folder are told
+#[derive(Clone, Copy, PartialEq)]
+enum Told {
+    /// Only what is the app's own by its name
+    Own,
+    /// Everything: a folder only the app writes into
+    All,
+}
+
+/// What is in a folder: each thing, how much it holds and when it changed
+fn listing(title: &str, dir: &std::path::Path, told: Told, left: &mut u64, until: std::time::Instant) -> String {
     let size = crate::pressure::size;
     let mut out = format!("== {title} ==\n");
     let Ok(read) = std::fs::read_dir(dir) else {
@@ -762,8 +854,8 @@ fn listing(title: &str, dir: &std::path::Path, all: bool, left: &mut u64, until:
         let Ok(meta) = std::fs::symlink_metadata(e.path()) else { continue };
         let name = e.file_name().to_string_lossy().into_owned();
         let is_dir = meta.is_dir();
-        let ending = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
-        let named = all || if is_dir { OWN_FOLDERS.contains(&name.as_str()) } else { OWN_ENDINGS.contains(&ending.as_str()) };
+        let lower = name.to_lowercase();
+        let named = told == Told::All || if is_dir { OWN_FOLDERS.contains(&lower.as_str()) } else { OWN_FILES.iter().any(|own| lower.starts_with(own)) };
         let (bytes, what) = if meta.file_type().is_symlink() {
             (0, "a link".to_string())
         } else if is_dir {
@@ -803,17 +895,19 @@ fn listing(title: &str, dir: &std::path::Path, all: bool, left: &mut u64, until:
 fn inventory() -> String {
     let (mut left, until) = (FILES_MOST / 2, std::time::Instant::now() + COUNT_FOR);
     let root = crate::config::root_dir();
-    let mut out = listing("the app's folder", &root, false, &mut left, until);
-    for part in ["config", "data", "logs"] {
-        out.push_str(&listing(&format!("the app's folder: {part}"), &root.join(part), true, &mut left, until));
+    let mut out = listing("the app's folder", &root, Told::Own, &mut left, until);
+    // The settings folder is one a person puts files into; the data and the
+    // logs are written by the app alone
+    for (part, told) in [("config", Told::Own), ("data", Told::All), ("logs", Told::All)] {
+        out.push_str(&listing(&format!("the app's folder: {part}"), &root.join(part), told, &mut left, until));
     }
     let program = crate::config::exe_dir();
     if program != root {
-        out.push_str(&listing("the program's folder", &program, false, &mut left, until));
+        out.push_str(&listing("the program's folder", &program, Told::Own, &mut left, until));
     }
     if let Ok(home) = crate::localkeep::home() {
-        out.push_str(&listing("the resident process's folder", &home, false, &mut left, until));
-        out.push_str(&listing("the resident process's folder: run", &home.join("run"), false, &mut left, until));
+        out.push_str(&listing("the resident process's folder", &home, Told::Own, &mut left, until));
+        out.push_str(&listing("the resident process's folder: run", &home.join("run"), Told::Own, &mut left, until));
     }
     out
 }
@@ -822,16 +916,43 @@ fn inventory() -> String {
 /// offers, never something a person typed
 const CHOICES: [&str; 11] = ["theme", "access", "language", "ai", "kind", "mode", "engine", "how", "shell", "type", "state"];
 
+/// The settings that are lists by name: what each is filed under is a name
+/// a person chose -- a folder, a machine, a provider, a key -- and is not
+/// said. Every setting of that kind in `crate::config` is here (a test
+/// reads the settings' own source to see that it is)
+const BY_NAME: [&str; 16] = [
+    "folder_colors",
+    "server_marks",
+    "side_panels",
+    "providers",
+    "sign_in_labels",
+    "agreed",
+    "agent_hooks",
+    "worktree_trust",
+    "far_hooks",
+    "hotkeys",
+    "headers",
+    "tokens",
+    "descriptions",
+    "meta",
+    "notify",
+    "binds",
+];
+
 /// The shape of the settings: every setting by its name, a switch or a
 /// number as it is set, and anything a person typed -- a name, a folder, a
 /// prompt, a key -- only as "text" and how long it is. Which switches are on
-/// is what a fault most often turns on, and what was typed is nobody's to read
-fn shape(v: &serde_json::Value, key: &str, depth: usize, out: &mut String) {
+/// is what a fault most often turns on, and what was typed is nobody's to
+/// read. `named` says the key itself is a name a person chose
+fn shape(v: &serde_json::Value, key: &str, named: bool, depth: usize, out: &mut String) {
     use serde_json::Value;
     let pad = "  ".repeat(depth);
+    // What is filed under this one is filed by name when the setting is a
+    // list by name -- or is such a list's own list of words
+    let by_name = BY_NAME.contains(&key) || (named && v.as_object().is_some_and(|o| o.values().all(Value::is_string)));
     // A name the app gave is small letters and underscores; anything else
     // may be a name a person gave
-    let plain = !key.is_empty() && key.len() <= 40 && key.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+    let plain = !named && !key.is_empty() && key.len() <= 40 && key.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
     let key = if plain || key.starts_with('#') { key } else { "(a name)" };
     match v {
         Value::Null => out.push_str(&format!("{pad}{key}: not set\n")),
@@ -849,7 +970,7 @@ fn shape(v: &serde_json::Value, key: &str, depth: usize, out: &mut String) {
             if depth < 6 {
                 for (i, item) in a.iter().take(30).enumerate() {
                     if item.is_object() || item.is_array() {
-                        shape(item, &format!("#{}", i + 1), depth + 1, out);
+                        shape(item, &format!("#{}", i + 1), false, depth + 1, out);
                     }
                 }
             }
@@ -859,7 +980,7 @@ fn shape(v: &serde_json::Value, key: &str, depth: usize, out: &mut String) {
             if depth < 6 {
                 // A line beginning `//` is a note to the person reading the file
                 for (k, item) in o.iter().filter(|(k, _)| !k.starts_with("//")) {
-                    shape(item, k, depth + 1, out);
+                    shape(item, k, by_name, depth + 1, out);
                 }
             }
         }
@@ -872,13 +993,19 @@ fn settings() -> String {
     let Ok(text) = std::fs::read_to_string(crate::config::config_file_path()) else { return "there is no settings file\n".into() };
     let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else { return "the settings file does not read as settings\n".into() };
     let mut out = String::new();
-    shape(&v, "settings", 0, &mut out);
+    shape(&v, "settings", false, 0, &mut out);
     if out.len() > ROOM {
         let cut = (0..=ROOM).rev().find(|i| out.is_char_boundary(*i)).unwrap_or(0);
         out.truncate(cut);
         out.push_str("\n(the rest is left out)\n");
     }
     out
+}
+
+/// Whether a program of that name is on the PATH this process has
+fn on_path(name: &str) -> bool {
+    let endings: &[&str] = if cfg!(windows) { &[".exe", ".cmd", ".bat", ".ps1", ".com"] } else { &[""] };
+    std::env::var_os("PATH").is_some_and(|path| std::env::split_paths(&path).any(|dir| endings.iter().any(|e| dir.join(format!("{name}{e}")).is_file())))
 }
 
 /// How many minutes this PC's clock is ahead of the world's (UTC)
@@ -957,7 +1084,53 @@ fn machine(git: Option<String>) -> String {
         .find_map(|(hive, key)| winreg::RegKey::predef(hive).open_subkey(key).ok()?.get_value::<String, _>("pv").ok())
         .filter(|v| !v.is_empty() && v != "0.0.0.0");
         line("the browser the window is drawn with (WebView2)", version.unwrap_or_else(|| "not found".into()));
+        // What Windows is set to that decides whether a program starts, a
+        // long path can be removed, or a file is read while it is written
+        let machine = winreg::RegKey::predef(winreg::enums::HKEY_LOCAL_MACHINE);
+        let number = |key: &str, name: &str| machine.open_subkey(key).ok()?.get_value::<u32, _>(name).ok();
+        line(
+            "paths longer than 260 letters",
+            match number(r"SYSTEM\CurrentControlSet\Control\FileSystem", "LongPathsEnabled") {
+                Some(1) => "allowed".into(),
+                Some(_) => "not allowed".into(),
+                None => "Windows does not say".into(),
+            },
+        );
+        // It stops programs it does not know from starting, a new build of
+        // this app among them
+        line(
+            "Smart App Control",
+            match number(r"SYSTEM\CurrentControlSet\Control\CI\Policy", "VerifiedAndReputablePolicyState") {
+                Some(0) => "off".into(),
+                Some(1) => "on".into(),
+                Some(2) => "evaluating".into(),
+                Some(other) => format!("state {other}"),
+                None => "Windows does not say".into(),
+            },
+        );
+        line(
+            "the virus scanner Windows comes with, as files are opened",
+            match number(r"SOFTWARE\Microsoft\Windows Defender\Real-Time Protection", "DisableRealtimeMonitoring") {
+                Some(1) => "turned off".into(),
+                Some(_) => "on".into(),
+                None => "not turned off here (another scanner may have taken its place)".into(),
+            },
+        );
+        // SAFETY: plain questions of the system
+        let (acp, oem) = unsafe { (windows_sys::Win32::Globalization::GetACP(), windows_sys::Win32::Globalization::GetOEMCP()) };
+        line("letters programs are read in (code pages)", format!("{acp} for windows, {oem} for consoles"));
+        use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CMONITORS, SM_CXSCREEN, SM_CXVIRTUALSCREEN, SM_CYSCREEN, SM_CYVIRTUALSCREEN};
+        // SAFETY: the same
+        let (screens, w, h, all_w, all_h) = unsafe { (GetSystemMetrics(SM_CMONITORS), GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN), GetSystemMetrics(SM_CXVIRTUALSCREEN), GetSystemMetrics(SM_CYVIRTUALSCREEN)) };
+        line("screens", format!("{screens}; the main one {w} x {h}, all of them together {all_w} x {all_h} (as this program sees them)"));
     }
+    // The programs the app starts for a person, as the app would find them:
+    // found or not, never where
+    let found: Vec<String> = ["git", "node", "claude", "codex", "gemini", "gh", "pwsh", "powershell", "wsl", "ssh"]
+        .iter()
+        .map(|name| format!("{name} {}", if on_path(name) { "yes" } else { "no" }))
+        .collect();
+    line("found on the PATH the app was started with", found.join(", "));
     line("git", git.map(|g| g.trim().to_string()).filter(|g| !g.is_empty()).unwrap_or_else(|| "did not answer".into()));
     // What is set around the app, by name only: a proxy changes every
     // connection it makes, and its address is not for a report
@@ -986,9 +1159,11 @@ pub fn bundle() -> Result<(String, Vec<u8>, usize)> {
     use std::time::Duration;
     let known = known_keys();
     let mut hid = 0;
-    // What takes a while is begun at once, side by side
+    // The moment first and by itself: counting the folders works the disk,
+    // and measured beside it that work would be told as the machine's trouble
+    let moment = later("now", now).recv_timeout(NOW_OVER + Duration::from_secs(20)).ok();
+    // Then what takes a while, side by side
     let storage = later("storage", storage);
-    let moment = later("now", now);
     let windows = later("events", events);
     let on_disk = later("files", inventory);
     let git = later("git", || said_by("git", &["--version"], Duration::from_secs(5)).map(|b| console_text(&b)));
@@ -1005,8 +1180,13 @@ pub fn bundle() -> Result<(String, Vec<u8>, usize)> {
         Some(all[all.len().saturating_sub(lines)..].join("\n")).filter(|t| !t.trim().is_empty())
     };
     let logs = crate::config::logs_dir();
-    let hooks = log(logs.join("hooks.log"), LOG_LINES);
-    let moment = moment.recv_timeout(NOW_OVER + Duration::from_secs(20)).ok();
+    // Hidden before it is read for the first page: what the first page
+    // quotes of it has to be what a person may read
+    let hooks = log(logs.join("hooks.log"), LOG_LINES).map(|text| {
+        let (text, n) = hidden(&text, &known);
+        hid += n;
+        text
+    });
     let mut first = String::from("What this report comes to, read for whoever opens it. The files beside this one are what it was read from.\n\n");
     if let Some((_, look, top)) = &moment {
         first.push_str(&crate::findings::of_now(look, top));
@@ -1251,9 +1431,16 @@ mod tests {
             "desks": [{"name": "Acme shop", "file": "desks/acme.json", "auto": true}],
             "Acme Corp": {"token": "s3cr3t-value"},
             "language": "A Sentence Somebody Typed",
+            // Lists by name: what they are filed under is somebody's word,
+            // small letters or not
+            "providers": {"acme": {"kind": "openai", "stream": true}},
+            "far_hooks": {"nas": {"claude": "yes"}},
         });
         let mut said = String::new();
-        shape(&v, "settings", 0, &mut said);
+        shape(&v, "settings", false, 0, &mut said);
+        assert!(said.contains("providers:\n    (a name):\n      kind: openai\n      stream: true"), "{said}");
+        assert!(said.contains("far_hooks:\n    (a name):\n      (a name): text, 3 letters"), "{said}");
+        assert!(!said.contains("nas") && !said.contains("claude"), "{said}");
         for kept in ["keep_terminals: false", "max_chain: 4", "theme: dark", "font: text, 13 letters", "desks: 1 of them", "#1:", "auto: true", "name: text, 9 letters", "language: text, 25 letters"] {
             assert!(said.contains(kept), "{kept} is not in:\n{said}");
         }
@@ -1266,10 +1453,39 @@ mod tests {
     /// A run of the same event is said once, with how many more there were
     #[test]
     fn a_run_of_the_same_event_is_said_once() {
-        let one = |n: u32, id: u32| format!("Event[{n}]\n  Source: Kernel-Processor-Power\n  Event ID: {id}\n  Description:\nprocessor {n} is held back\n\n");
+        let one = |n: u32, id: u32| format!("Event[{n}]\n  Source: Kernel-Processor-Power\n  Date: 2026-11-1{n}\n  Event ID: {id}\n  Description:\nprocessor {n} is held back\n\n");
         let said = events_once(&format!("{}{}{}{}", one(0, 37), one(1, 37), one(2, 37), one(3, 41)));
         assert_eq!(said.matches("Event[").count(), 2, "{said}");
         assert!(said.contains("processor 0 is held back") && said.contains("(the same event 2 more times before it)") && said.contains("processor 3"), "{said}");
+        // Two programs that crashed are two events, though the event has one number
+        let crash = |who: &str| format!("Event[0]\n  Source: Application Error\n  Event ID: 1000\n  Description:\nFaulting application name: {who}\n\n");
+        let said = events_once(&format!("{}{}", crash("SHIKISHA-TERM.exe"), crash("other.exe")));
+        assert!(said.contains("SHIKISHA-TERM.exe") && said.contains("other.exe") && !said.contains("the same event"), "{said}");
+        // ...and of what the Store did, only what names this app is kept
+        let store = format!("{}{}", crash("the package SHIKISHA-TERM_0.31.0.0 could not be registered"), crash("the package of another app"));
+        let ours = events_about(&store, "shikisha");
+        assert!(ours.contains("could not be registered") && !ours.contains("another app"), "{ours}");
+    }
+
+    /// A path in what Windows wrote is told by its file: the folders above
+    /// it are where somebody keeps their work
+    #[test]
+    fn a_path_is_told_by_its_file() {
+        let said = folders_out(r"Faulting application path: D:\customers\acme\app.exe and C:\Program Files\Some App\helper.dll, on \\nas01\projects\shop\tool.exe; version 1:2");
+        assert_eq!(said, r"Faulting application path: [a folder]\app.exe and [a folder]\helper.dll, on [a folder]\tool.exe; version 1:2");
+    }
+
+    /// Every setting that is a list by name is known as one: a new one that
+    /// is not would have its names -- a customer's, a machine's -- in the report
+    #[test]
+    fn every_setting_filed_by_name_is_known_as_one() {
+        let source = include_str!("config.rs");
+        let filed = Regex::new(r"pub (\w+): (?:Option<)?std::collections::(?:HashMap|BTreeMap)<String").unwrap();
+        let found: Vec<&str> = filed.captures_iter(source).map(|c| c.get(1).unwrap().as_str()).collect();
+        assert!(found.len() >= 10, "the settings' lists by name were not found in their source: {found:?}");
+        for name in found {
+            assert!(BY_NAME.contains(&name), "the setting {name} is a list by name and is not in BY_NAME: its names would be in a report");
+        }
     }
 
     /// What a console program printed is read in the letters it was printed in
@@ -1291,12 +1507,16 @@ mod tests {
         std::fs::create_dir_all(dir.join("acme-shop")).unwrap();
         std::fs::write(dir.join("logs/hooks.log"), [0u8; 3000]).unwrap();
         std::fs::write(dir.join("acme-shop/offer.docx"), [0u8; 5000]).unwrap();
-        std::fs::write(dir.join("app.exe"), [0u8; 10]).unwrap();
+        std::fs::write(dir.join("SHIKISHA-TERM.exe"), [0u8; 10]).unwrap();
+        // Beside a download unpacked into a folder of somebody's own, and a
+        // key file of their own naming
+        std::fs::write(dir.join("acme-merger-plan.txt"), [0u8; 10]).unwrap();
+        std::fs::write(dir.join("acme-secrets.json"), [0u8; 10]).unwrap();
         let far = std::time::Instant::now() + std::time::Duration::from_secs(60);
-        let said = listing("a folder", &dir, false, &mut 1000, far);
-        assert!(said.contains("logs/") && said.contains("in 1 files") && said.contains("app.exe"), "{said}");
-        assert!(!said.contains("acme") && said.contains("(1 more that are not the app's own"), "{said}");
-        let all = listing("a folder", &dir, true, &mut 1000, far);
+        let said = listing("a folder", &dir, Told::Own, &mut 1000, far);
+        assert!(said.contains("logs/") && said.contains("in 1 files") && said.contains("SHIKISHA-TERM.exe"), "{said}");
+        assert!(!said.contains("acme") && said.contains("(3 more that are not the app's own"), "{said}");
+        let all = listing("a folder", &dir, Told::All, &mut 1000, far);
         assert!(all.contains("acme-shop/"), "{all}");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1327,7 +1547,8 @@ mod tests {
         assert!(now.contains("every program, the copies of one together") && now.contains("this app and what it started, one by one"), "{now}");
         let me = std::env::current_exe().unwrap().file_stem().unwrap().to_string_lossy().into_owned();
         assert!(now.lines().any(|l| l.starts_with("* ") && l.contains(&me[..me.len().min(20)])), "this program is not marked among them:\n{now}");
-        assert!(read(&mut zip, "about.txt").contains("the machine has been up: "));
+        let about = read(&mut zip, "about.txt");
+        assert!(about.contains("the machine has been up: ") && about.contains("found on the PATH the app was started with: git "), "{about}");
         assert!(read(&mut zip, "files.txt").contains("== the app's folder =="));
         let _ = read(&mut zip, "settings.txt");
     }

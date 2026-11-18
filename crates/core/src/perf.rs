@@ -64,24 +64,32 @@ pub fn cores() -> usize {
     sys.cpus().len().max(1)
 }
 
-/// This program's file name without its ending, as the counters name it
+/// The running copies of this very program: this process, and every other
+/// one started from the same file -- the resident process that holds this
+/// PC's terminals is one, started on its own and nobody's child. A copy of
+/// the app installed somewhere else is another app, and is not counted
 #[cfg(windows)]
-fn own_stem() -> String {
-    std::env::current_exe().ok().and_then(|e| e.file_stem().map(|s| s.to_string_lossy().into_owned())).unwrap_or_default()
+fn own_copies(procs: &[Proc]) -> std::collections::HashSet<u32> {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    let mut own = std::collections::HashSet::from([std::process::id()]);
+    let Ok(me) = std::env::current_exe() else { return own };
+    let stem = me.file_stem().map(|s| s.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let same = |p: &std::path::Path| p.to_string_lossy().to_lowercase() == me.to_string_lossy().to_lowercase();
+    // Only the few that carry this program's name are opened to be asked
+    let named: Vec<Pid> = procs.iter().filter(|p| p.name.to_lowercase() == stem).map(|p| Pid::from_u32(p.pid)).collect();
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(ProcessesToUpdate::Some(&named), true, ProcessRefreshKind::nothing().with_exe(UpdateKind::Always));
+    own.extend(named.iter().filter(|pid| sys.process(**pid).and_then(|p| p.exe()).is_some_and(same)).map(|pid| pid.as_u32()));
+    own
 }
 
-/// Mark this app's own: every copy of this program, and whatever they
-/// started, however far down. A program's parent is known by a number the
-/// system hands out again once the parent is gone, so one that is younger
-/// than its "child" is somebody else
-pub fn mark_ours(procs: &mut [Proc], own: &str) {
-    let stem = |n: &str| n.strip_suffix(".exe").unwrap_or(n).to_ascii_lowercase();
-    let own = stem(own);
-    if own.is_empty() {
-        return;
-    }
+/// Mark this app's own: the copies of this program (`own`, by their
+/// numbers) and whatever they started, however far down. A program's parent
+/// is known by a number the system hands out again once the parent is gone,
+/// so one that is younger than its "child" is somebody else
+pub fn mark_ours(procs: &mut [Proc], own: &std::collections::HashSet<u32>) {
     for p in procs.iter_mut() {
-        p.ours = stem(&p.name) == own;
+        p.ours = own.contains(&p.pid);
     }
     loop {
         let parents: std::collections::HashMap<u32, u64> = procs.iter().filter(|p| p.ours).map(|p| (p.pid, p.age)).collect();
@@ -228,6 +236,12 @@ mod counters {
 
     /// The counters that say what each program is using
     pub struct Programs {
+        /// Whether each process has a name of its own ("chrome:1234"), as
+        /// Windows 11 gives them. Before it, the copies of one program are
+        /// numbered in the order they stand in ("chrome#3"), and when one of
+        /// them ends the others move up: what a number named at the first
+        /// look is another process at the second
+        apart: bool,
         pid: Option<Counter>,
         parent: Option<Counter>,
         cpu: Option<Counter>,
@@ -241,9 +255,12 @@ mod counters {
 
     impl Programs {
         pub fn on(q: &Query) -> Programs {
-            let of = |what: &str| q.add(&format!(r"\Process(*)\{what}"));
+            let apart = q.add(r"\Process V2(*)\Process ID");
+            let set = if apart.is_some() { "Process V2" } else { "Process" };
+            let of = |what: &str| q.add(&format!(r"\{set}(*)\{what}"));
             Programs {
-                pid: of("ID Process"),
+                apart: apart.is_some(),
+                pid: apart.or_else(|| of("ID Process")),
                 parent: of("Creating Process ID"),
                 cpu: of("% Processor Time"),
                 memory: of("Working Set - Private"),
@@ -255,8 +272,23 @@ mod counters {
             }
         }
 
-        pub fn read(&self, cores: f32) -> Vec<Proc> {
+        /// The processes there are now, by name and number
+        pub fn seen(&self) -> Vec<(String, f64)> {
+            many(self.pid)
+        }
+
+        /// What each program used between two looks; `before` is what
+        /// `seen` answered at the first. A process that was not the same
+        /// one at both has nothing to be measured against: what it used of
+        /// the processors and the disk is left at nothing, not worked out
+        /// from another process's count
+        pub fn read(&self, cores: f32, before: &[(String, f64)]) -> Vec<Proc> {
             let ids = many(self.pid);
+            let known: std::collections::HashSet<(&str, u64)> = before.iter().map(|(n, p)| (n.as_str(), *p as u64)).collect();
+            let steady = |i: usize| match self.apart {
+                true => known.contains(&(ids[i].0.as_str(), ids[i].1 as u64)),
+                false => before.get(i).is_some_and(|was| was.0 == ids[i].0 && was.1 as u64 == ids[i].1 as u64),
+            };
             // The same programs in the same order under every counter of one
             // look; one that is not is left at nothing rather than given
             // another program's number
@@ -269,17 +301,25 @@ mod counters {
             let (disk, threads, handles, age) = (beside(self.disk), beside(self.threads), beside(self.handles), beside(self.age));
             ids.iter()
                 .enumerate()
+                .map(|(i, (name, pid))| {
+                    // Copies of one program are told apart by what comes
+                    // after a `:` or a `#`
+                    let name = match self.apart {
+                        true => name.rsplit_once(':').map_or(name.as_str(), |(n, _)| n),
+                        false => name.split('#').next().unwrap_or(name),
+                    };
+                    (i, name.to_string(), *pid)
+                })
                 // The sum of them all, and the time nobody used, are not programs
-                .filter(|(_, (name, _))| name != "_Total" && name != "Idle")
-                .map(|(i, (name, pid))| Proc {
-                    // Copies of one program are told apart by a number after a `#`
-                    name: name.split('#').next().unwrap_or(name).to_string(),
-                    pid: *pid as u32,
+                .filter(|(_, name, _)| !name.eq_ignore_ascii_case("_Total") && !name.eq_ignore_ascii_case("Idle"))
+                .map(|(i, name, pid)| Proc {
+                    name,
+                    pid: pid as u32,
                     parent: parent(i) as u32,
-                    cpu: (cpu(i).max(0.0) as f32) / cores,
+                    cpu: if steady(i) { (cpu(i).max(0.0) as f32) / cores } else { 0.0 },
                     memory: memory(i).max(0.0) as u64,
                     commit: commit(i).max(0.0) as u64,
-                    disk: disk(i).max(0.0) as u64,
+                    disk: if steady(i) { disk(i).max(0.0) as u64 } else { 0 },
                     threads: threads(i) as u32,
                     handles: handles(i) as u32,
                     age: age(i).max(0.0) as u64,
@@ -331,12 +371,14 @@ pub fn sample(over: Duration) -> (Rates, Vec<Proc>) {
     let Some(q) = counters::Query::open() else { return Default::default() };
     let (machine, programs) = (counters::Machine::on(&q), counters::Programs::on(&q));
     q.collect();
+    let before = programs.seen();
     std::thread::sleep(over);
     if !q.collect() {
         return Default::default();
     }
-    let mut procs = programs.read(cores() as f32);
-    mark_ours(&mut procs, &own_stem());
+    let mut procs = programs.read(cores() as f32, &before);
+    let own = own_copies(&procs);
+    mark_ours(&mut procs, &own);
     (machine.read(), procs)
 }
 
@@ -354,6 +396,10 @@ pub fn sample(over: Duration) -> (Rates, Vec<Proc>) {
     let over = over.max(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
     std::thread::sleep(over);
     sys.refresh_processes_specifics(ProcessesToUpdate::All, true, kind);
+    // The copies of this very program: the ones started from its file
+    let me = std::env::current_exe().ok();
+    let mut own = std::collections::HashSet::from([std::process::id()]);
+    own.extend(sys.processes().values().filter(|p| me.is_some() && p.exe() == me.as_deref()).map(|p| p.pid().as_u32()));
     let mut procs: Vec<Proc> = sys
         .processes()
         .values()
@@ -375,7 +421,6 @@ pub fn sample(over: Duration) -> (Rates, Vec<Proc>) {
             }
         })
         .collect();
-    let own = std::env::current_exe().ok().and_then(|e| e.file_name().map(|n| n.to_string_lossy().into_owned())).unwrap_or_default();
     mark_ours(&mut procs, &own);
     (Rates::default(), procs)
 }
@@ -464,11 +509,16 @@ mod tests {
             p("browser", 20, 1, 900),
             // Older than the program whose number it names as its parent
             p("stranger", 21, 11, 800),
-            p("APP.exe", 30, 1, 100),
+            // The resident process: a copy of the program, and nobody's child
+            p("app", 30, 1, 100),
+            p("held shell", 31, 30, 90),
+            // The same app installed somewhere else, and what it started
+            p("app", 40, 1, 700),
+            p("its shell", 41, 40, 600),
         ];
-        mark_ours(&mut all, "app");
+        mark_ours(&mut all, &std::collections::HashSet::from([10, 30]));
         let ours: Vec<&str> = all.iter().filter(|p| p.ours).map(|p| p.name.as_str()).collect();
-        assert_eq!(ours, ["app", "shell", "node", "APP.exe"]);
+        assert_eq!(ours, ["app", "shell", "node", "app", "held shell"]);
     }
 
     /// Every program on the machine is seen, this one among them and marked
@@ -495,7 +545,8 @@ mod tests {
         {
             assert!(rates.cpu.is_some() && rates.busy.is_some() && rates.paged.is_some(), "{rates:?}");
             // The system's own process, which no program may open, is read too
-            assert!(procs.iter().any(|p| p.name == "System"), "the system itself is not among them");
+            assert!(procs.iter().any(|p| p.name.eq_ignore_ascii_case("System")), "the system itself is not among them");
+            assert!(!procs.iter().any(|p| p.name.contains(':') || p.name.contains('#')), "a program is named with its number");
         }
         let _ = rates;
         #[cfg(any(windows, target_os = "linux"))]

@@ -117,6 +117,11 @@ pub fn take_late() -> [u64; 2] {
     [LATE[0].swap(0, Ordering::SeqCst), LATE[1].swap(0, Ordering::SeqCst)]
 }
 
+/// The same, left where it is for whoever takes it
+pub fn late_so_far() -> [u64; 2] {
+    [LATE[0].load(Ordering::SeqCst), LATE[1].load(Ordering::SeqCst)]
+}
+
 /// A part says it is alive, from its own thread
 pub fn beat(part: Part) {
     MINE.with(|m| m.set(Some(part)));
