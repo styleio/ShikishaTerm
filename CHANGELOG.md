@@ -22,8 +22,14 @@ once it reaches its first tagged release.
   the records cannot say. The week's record (`logs/health.log`) notes a few
   more numbers a line -- how busy the disk was, how much memory was being
   read back from it, how much of the machine this app and what it started
-  were using -- and stays as small as it was. What you typed into the
-  settings, the PC's name and who is logged in are never in the zip.
+  were using -- and stays as small as it was.
+- **Less of you in the saved diagnostics.** The names of your desks,
+  folders, tabs and machines, and the branch each folder is on, are put as
+  numbers in every file of the zip ("[desk 1]", "[folder 2]", the same
+  numbers `storage.txt` uses). A path is told by no more than its file, and
+  only when the file is a program or one of the app's own. What you typed
+  into the settings, the PC's name and who is logged in are never in it.
+  The message shown after saving says what can still be there.
 
 ### Fixed
 - **Removing a large folder no longer has a second program walking it the
