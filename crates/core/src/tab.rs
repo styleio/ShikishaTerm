@@ -4059,6 +4059,12 @@ pub enum SessionSource {
 }
 
 impl Session {
+    /// Known for a fact: the CLI's hook said it, or this app launched the CLI
+    /// with it. Not a match made in the CLI's records, which may be out of date
+    pub fn known(&self) -> bool {
+        matches!(self.source, SessionSource::Hook | SessionSource::Minted)
+    }
+
     /// How the id is written down where a person might see it. Never the id
     /// itself: it names a conversation, and a log is not the place for it.
     ///
@@ -6664,22 +6670,27 @@ impl Tab {
     /// tab is doing. Not known (no conversation said, or none heard of the
     /// tab): it is
     pub fn is_its_conversation(&self, conversation: Option<&str>) -> bool {
-        match (conversation, self.session.as_ref()) {
-            (Some(c), Some(s)) if s.source == SessionSource::Hook => s.id == c,
+        match (conversation, self.session.as_ref().filter(|s| s.known())) {
+            (Some(c), Some(s)) => s.id == c,
             _ => true,
         }
     }
 
+    /// A turn of the tab's own is running: at work, or waiting on a person's
+    /// answer to something it asked in the middle of it -- a run it started
+    /// may come up while it waits
     fn another_mid_turn(&self, id: &str) -> bool {
-        self.session.as_ref().is_some_and(|s| s.source == SessionSource::Hook && s.id != id)
-            && self.hook_word() == Some(TabState::Busy)
+        self.session.as_ref().is_some_and(|s| s.known() && s.id != id)
+            && matches!(self.hook_word(), Some(TabState::Busy | TabState::Question))
     }
 
     /// The tab's AI asked the person `count` questions in the call `call`,
     /// and went on working
     /// `sent_ms` is when the hook said it (0: not said)
     pub fn asked_aside(&mut self, call: &str, count: usize, sent_ms: u64) {
-        if call.is_empty() || count == 0 || (sent_ms != 0 && sent_ms < self.left_behind_ms) {
+        // Said no later than a message that left the questions behind: the
+        // message is taken to have come after it, either way they arrive
+        if call.is_empty() || count == 0 || (sent_ms != 0 && sent_ms <= self.left_behind_ms) {
             return;
         }
         self.open_asks.retain(|(c, _, _)| c != call);
@@ -7640,6 +7651,18 @@ mod nested_conversations {
         assert!(t.hook_says(TabState::Done, now + 50));
         assert!(t.hears_session("person-picked", false));
         t.session = Some(Session { id: "person-picked".into(), source: SessionSource::Hook });
+        // A run that comes up while the tab waits on a question it asked in
+        // the middle of its turn is a run
+        assert!(t.hook_says(TabState::Busy, now + 52));
+        assert!(t.hook_says(TabState::Question, now + 54));
+        assert!(!t.hears_session("background-run", true), "a run that started while the tab waited was taken for its conversation");
+        assert!(t.hook_says(TabState::Done, now + 56));
+        // A conversation the app launched the CLI with is known as well as one
+        // its hook named
+        let launched = Session { id: "launched".into(), source: SessionSource::Minted };
+        let before = t.session.replace(launched);
+        assert!(!t.is_its_conversation(Some("side-1")) && t.is_its_conversation(Some("launched")));
+        t.session = before;
         // A run whose first turn is heard once the tab's own is over is still
         // a run: nothing but the tab's own start makes a conversation its own
         assert!(t.hook_says(TabState::Busy, now + 60));
@@ -7699,6 +7722,15 @@ mod nested_conversations {
         assert!(t.asks_open(), "a message sent before the question left it behind");
         t.heard_prompt("a new message", now + 1600);
         assert!(!t.asks_open());
+        // A question and a message said in the same millisecond come out the
+        // same whichever arrives first
+        t.asked_aside("call_10_1", 1, now + 1700);
+        t.heard_prompt("at the same moment", now + 1700);
+        let first = t.asks_open();
+        t.heard_prompt("then again", now + 1800);
+        t.heard_prompt("at the same moment", now + 1900);
+        t.asked_aside("call_11_1", 1, now + 1900);
+        assert_eq!((first, t.asks_open()), (false, false));
         // So does the end of the turn
         t.asked_aside("call_5_1", 1, 0);
         assert!(t.hook_says(TabState::Done, now + 10));
