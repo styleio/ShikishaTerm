@@ -117,6 +117,12 @@ once it reaches its first tagged release.
   AI, and the notice when its review comes back all go to that repository.
   Opening it shows it on GitHub. Bringing its base in from the git column
   is not offered for it: the checkout's own base is not its base.
+- **Removing a folder inside a worktree no longer deletes its files.** A
+  folder opened on the desk from inside a worktree was taken for the
+  worktree when it was removed; git refused it, the refusal was read as git
+  having got part of the way, and the folder was then deleted file by file.
+  It is now refused, with words saying to remove the worktree's own folder.
+  The same is checked on a server.
 
 ## [0.31.0] - 2026-11-17
 

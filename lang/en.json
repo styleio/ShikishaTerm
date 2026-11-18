@@ -3343,6 +3343,7 @@
   "err.inherit.unreadable": "The assistant AI's answer could not be read as a proposal. Ask again.",
   "err.worktree.no_desk": "No desk by that name.",
   "err.worktree.last_folder": "This is the only folder left, so it stays.",
+  "err.worktree.inside": "This folder is inside a worktree, not the worktree itself. Remove the worktree's own folder; this one goes with it.",
   "err.worktree.not_a_branch": "This is the project's own folder, not a branch cut from it.",
   "err.worktree.left": "{path} could not be deleted: {why}",
   "err.worktree.still_there": "{path} is still there",

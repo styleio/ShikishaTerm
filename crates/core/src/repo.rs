@@ -318,6 +318,15 @@ pub fn main_checkout(cwd: &Path) -> Option<PathBuf> {
 /// their git folder is: the original's *is* the shared one, and a cut branch's
 /// sits inside it. Worth telling apart because the list marks a cut branch --
 /// closing it is a different thing from closing the project
+/// Whether this folder is a worktree's own folder -- the one git made, with
+/// the worktree's `.git` file in it -- and not a folder inside one. Only
+/// the worktree's own folder is removed as a worktree: a folder inside one
+/// is no worktree git can remove, and taken for one it was deleted file by
+/// file as if git had let go of it
+pub fn is_worktree_top(cwd: &Path) -> bool {
+    cwd.join(".git").is_file() && is_linked(cwd)
+}
+
 pub fn is_linked(cwd: &Path) -> bool {
     match (git_dir(cwd), family_of(cwd)) {
         // Both through the same spelling, or a checkout reached by a short path

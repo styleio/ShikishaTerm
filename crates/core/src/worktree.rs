@@ -2097,7 +2097,12 @@ fn discard_step(folder: &Path, released: &mut bool, approved: Option<&str>) -> R
     if !folder.exists() {
         return Ok(());
     }
-    if crate::repo::is_linked(folder) {
+    // A folder inside a worktree is not one: git refuses it, and its
+    // refusal must not be read as git having got part of the way
+    if crate::repo::is_linked(folder) && !crate::repo::is_worktree_top(folder) && !*released {
+        bail!(crate::i18n::t("err.worktree.inside"));
+    }
+    if crate::repo::is_worktree_top(folder) {
         let force = ready_to_discard_reviewed(folder, approved)?;
         let main = crate::repo::main_checkout(folder)
             .ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.worktree.not_a_repo")))?;
@@ -2714,6 +2719,9 @@ pub fn ready_to_discard_reviewed(folder: &Path, approved: Option<&str>) -> Resul
     if !folder.exists() {
         return Ok(false);
     }
+    if crate::repo::is_linked(folder) && !crate::repo::is_worktree_top(folder) {
+        bail!(crate::i18n::t("err.worktree.inside"));
+    }
     if approved.is_some() { return review::check(folder, None, approved); }
     if !crate::repo::is_linked(folder) {
         bail!(crate::i18n::t("err.worktree.not_a_branch"));
@@ -2739,7 +2747,7 @@ pub fn ready_to_discard_reviewed(folder: &Path, approved: Option<&str>) -> Resul
 /// The changes are counted the way [`ready_to_discard`] counts them, so a
 /// card that says "nothing left" offers a removal that goes through
 pub fn left_in(folder: &Path) -> Option<crate::folders::Left> {
-    if !crate::repo::is_linked(folder) {
+    if !crate::repo::is_worktree_top(folder) {
         return None;
     }
     crate::git::there(folder, None);
@@ -2889,7 +2897,9 @@ fn discard_on_server(host: &crate::config::HostSpec, folder: &str, approved: Opt
         "f={f}; [ -e \"$f\" ] || exit 0; cd \"$f\" || exit 1; \
 own=$(cd \"$(git rev-parse --git-dir 2>/dev/null || echo .)\" && pwd -P); \
 common=$(cd \"$(git rev-parse --git-common-dir 2>/dev/null || echo .)\" && pwd -P); \
+here=$(pwd -P); top=$(cd \"$(git rev-parse --show-toplevel 2>/dev/null || echo .)\" && pwd -P); \
 cd /; \
+if [ \"$own\" != \"$common\" ] && [ \"$here\" != \"$top\" ]; then exit {INSIDE_A_WORKTREE}; fi; \
 if [ \"$own\" != \"$common\" ]; then git --git-dir=\"$common\" worktree remove {flag}-- \"$f\" || exit 1; \
 if [ -e \"$f\" ]; then rm -rf -- \"$f\"; fi; exit 0; fi; \
 rmdir -- \"$f\" 2>/dev/null && exit 0; exit {NOT_A_WORKTREE}"
@@ -2901,6 +2911,9 @@ rmdir -- \"$f\" 2>/dev/null && exit 0; exit {NOT_A_WORKTREE}"
     if ran.code == NOT_A_WORKTREE {
         bail!(crate::i18n::t("err.worktree.not_a_branch"));
     }
+    if ran.code == INSIDE_A_WORKTREE {
+        bail!(crate::i18n::t("err.worktree.inside"));
+    }
     bail!(crate::i18n::tp(
         "err.worktree.failed",
         &[("said", &ran.said()), ("command", &format!("git worktree remove {f}"))]
@@ -2909,6 +2922,9 @@ rmdir -- \"$f\" 2>/dev/null && exit 0; exit {NOT_A_WORKTREE}"
 
 /// The exit `discard_on_server` gives for a folder that is not a worktree
 const NOT_A_WORKTREE: i32 = 73;
+
+/// ...and for a folder inside one, which is not one either
+const INSIDE_A_WORKTREE: i32 = 74;
 
 /// How many of the changes `git status -z` lists are work that exists only in
 /// this folder.
@@ -5166,6 +5182,37 @@ tools/conpty.ps1"));
         let mut run = std::process::Command::new("git");
         run.arg("-C").arg(at).args(args);
         let _ = crate::detach_console(&mut run).output();
+    }
+
+    /// A folder inside a worktree is not a worktree: removing it is refused,
+    /// and nothing in it is deleted. Git refuses to remove it, and that
+    /// refusal was read as git having got part of the way, after which the
+    /// folder was deleted file by file
+    #[test]
+    fn a_folder_inside_a_worktree_is_not_removed_as_one() {
+        let Some(main) = real_repo("inside") else { return };
+        let wt = main.parent().unwrap().join("wt-inside");
+        git(&main, &["worktree", "add", "-q", "-b", "inside-branch", &wt.to_string_lossy()]);
+        assert!(crate::repo::is_worktree_top(&wt), "the worktree was not made");
+        let sub = wt.join("docs");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("keep.md"), "mine\n").unwrap();
+        assert!(crate::repo::is_linked(&sub) && !crate::repo::is_worktree_top(&sub));
+        let inside = crate::i18n::t("err.worktree.inside").to_string();
+        let err = ready_to_discard(&sub).unwrap_err();
+        assert_eq!(format!("{err}"), inside);
+        let err = discard(&sub).unwrap_err();
+        assert_eq!(format!("{err}"), inside);
+        assert!(sub.join("keep.md").is_file(), "a folder inside a worktree was deleted");
+        let mut released = false;
+        assert!(discard_step(&sub, &mut released, None).is_err() && !released);
+        assert!(sub.join("keep.md").is_file());
+        // The worktree's own folder still goes, with what is in it
+        git(&wt, &["add", "-A"]);
+        git(&wt, &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "docs"]);
+        discard(&wt).unwrap();
+        assert!(!wt.exists());
+        let _ = std::fs::remove_dir_all(main.parent().unwrap());
     }
 
     /// A name for work that has none yet is one git will take, and one a

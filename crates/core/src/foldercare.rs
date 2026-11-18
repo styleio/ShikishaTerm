@@ -243,6 +243,11 @@ pub fn deletion_guard(
     if primary {
         return Some("err.worktree.not_a_branch");
     }
+    // A folder inside a worktree on this PC: the worktree's own folder is the
+    // one that goes, and this one with it
+    if folder.host.is_none() && at.exists() && crate::repo::is_linked(at) && !crate::repo::is_worktree_top(at) {
+        return Some("err.worktree.inside");
+    }
     if desks.iter().any(|other| {
         other.uid != desk.uid
             && other.folders.iter().any(|f| {

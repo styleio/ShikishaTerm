@@ -3340,6 +3340,7 @@
   "err.inherit.unreadable": "アシスタント AI の答えを提案として読めませんでした。もう一度頼んでください",
   "err.worktree.no_desk": "その名前のデスクがありません",
   "err.worktree.last_folder": "最後の1つなので閉じられません",
+  "err.worktree.inside": "このフォルダーはワークツリーの中にあるフォルダーで、ワークツリーそのものではありません。ワークツリーのフォルダーを削除してください。このフォルダーも一緒に削除されます。",
   "err.worktree.not_a_branch": "これはプロジェクト本体のフォルダで、ワークツリーではありません",
   "err.worktree.left": "{path} を削除できません: {why}",
   "err.worktree.still_there": "{path} がまだ残っています",
