@@ -231,6 +231,21 @@ fn known_keys() -> Vec<String> {
         .filter_map(|f| std::fs::read_to_string(crate::config::state_path(f)).ok())
         .map(|s| s.trim().to_string())
         .collect();
+    // The app's own are beside it and are read at once. The ones a person
+    // keeps are in a file they named, which may be on a share that has
+    // stopped answering: read off to one side, and done without after a
+    // moment -- a key is still hidden by its shape, and in a log by not
+    // being a word of the app's
+    keys.extend(later("keys", kept_keys).recv_timeout(std::time::Duration::from_secs(8)).unwrap_or_default());
+    keys.retain(|k| k.chars().count() >= 6);
+    keys.sort();
+    keys.dedup();
+    keys
+}
+
+/// The keys in the settings and in the file of secrets
+fn kept_keys() -> Vec<String> {
+    let mut keys = Vec::new();
     if let Some(cfg) = crate::config::load() {
         keys.push(cfg.remote.fixed_token.trim().to_string());
         if let Some(text) = cfg.secrets_path().and_then(|p| std::fs::read_to_string(p).ok())
@@ -922,8 +937,10 @@ const OWN_STARTS: [&str; 4] = ["shikisha", "openconsole", "conpty", "webview2loa
 
 /// Whether a file's name, in small letters, is one the app gave it
 fn own_file(lower: &str) -> bool {
-    // (a tab's record in the logs is named after the tab, whatever the tab is called)
-    OWN_NAMES.contains(&lower) || (OWN_STARTS.iter().any(|own| lower.starts_with(own)) && own_words(lower))
+    // (a tab's record in the logs is named after the tab, whatever the tab
+    // is called: only a program, or what is put aside of one, is known by how it begins)
+    let program = ["exe", "dll", "old", "pdb", "lib", "cmd"].contains(&lower.rsplit_once('.').map_or("", |(_, e)| e));
+    OWN_NAMES.contains(&lower) || (program && OWN_STARTS.iter().any(|own| lower.starts_with(own)) && own_words(lower))
 }
 
 /// Which names of a folder are told
@@ -1052,7 +1069,8 @@ fn shape(v: &serde_json::Value, key: &str, named: bool, depth: usize, out: &mut 
     // A name the app gave is small letters and underscores, in words of
     // its own; anything else may be a name a person gave
     let plain = !named && !key.is_empty() && key.len() <= 40 && key.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') && own_words(key);
-    let key = if plain || key.starts_with('#') { key } else { "(a name)" };
+    let place = key.strip_prefix('#').is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()));
+    let key = if plain || place { key } else { "(a name)" };
     match v {
         Value::Null => out.push_str(&format!("{pad}{key}: not set\n")),
         Value::Bool(b) => out.push_str(&format!("{pad}{key}: {b}\n")),
@@ -1435,7 +1453,20 @@ static OWN_WORDS: LazyLock<std::collections::HashSet<&'static str>> = LazyLock::
 /// Whether a run of letters is a word of the app's own. One or two plain
 /// letters say nothing of anybody
 fn own_word(run: &str) -> bool {
-    (run.is_ascii() && run.len() <= 2) || OWN_WORDS.contains(run.to_lowercase().as_str())
+    let known = |run: &str| (run.is_ascii() && run.len() <= 2) || OWN_WORDS.contains(run.to_lowercase().as_str());
+    if known(run) {
+        return true;
+    }
+    // Words written as one with a capital at each: what a library calls the
+    // way it failed (`UnknownIssuer`). Each of them has to be known
+    let mut parts: Vec<String> = Vec::new();
+    for c in run.chars() {
+        match parts.last_mut() {
+            Some(part) if !c.is_uppercase() => part.push(c),
+            _ => parts.push(c.to_string()),
+        }
+    }
+    parts.len() > 1 && parts.iter().all(|p| p.chars().count() > 2 && known(p))
 }
 
 /// Whether every word of a name is the app's own: a name the app gave
@@ -1458,6 +1489,15 @@ fn own_words(name: &str) -> bool {
 fn others_out(text: &str) -> (String, usize) {
     // What names a thing by a number: left whole, or its letters would be taken for words
     static NUMBER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b(?:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F-]+|[0-9a-fA-F]{8,})\b").expect("the number pattern does not compile"));
+    // A letter written as its number (`\u5f35`, as JSON writes what is
+    // not plain) is read as the letter, or a name written so would pass as
+    // digits; and what is written for a link, a mark and two digits a
+    // letter, is no word at all
+    static AS_NUMBERS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\\u\{?([0-9a-fA-F]{4,6})\}?").expect("the escape pattern does not compile"));
+    static FOR_A_LINK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:%[0-9a-fA-F]{2}){2,}").expect("the link pattern does not compile"));
+    let text = AS_NUMBERS.replace_all(text, |c: &regex::Captures| u32::from_str_radix(&c[1], 16).ok().and_then(char::from_u32).map_or_else(|| c[0].to_string(), String::from));
+    let text = FOR_A_LINK.replace_all(&text, A_WORD.to_string().as_str());
+    let text: &str = &text;
     let mut out = String::with_capacity(text.len());
     let mut n = 0;
     let mut words = |piece: &str, out: &mut String| {
@@ -1815,6 +1855,7 @@ mod tests {
             "Acme Corp": {"token": "s3cr3t-value"},
             // A name a person gave in small letters, as the app's own are written
             "zorblatt_ledger": true,
+            "#zorblatt": true,
             "capabilities": {"files": {"quuxley_books": {"read": true}}},
             "language": "A Sentence Somebody Typed",
             // Lists by name: what they are filed under is somebody's word,
@@ -1910,6 +1951,10 @@ mod tests {
             "[  10.000] far terminal for 810668f8-e46b-409b-ac8b-afe984ff8d2f: to be opened on this PC once its line is up",
             "[  11.000] this PC's resident process: no line to it (~\\AppData\\Local\\ShikishaTerm\\keeper\\f81736d6f45330d2\\run\\keep.key is not there: (os error 3))",
             "[  12.000] \u{30c7}\u{30b9}\u{30af}\u{300c}\u{7d4c}\u{7406}\u{90e8}\u{300d}",
+            // A name written as the numbers of its letters, and one written for a link
+            "[  13.000] run lua result: {\"customer\":\"\\u5f35\\u4e09\"} and %E5%BC%B5%E4%B8%89",
+            // What a library calls the way it failed is made of words the app knows
+            "[  14.000] Update check: CheckFailed { message: \"invalid peer certificate: UnknownIssuer\" }",
         ]
         .join("\n");
         let (said, _) = private(&log, &[], &names, Kind::Log);
@@ -1928,6 +1973,8 @@ mod tests {
         assert!(lines[6].contains("\u{25af}@\u{25af}01:22 went; waiting for it to come back"), "{}", lines[6]);
         assert!(lines[7].starts_with("[   8.000] write_file ") && lines[7].ends_with(" (12 bytes)") && lines[7].contains('\u{25af}'), "{}", lines[7]);
         assert!(lines[8].starts_with("[   9.000] State tab2 WAIT->BUSY [\u{25af} ") && lines[8].ends_with("said=None prompted=false"), "{}", lines[8]);
+        assert!(!lines[12].contains("5f35") && !lines[12].contains("%E5") && !lines[12].contains('\u{5f35}'), "{}", lines[12]);
+        assert_eq!(lines[13], "[  14.000] Update check: CheckFailed { message: \"invalid peer certificate: UnknownIssuer\" }");
         // A number written with letters is left whole
         assert_eq!(lines[9], "[  10.000] far terminal for 810668f8-e46b-409b-ac8b-afe984ff8d2f: to be opened on this PC once its line is up");
         assert_eq!(lines[10], "[  11.000] this PC's resident process: no line to it ([a folder]\\keep.key is not there: (os error 3))");
@@ -2005,10 +2052,11 @@ mod tests {
         std::fs::write(dir.join("hooks.log"), [0u8; 10]).unwrap();
         // ...and a tab's record whose tab was called after the app
         std::fs::write(dir.join("shikisha-QuuxleyLedger-20261118.log"), [0u8; 10]).unwrap();
+        std::fs::write(dir.join("shikisha-desk-20261118.log"), [0u8; 10]).unwrap();
         let far = std::time::Instant::now() + std::time::Duration::from_secs(60);
         let said = listing("a folder", &dir, Told::Own, &mut 1000, far);
         assert!(said.contains("logs/") && said.contains("in 1 files") && said.contains("SHIKISHA-TERM.exe"), "{said}");
-        assert!(!said.contains("acme") && !said.contains("Quuxley") && said.contains("(6 more that are not the app's own") && said.contains("hooks.log"), "{said}");
+        assert!(!said.contains("acme") && !said.contains("Quuxley") && said.contains("(7 more that are not the app's own") && said.contains("hooks.log") && !said.contains("shikisha-desk"), "{said}");
         let all = listing("a folder", &dir, Told::All, &mut 1000, far);
         assert!(all.contains("acme-shop/"), "{all}");
         let _ = std::fs::remove_dir_all(&dir);

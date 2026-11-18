@@ -107,13 +107,36 @@ fn vocabulary() {
             walk(&one.path().join("src"), &mut files);
         }
     }
+    // A file of tests is one a parent names under a mark for tests, or one
+    // called so: none of what it says is what the app says
+    let texts: Vec<(PathBuf, String)> = files.into_iter().filter_map(|f| Some((f.clone(), std::fs::read_to_string(&f).ok()?))).collect();
+    let mut tests: Vec<PathBuf> = Vec::new();
+    for (file, text) in texts.iter().filter(|(f, _)| f.extension().is_some_and(|e| e == "rs")) {
+        let lines: Vec<&str> = text.lines().map(str::trim).collect();
+        for (i, line) in lines.iter().enumerate() {
+            if !for_tests(line) {
+                continue;
+            }
+            // The module it marks, past any other marks on the way
+            let Some(named) = lines[i + 1..].iter().find(|l| !l.starts_with("#[")) else { continue };
+            let named = named.trim_start_matches("pub(crate) ").trim_start_matches("pub ");
+            if let Some(name) = named.strip_prefix("mod ").and_then(|m| m.strip_suffix(';')) {
+                let beside = file.parent().unwrap_or(Path::new("."));
+                tests.push(beside.join(format!("{name}.rs")));
+                tests.push(beside.join(name));
+            }
+        }
+    }
+    let of_tests = |file: &Path| {
+        let stem = file.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        stem == "tests" || stem.ends_with("_tests") || stem.ends_with("_test") || tests.iter().any(|t| file.starts_with(t))
+    };
     let mut words = std::collections::BTreeSet::new();
-    for file in files {
+    for (file, text) in texts {
         let source = file.extension().is_some_and(|e| e == "rs");
-        if !source && file.extension().is_none_or(|e| e != "json") {
+        if (!source && file.extension().is_none_or(|e| e != "json")) || (source && of_tests(&file)) {
             continue;
         }
-        let Ok(text) = std::fs::read_to_string(&file) else { continue };
         let text = if source { built(&text) } else { text };
         let mut run = String::new();
         for c in text.chars().chain(std::iter::once(' ')) {
@@ -128,8 +151,38 @@ fn vocabulary() {
             }
         }
     }
+    // What fails underneath the app says why in words of its own: a
+    // certificate nobody vouches for, a name that does not resolve, a
+    // connection refused. They are no one's name, and without them a report
+    // says only that something failed
+    for word in UNDERNEATH.split_whitespace() {
+        words.insert(word.to_string());
+    }
+    // ...and a name the app's own texts use as an example stands for a
+    // person wherever else it is said
+    for name in ["alice", "bob", "carol", "dave", "ada", "acme"] {
+        words.remove(name);
+    }
     let out = PathBuf::from(std::env::var_os("OUT_DIR").unwrap_or_default()).join("vocabulary.txt");
     let _ = std::fs::write(out, words.into_iter().collect::<Vec<_>>().join("\n"));
+}
+
+/// The words of the systems and the libraries under the app, for when they fail
+const UNDERNEATH: &str = "\
+    access accepted address aborted alert algorithm already authentication authority bad broken buffer busy cancelled canceled certificate chain cipher closed \
+    connect connection corrupt corrupted crl decode decrypt denied digest dns eof encode encrypt encrypted error exhausted expired failed failure fatal forbidden gateway \
+    handshake host hostname illegal incomplete incorrect insufficient interrupted invalid issuer kex key length limit locked mismatch missing name network \
+    nonce not ocsp operation overflow peer permission pipe port protocol proxy quota read refused rejected remote renegotiation reset resolve resolved revoked \
+    route schannel secure server signature socket ssl status stream temporarily terminated timed timeout tls token trust trusted truncated unauthorized \
+    unavailable unexpected unknown unreachable unsupported untrusted valid verify verification version would write yet";
+
+/// Whether a mark says what follows is only there when the tests are built:
+/// `#[cfg(test)]`, or one that asks for tests among other things
+fn for_tests(mark: &str) -> bool {
+    mark.strip_prefix("#[cfg(").is_some_and(|rest| {
+        let asked = rest.split(")]").next().unwrap_or(rest);
+        asked.split(|c: char| !c.is_alphanumeric() && c != '_').any(|w| w == "test") && !asked.contains("not(test")
+    })
 }
 
 /// A source file as what is built of it: its code and what its code says,
@@ -245,10 +298,13 @@ fn built(text: &str) -> String {
             }
         }
         // What is only there when the tests are built
-        if leaving.is_none() && at(i, "#[cfg(test)]") {
-            leaving = Some((depth, false));
-            i += "#[cfg(test)]".len();
-            continue;
+        if leaving.is_none() && at(i, "#[cfg(") {
+            let mark: String = c[i..].iter().take(200).take_while(|ch| **ch != '\n').collect();
+            if for_tests(&mark) {
+                leaving = Some((depth, false));
+                i += mark.find(")]").map_or(mark.chars().count(), |end| mark[..end].chars().count() + 2);
+                continue;
+            }
         }
         match c[i] {
             '{' => {

@@ -573,7 +573,7 @@ impl Capabilities {
             std::fs::create_dir_all(d)?;
         }
         crate::crypto::write_atomic(&p, data)?;
-        crate::append_hook_log(&format!("write_file {name}/{rel} ({} bytes)", data.len()));
+        crate::append_hook_log(&format!("write_file {} ({} bytes)", crate::runtime::log_words(&format!("{name}/{rel}"), 200), data.len()));
         Ok(())
     }
 
@@ -601,7 +601,7 @@ impl Capabilities {
             std::fs::create_dir_all(d)?;
         }
         crate::crypto::write_atomic(&path, data)?;
-        crate::append_hook_log(&format!("write_path {p} ({} bytes)", data.len()));
+        crate::append_hook_log(&format!("write_path {} ({} bytes)", crate::runtime::log_words(&p.to_string(), 200), data.len()));
         Ok(())
     }
 

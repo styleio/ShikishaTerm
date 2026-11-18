@@ -4762,7 +4762,7 @@ impl HookEngine {
         // ephemeral — a failed ▶ run that leaves no trace is undebuggable
         // after the fact (only the error, never the code's output/values)
         if let Some(e) = &out {
-            crate::append_hook_log(&format!("run lua error: {e}"));
+            crate::append_hook_log(&format!("run lua error: {}", crate::runtime::log_words(e, 400)));
         }
         // Composer-run code is already durable Lua in the user's hands —
         // discard its journal so it never bleeds into a rally's replay.lua
