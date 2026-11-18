@@ -139,6 +139,9 @@ pub struct Top {
     /// This app and everything it started, taken together: how many
     /// programs, and what they use of the processors, the memory and the disk
     pub own: Option<(usize, f32, u64, u64)>,
+    /// Whether the memory is counted with what programs share, in each of
+    /// them (`crate::perf::Rates::exact` says it is not)
+    pub shared: bool,
 }
 
 /// A share of the processors. A program on one of many is a few hundredths
@@ -199,7 +202,8 @@ pub fn line(look: &Look, top: Option<&Top>) -> String {
             s.push_str(&format!(" | most io: {}", disk.join(", ")));
         }
         if let Some((programs, cpu, memory, disk)) = top.own {
-            s.push_str(&format!(" | this app's own: {programs} programs, cpu {}, memory {}, io {}", share(cpu), size(memory), a_second(disk)));
+            let how = if top.shared { " (memory with what is shared)" } else { "" };
+            s.push_str(&format!(" | this app's own{how}: {programs} programs, cpu {}, memory {}, io {}", share(cpu), size(memory), a_second(disk)));
         }
     }
     s
@@ -385,12 +389,13 @@ pub fn disk_room(at: &std::path::Path) -> Option<(u64, u64)> {
 /// The programs using the most now. Takes a second: what a program uses of
 /// the processors and the disk is read as the change between two looks
 fn top() -> Top {
-    top_of(&crate::perf::sample(MEASURED).1)
+    let (rates, procs) = crate::perf::sample(MEASURED);
+    top_of(&procs, !rates.exact)
 }
 
 /// The same, out of every program there is: the copies of one program taken
 /// together and said with how many they are, the largest first
-pub fn top_of(procs: &[crate::perf::Proc]) -> Top {
+pub fn top_of(procs: &[crate::perf::Proc], shared: bool) -> Top {
     #[derive(Default, Clone, Copy)]
     struct Sum {
         copies: u32,
@@ -422,6 +427,7 @@ pub fn top_of(procs: &[crate::perf::Proc]) -> Top {
         // Under a tenth of a megabyte a second is nobody working the disk
         disk: most(&by, |s| s.disk, 100 * 1024, NAMED_FEW),
         own: (!ours.is_empty()).then(|| (ours.len(), ours.iter().map(|p| p.cpu).sum(), ours.iter().map(|p| p.memory).sum(), ours.iter().map(|p| p.disk).sum())),
+        shared,
     }
 }
 
@@ -530,6 +536,7 @@ mod tests {
             commit: vec![("chrome x23".into(), 3 * GB)],
             disk: vec![("System".into(), 30 * 1024 * 1024)],
             own: Some((14, 3.2, 2 * GB, 512 * 1024)),
+            shared: false,
         };
         let said = line(&look, Some(&top));
         assert!(said.ends_with(
@@ -560,13 +567,16 @@ mod tests {
     #[test]
     fn the_copies_of_a_program_are_taken_together() {
         let p = |name: &str, cpu: f32, memory: u64, disk: u64, ours: bool| crate::perf::Proc { name: name.into(), cpu, memory, commit: memory * 2, disk, ours, ..Default::default() };
-        let top = top_of(&[p("chrome", 1.0, GB, 0, false), p("chrome", 2.0, GB, 0, false), p("node", 40.0, GB / 2, 5 * 1024 * 1024, true), p("app", 0.5, GB / 4, 10, true)]);
+        let top = top_of(&[p("chrome", 1.0, GB, 0, false), p("chrome", 2.0, GB, 0, false), p("node", 40.0, GB / 2, 5 * 1024 * 1024, true), p("app", 0.5, GB / 4, 10, true)], false);
         assert_eq!(top.cpu[0], ("node".to_string(), 40.0));
         assert_eq!(top.cpu[1], ("chrome x2".to_string(), 3.0));
         assert_eq!(top.memory[0], ("chrome x2".to_string(), 2 * GB));
         assert_eq!(top.commit[0], ("chrome x2".to_string(), 4 * GB));
         assert_eq!(top.disk, [("node".to_string(), 5 * 1024 * 1024)], "a program that reads next to nothing is not named");
         assert_eq!(top.own, Some((2, 40.5, GB / 2 + GB / 4, 5 * 1024 * 1024 + 10)));
+        // Where memory is counted with what is shared, the line says so
+        let shared = Top { own: Some((2, 1.0, GB, 0)), shared: true, ..Default::default() };
+        assert!(line(&Look::default(), Some(&shared)).ends_with(" | this app's own (memory with what is shared): 2 programs, cpu 1.0%, memory 1.0 GB, io 0.0 MB/s"));
     }
 
     /// What is older than a week goes, with the lines that belonged to it;

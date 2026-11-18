@@ -55,6 +55,10 @@ pub struct Rates {
     pub queue: Option<f32>,
     /// What the disks read and wrote, in bytes a second
     pub disk: Option<u64>,
+    /// Whether the memory of each program is what it alone holds. Where
+    /// the programs are opened and asked, it is told with what they share,
+    /// and the copies of one program add up to more than they hold
+    pub exact: bool,
 }
 
 /// How many processors the machine has, all of them
@@ -230,6 +234,7 @@ mod counters {
                 busy: one(self.idle).map(|v| (100.0 - v).clamp(0.0, 100.0) as f32),
                 queue: one(self.queue).map(|v| v.max(0.0) as f32),
                 disk: one(self.bytes).map(|v| v.max(0.0) as u64),
+                exact: false,
             }
         }
     }
@@ -403,7 +408,7 @@ pub fn sample(over: Duration) -> (Rates, Vec<Proc>) {
     let mut procs = programs.read(cores() as f32, &before);
     let own = own_copies(&procs);
     mark_ours(&mut procs, &own);
-    (machine.read(), procs)
+    (Rates { exact: true, ..machine.read() }, procs)
 }
 
 #[cfg(not(windows))]
@@ -448,7 +453,9 @@ fn by_opening(over: Duration) -> Vec<Proc> {
                 parent: p.parent().map(|x| x.as_u32()).unwrap_or(0),
                 cpu: p.cpu_usage() / cores,
                 memory: p.memory(),
-                commit: 0,
+                // What it is promised is known on Windows; elsewhere the
+                // number of that name is the room it may address, not memory
+                commit: if cfg!(windows) { p.virtual_memory() } else { 0 },
                 disk: ((used.read_bytes + used.written_bytes) as f64 / over.as_secs_f64()) as u64,
                 threads: 0,
                 handles: 0,

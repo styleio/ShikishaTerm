@@ -5151,7 +5151,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             crate::hooks::ending_hook(ended),
                             ended.label(),
                             ctx.output.chars().count(),
-                            log_excerpt(&ctx.output, 100)
+                            log_words(&ctx.output, 100)
                         ));
                         eng.fire_ending(ended, &ctx);
                         // Beginner-friendly "notify me when this AI answers": a
@@ -6534,7 +6534,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 (by_number(tab).map(|t| t.title.as_str()) == Some(name.as_str()))
                                     .then_some(tab)
                             });
-                        let said = log_excerpt(&text, 120);
+                        let said = log_words(&text, 120);
                         let to = (!dest.is_empty()).then_some(dest.as_str());
                         let landed = target.is_some_and(|n| {
                             hand_line(
@@ -8552,7 +8552,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     append_hook_log(&format!(
                         "quick command \"{label}\" -> new tab \"{title}\" in {}: {}",
                         crate::uistate::place_said(&at),
-                        log_excerpt(&item.body, 120)
+                        log_words(&item.body, 120)
                     ));
                     watcher.poke();
                 }
@@ -8876,7 +8876,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             due.map_or_else(|| "run now".to_string(), |at| format!("due {}", crate::hooks::local_clock_at(at))),
                             if begun.opened { "new tab" } else { "tab" },
                             begun.title,
-                            log_excerpt(&r.prompt, 120)
+                            log_words(&r.prompt, 120)
                         ));
                         if begun.opened {
                             if let Some(p) = pending_quicks.last_mut() {
@@ -11807,7 +11807,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     extract_env_block(&s)
                 });
             if let Some(env) = block {
-                append_hook_log(&format!("survey [{tab_id}]: {}", log_excerpt(&env, 160)));
+                append_hook_log(&format!("survey [{tab_id}]: {}", log_words(&env, 160)));
                 env_cards.insert(uid, env);
                 pending_survey = None;
                 let js = r#"{"ok":true}"#;
@@ -21793,6 +21793,14 @@ pub fn on_done_message(name: &str, output: &str, reply: Option<&str>) -> String 
     }
     msg
 }
+/// The same for a line of the log, between marks: what is quoted is
+/// somebody's words -- a prompt, an answer, what git printed -- and the
+/// marks are how a report made of the log knows to leave it out
+/// (`crate::diagnose`)
+pub fn log_words(text: &str, max: usize) -> String {
+    format!("{}{}{}", crate::diagnose::WORDS.0, log_excerpt(text, max), crate::diagnose::WORDS.1)
+}
+
 pub fn log_excerpt(text: &str, max: usize) -> String {
     let one: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut out: String = one.chars().take(max).collect();
@@ -22701,12 +22709,12 @@ pub fn exec_commands(
                     ball.draft(origin, idx, depth, now_ms);
                     append_hook_log(&format!(
                         "Draft tab{origin} -> tab{idx} (depth {depth}): {}",
-                        log_excerpt(&text, 60)
+                        log_words(&text, 60)
                     ));
                 }
             }
             Command::WordsNote { text, bad } => {
-                append_hook_log(&format!("words: {}", log_excerpt(&text, 80)));
+                append_hook_log(&format!("words: {}", log_words(&text, 80)));
                 say_in_words_panel(text, bad);
             }
             Command::Note { target, text } => {
@@ -22719,7 +22727,7 @@ pub fn exec_commands(
                 };
                 if let Some(t) = session_of(target).and_then(|i| tabs.get(i)) {
                     t.note(&text);
-                    append_hook_log(&format!("note tab{target}: {}", log_excerpt(&text, 60)));
+                    append_hook_log(&format!("note tab{target}: {}", log_words(&text, 60)));
                 }
             }
             Command::SendPrompt {
@@ -22792,7 +22800,7 @@ pub fn exec_commands(
                 }
                 append_hook_log(&format!(
                     "auto-send tab{origin} -> tab{target} (depth {depth}): {}",
-                    log_excerpt(&text, 120)
+                    log_words(&text, 120)
                 ));
             }
         }

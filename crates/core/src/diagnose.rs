@@ -46,6 +46,9 @@ static CARRIED: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     .collect()
 });
 
+/// The marks the log puts around what it quotes of somebody's words
+pub const WORDS: (char, char) = ('\u{27e6}', '\u{27e7}');
+
 /// Where the log carries what was said rather than what happened: an AI's
 /// answer, a message handed from one tab to another, a job's words, what
 /// git printed. The words are somebody's work -- a customer's project, a
@@ -53,6 +56,24 @@ static CARRIED: LazyLock<Vec<Regex>> = LazyLock::new(|| {
 /// around them, so only the event is kept
 static SAID: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     [
+        // Whatever the log itself marked as quoted (`crate::runtime::log_words`)
+        r"()\x{27e6}[^\x{27e7}\r\n]*\x{27e7}?",
+        // ...and the lines that quoted it before there were marks, or quote
+        // it without them: a prompt, a note, what a tab or an AI said, what
+        // git and the others printed
+        r"(scheduled prompt .*? run \d+ .*?: ).+",
+        r"(quick command .*? -> new tab .*?: ).+",
+        r"(reply -> .*?\): ).+",
+        r"(Draft tab\d+ -> tab\d+ \(depth \d+\): ).+",
+        r"(note tab\d+: ).+",
+        r"(^(?:\[[ \d.]+\] )?words: ).+",
+        r"(survey \[[^\]]*\]: ).+",
+        // What git and the others answered: what was done and whether it
+        // worked is the event, and is kept; what came with it is not
+        r#"(^(?:\[[ \d.]+\] )?(?:git|issues|sftp|suggest): (?:\{"act":"[a-z_]+","ok":(?:true|false))?).+"#,
+        r"(\bsays: ).+",
+        r"(background tab: ).+",
+        r"(\[ai\] ).+",
         r"(response \d+ chars: ).+",
         r"(auto-send tab\d+ -> tab\d+ \(depth \d+\): ).+",
         r"(added to j\d+: ).+",
@@ -544,9 +565,12 @@ fn now() -> (String, crate::health::Look, crate::health::Top) {
         queue: rates.queue,
         paged: rates.paged,
     };
-    let top = crate::health::top_of(&procs);
+    let top = crate::health::top_of(&procs, !rates.exact);
     let mut s = format!("measured over {:.1} s at {}\n", over / 1000.0, crate::hooks::local_stamp("%Y-%m-%dT%H:%M:%S"));
     s.push_str(&format!("{}\n", crate::health::line(&look, None)));
+    if !rates.exact {
+        s.push_str("memory here is counted with what programs share, in each of them: the copies of one program add up to more than they hold\n");
+    }
     if let Some(disk) = rates.disk {
         s.push_str(&format!("the disks read and wrote {:.1} MB/s\n", disk as f64 / 1_048_576.0));
     }
@@ -744,21 +768,30 @@ fn folders_out(text: &str) -> (String, usize) {
     // then the file. A folder's name does not end in a space: the words
     // after a path do. (Written into JSON, a path has each of its marks twice)
     static WINDOWS: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r#"(?:\b[A-Za-z]:[\\/]+|~\\+|\\\\[^\\/\s.?][^\\/\s]*[\\/]+[^\\/\s]+[\\/]+)(?:[^\\/:*?"<>|\r\n]*[^\\/:*?"<>|\r\n\s][\\/]+)*([^\\/:*?"<>|\r\n\s,;)\]'`]*)"#).expect("the path pattern does not compile")
+        Regex::new(r#"(?:\b[A-Za-z]:[\\/]+|~\\+|\\\\\?\\UNC\\|\\\\[^\\/\s.?][^\\/\s]*[\\/]+)(?:[^\\/:*?"<>|\r\n]*[^\\/:*?"<>|\r\n\s][\\/]+)*([^\\/:*?"<>|\r\n\s,;)\]'`]*)"#).expect("the path pattern does not compile")
     });
-    // ...and from the places a person's files are kept on the other systems
+    // ...and on the other systems, from the top or the home folder: any
+    // path of two parts or more, but for the system's own places and the
+    // app's own addresses, which are nobody's
     static ELSEWHERE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r#"(?m)(^|[\s"'(=:\[,])(?:~|/(?:home|Users|mnt|srv|opt|var|tmp|root|media|Volumes))(?:/[^/\s:"'<>|,;)\]]+)*/([^/\s:"'<>|,;)\]]*)"#).expect("the path pattern does not compile")
+        Regex::new(r#"(?m)(^|[\s"'(=:\[,])(~|/[A-Za-z0-9._-]+)(?:/[^/\s:"'<>|,;)\]]+)*/([^/\s:"'<>|,;)\]]*)"#).expect("the path pattern does not compile")
     });
+    const NOBODYS: [&str; 18] = ["/api", "/ws", "/ws-state", "/cfg", "/static", "/assets", "/proc", "/dev", "/sys", "/usr", "/bin", "/sbin", "/etc", "/lib", "/lib64", "/run", "/snap", "/boot"];
     let told = |leaf: &str, by: char| match named_file(leaf) {
         true => format!("{FOLDER}{by}{leaf}"),
         false => FOLDER.to_string(),
     };
     let found = WINDOWS.find_iter(text).count();
     let out = WINDOWS.replace_all(text, |c: &regex::Captures| told(&c[1], if c[0].contains('\\') { '\\' } else { '/' }));
-    let found = found + ELSEWHERE.find_iter(&out).count();
-    let out = ELSEWHERE.replace_all(&out, |c: &regex::Captures| format!("{}{}", &c[1], told(&c[2], '/')));
-    (out.into_owned(), found)
+    let mut others = 0;
+    let out = ELSEWHERE.replace_all(&out, |c: &regex::Captures| match NOBODYS.contains(&&c[2]) {
+        true => c[0].to_string(),
+        false => {
+            others += 1;
+            format!("{}{}", &c[1], told(&c[3], '/'))
+        }
+    });
+    (out.into_owned(), found + others)
 }
 
 /// Whether a file's name is a program's or one the app gave it
@@ -1240,7 +1273,9 @@ fn machine(git: Option<String>) -> String {
 
 /// Words too common to stand for somebody's own name: a desk called "test"
 /// is not hidden, since hiding it would hide the word wherever it is said
-const COMMON: [&str; 40] = [
+const COMMON: [&str; 62] = [
+    "response", "http", "https", "link", "hidden", "words", "token", "password", "secret", "node", "python", "bash", "cargo", "docker", "code", "chrome", "error", "state", "name", "path",
+    "file", "line",
     "main", "master", "test", "tests", "work", "desk", "default", "check", "home", "temp", "data", "logs", "config", "user", "users", "windows", "system", "claude", "codex", "gemini",
     "shell", "powershell", "pwsh", "terminal", "browser", "develop", "development", "project", "folder", "issue", "build", "debug", "release", "local", "server", "client", "source",
     "docs", "demo", "sample",
@@ -1259,6 +1294,9 @@ fn own_names() -> Vec<(String, String)> {
     let Some(cfg) = crate::config::load() else { return Vec::new() };
     let (desks, _) = cfg.resolve_desks();
     let mut names: Vec<(String, String)> = Vec::new();
+    // The folders whose branch is asked for afterwards, each with what stands for it
+    let mut on_branches: Vec<(std::path::PathBuf, String)> = Vec::new();
+    let home = home_dir();
     let mut add = |name: &str, stands: &str| {
         let name = name.trim();
         // A short name in plain letters is a word of the language as often
@@ -1287,17 +1325,26 @@ fn own_names() -> Vec<(String, String)> {
                 _ => "[a folder on another machine]".to_string(),
             };
             if let Some(at) = &folder.cwd {
+                // Its whole path, in every way it is written by the time the
+                // names are looked for: as it is, under the home folder's
+                // stand-in, with the other mark, and with each mark twice
+                // (as JSON writes it)
                 let whole = at.to_string_lossy().into_owned();
-                add(&whole, &stands);
-                add(&whole.replace('\\', "/"), &stands);
+                let mut ways = vec![whole.clone()];
+                if let Some(rest) = home.as_ref().filter(|h| whole.to_lowercase().starts_with(&h.to_lowercase())).and_then(|h| whole.get(h.len()..)) {
+                    ways.push(format!("{HOME}{rest}"));
+                }
+                for way in ways {
+                    add(&way, &stands);
+                    add(&way.replace('\\', "/"), &stands);
+                    add(&way.replace('\\', "\\\\"), &stands);
+                }
                 if let Some(last) = at.file_name() {
                     add(&last.to_string_lossy(), &stands);
                 }
                 // The branch it is on, where asking does not mean asking a share
-                if folder.host.is_none() && disk_name(at) != SHARE
-                    && let Some(branch) = crate::repo::branch_of(at)
-                {
-                    add(&branch, &format!("[the branch of {}]", stands.trim_matches(['[', ']'])));
+                if folder.host.is_none() && disk_name(at) != SHARE {
+                    on_branches.push((at.clone(), format!("[the branch of {}]", stands.trim_matches(['[', ']']))));
                 }
             }
             for name in [&folder.name, &folder.id, &folder.project, &folder.work_item].into_iter().flatten() {
@@ -1319,6 +1366,13 @@ fn own_names() -> Vec<(String, String)> {
                 add(name, "[a tab]");
             }
         }
+    }
+    // The branches are asked of the disk, and a disk that has stopped
+    // answering -- a letter for a share whose network is gone -- holds
+    // whoever asks: they are waited for a moment, and done without after it
+    let asked = later("branches", move || on_branches.into_iter().filter_map(|(at, stands)| Some((crate::repo::branch_of(&at)?, stands))).collect::<Vec<_>>());
+    for (branch, stands) in asked.recv_timeout(std::time::Duration::from_secs(4)).unwrap_or_default() {
+        add(&branch, &stands);
     }
     names.sort_by(|a, b| b.0.chars().count().cmp(&a.0.chars().count()).then_with(|| a.0.cmp(&b.0)));
     names
@@ -1343,19 +1397,109 @@ fn names_out(text: &str, names: &[(String, String)]) -> (String, usize) {
     }
     // What is inside one of their folders is theirs too: the folder stands,
     // and the way further in is left out
-    static INSIDE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(\[folder \d+\])(?:[\\/]+[^\\/\s:"'<>|,;)\]]+)+"#).expect("the inside pattern does not compile"));
+    // (a folder's name can hold spaces: taken up to what a name cannot hold)
+    static INSIDE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(\[folder \d+\])(?:[\\/]+[^\\/:*?"<>|\r\n]*[^\\/:*?"<>|\r\n\s])+"#).expect("the inside pattern does not compile"));
     out = INSIDE.replace_all(&out, "${1}\\...").into_owned();
     (out, n)
 }
 
-/// What a report may hold of a text: the person's own names put as
-/// numbers, then what `hidden_lines` hides, then every path left told by
-/// no more than its file. With how many things were hidden
-fn private(text: &str, known: &[String], names: &[(String, String)], cut: bool) -> (String, usize) {
-    let (text, named) = names_out(text, names);
-    let (text, hid) = hidden_lines(&text, known, cut);
+/// What kind of file a text is, which says how much of it is somebody's words
+#[derive(Clone, Copy, PartialEq)]
+enum Kind {
+    /// One of the app's logs: lines of events, with names and words in them
+    Log,
+    /// The same, written as JSON: its marks are part of what it is
+    Data,
+    /// What Windows wrote
+    Events,
+    /// What this program wrote for the report, a number and a file name at
+    /// a time: nothing in it is anybody's word, and a program's name in it
+    /// is a program's
+    Record,
+}
+
+/// What stands for something a person named, in a log
+const A_NAME: &str = "[a name]";
+
+/// What the app itself puts between marks in its logs: the AIs and the
+/// shells, which a fault is often about
+const OWN_WORDS: [&str; 16] =
+    ["claude", "claude code", "codex", "codex cli", "gemini", "gemini cli", "aider", "powershell", "pwsh", "cmd", "cmd.exe", "bash", "shell", "git", "main", "master"];
+
+/// A log with what stands between double marks left out, unless it is the
+/// app's own word or already stands for something: a tab's title, a quick
+/// command's label, a scheduled prompt's name are all said that way, and all
+/// are somebody's
+fn marked_out(text: &str) -> (String, usize) {
+    static MARKED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#""([^"\r\n]{1,300})""#).expect("the marks pattern does not compile"));
+    // What git and the others answered is written with marks of its own,
+    // and has had its words taken out already (`SAID`)
+    static ANSWER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:\[[ \d.]+\] )?(?:git|issues|sftp|suggest): ").expect("the answer pattern does not compile"));
+    let mut n = 0;
+    let mut out = String::with_capacity(text.len());
+    for line in text.split_inclusive('\n') {
+        if ANSWER.is_match(line) {
+            out.push_str(line);
+            continue;
+        }
+        out.push_str(&MARKED.replace_all(line, |c: &regex::Captures| {
+        let inner = &c[1];
+        let stands = inner.starts_with('[') && inner.ends_with(']');
+        if stands || OWN_WORDS.contains(&inner.to_lowercase().as_str()) {
+            c[0].to_string()
+        } else {
+            n += 1;
+            format!("\"{A_NAME}\"")
+        }
+        }));
+    }
+    (out, n)
+}
+
+/// A line that says a folder would not be removed, without what held it:
+/// the file that stayed is named there from the folder down, and it is the
+/// person's file. What the system said about it -- its number -- is kept
+fn kept_out(text: &str) -> (String, usize) {
+    static LINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)(could not remove (?:\[[^\]\r\n]*\]|\S+))([^\r\n]*)$").expect("the removal pattern does not compile"));
+    static CODE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\(os error \d+\)").expect("the code pattern does not compile"));
+    let mut n = 0;
+    let out = LINE.replace_all(text, |c: &regex::Captures| {
+        n += 1;
+        let codes: Vec<&str> = CODE.find_iter(&c[2]).map(|m| m.as_str()).collect();
+        format!("{}: [what stayed is left out] {}", &c[1], codes.join(" ")).trim_end().to_string()
+    });
+    (out.into_owned(), n)
+}
+
+/// What a report may hold of a text, and how many things were hidden to
+/// get there. First what `hidden_lines` hides, on the text as it was
+/// written, so that nothing put in afterwards stands where a pattern looks.
+/// Then, in a log, the person's own names put as numbers, what stands
+/// between marks, and the files a removal left. Last, every path told by
+/// no more than its file
+fn private(text: &str, known: &[String], names: &[(String, String)], kind: Kind) -> (String, usize) {
+    let (mut text, mut n) = hidden_lines(text, known, matches!(kind, Kind::Log | Kind::Data));
+    if kind != Kind::Record {
+        let (named, more) = names_out(&text, names);
+        (text, n) = (named, n + more);
+    }
+    if kind == Kind::Log {
+        let (kept, more) = kept_out(&text);
+        let (marked, others) = marked_out(&kept);
+        (text, n) = (marked, n + more + others);
+    }
     let (text, paths) = folders_out(&text);
-    (text, named + hid + paths)
+    (text, n + paths)
+}
+
+/// What kind of file each one in the report is
+fn kind_of(name: &str) -> Kind {
+    match name {
+        "health.log" | "findings.txt" | "now.txt" | "about.txt" | "storage.txt" | "files.txt" | "settings.txt" | "dumps.txt" | "short-runs.txt" => Kind::Record,
+        "events.txt" => Kind::Events,
+        _ if name.ends_with(".json") => Kind::Data,
+        _ => Kind::Log,
+    }
 }
 
 /// The zip, its name, and how many things were hidden in it.
@@ -1401,7 +1545,7 @@ pub fn bundle() -> Result<(String, Vec<u8>, usize)> {
     // Hidden before it is read for the first page: what the first page
     // quotes of it has to be what a person may read
     let hooks = log(logs.join("hooks.log"), LOG_LINES).map(|text| {
-        let (text, n) = private(&text, &known, &names, true);
+        let (text, n) = private(&text, &known, &names, Kind::Log);
         hid += n;
         text
     });
@@ -1471,12 +1615,8 @@ pub fn bundle() -> Result<(String, Vec<u8>, usize)> {
     }
     let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
     let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
-    // What this program wrote a number and a file name at a time keeps its
-    // long lines, which are the ones that name the programs
-    // ...and what Windows wrote keeps its own, which say which programs it was
-    const WHOLE: [&str; 4] = ["health.log", "findings.txt", "now.txt", "events.txt"];
     for (name, text) in files {
-        let (text, n) = private(&text, &known, &names, !WHOLE.contains(&name));
+        let (text, n) = private(&text, &known, &names, kind_of(name));
         hid += n;
         zip.start_file(name, opts)?;
         zip.write_all(text.as_bytes())?;
@@ -1706,8 +1846,13 @@ mod tests {
             (r"opened ~\work\acme\offer.docx", "opened [a folder]"),
             // The app's own file is told
             (r"~\AppData\Local\ShikishaTerm\keeper\ab12\run\keep.key is not there", r"[a folder]\keep.key is not there"),
-            // ...and the other systems' places for a person's files
+            // A share whose name holds a space, and the long way of writing one
+            (r"at \\nas01\Shared Tools\customer\app.exe now", r"at [a folder]\app.exe now"),
+            (r"at \\?\UNC\nas01\share\customer\app.exe now", r"at [a folder]\app.exe now"),
+            // ...and the other systems' places for a person's files, wherever they are
             ("left /home/someone/acme/repo behind", "left [a folder] behind"),
+            ("left /workspace/customer/acme behind", "left [a folder] behind"),
+            ("ran /usr/bin/git and read /proc/self/stat", "ran /usr/bin/git and read /proc/self/stat"),
             ("ran ~/work/acme/tool.so (twice)", "ran [a folder]/tool.so (twice)"),
             // What is not a path stays: a door, a link's own path, a share of something
             (r"listening on \\.\pipe\shikisha-14804 (Children)", r"listening on \\.\pipe\shikisha-14804 (Children)"),
@@ -1716,6 +1861,48 @@ mod tests {
             assert_eq!(folders_out(path).0, told, "{path}");
         }
         assert_eq!(folders_out(r"D:\a\b.exe and D:\c\d").1, 2);
+    }
+
+    /// In a log, what stands between marks is left out unless it is the
+    /// app's own word, and so is what a line quoted of somebody's words and
+    /// the file a removal left behind
+    #[test]
+    fn a_log_keeps_the_event_and_not_the_persons_words() {
+        let names = vec![("Acme".to_string(), "[desk 1]".to_string()), (r"D:\repo".to_string(), "[folder 1]".to_string())];
+        let log = [
+            "[   1.000] Startup: desk \"Acme\" (first desk)",
+            "[   2.000] \"claude\" starts clean: this desk remembers nothing for it in this folder",
+            "[   3.000] tab1 \"acme payroll - vim\" is running a helper",
+            "[   4.000] scheduled prompt \"month end\" run 3 (run now) -> tab \"books\": \u{27e6}pay the Acme invoices and\u{2026}\u{27e7}",
+            "[   5.000] scheduled prompt \"month end\" run 2 (run now) -> tab \"books\": pay the Acme invoices, as before the marks",
+            "[   6.000] could not remove D:\\repo: customers\\Acme Merger\\offer.xlsx could not be deleted: it is in use (os error 32)",
+            "[   7.000] could not remove D:\\repo\\Acme Merger\\offer.docx at all",
+            "[   8.000] note tab2: call Acme back",
+            "[   9.000] git: {\"branch\":\"acme-merger\"}",
+            "[  10.000] git: {\"act\":\"pull\",\"ok\":false,\"err\":\"no such branch acme-merger\"}",
+        ]
+        .join("\n");
+        let (said, _) = private(&log, &[], &names, Kind::Log);
+        let lines: Vec<&str> = said.lines().collect();
+        assert_eq!(lines[0], "[   1.000] Startup: desk \"[desk 1]\" (first desk)");
+        assert_eq!(lines[1], "[   2.000] \"claude\" starts clean: this desk remembers nothing for it in this folder");
+        assert_eq!(lines[2], "[   3.000] tab1 \"[a name]\" is running a helper");
+        assert_eq!(lines[3], format!("[   4.000] scheduled prompt \"[a name]\" run 3 (run now) -> tab \"[a name]\": {LEFT_OUT}"));
+        assert_eq!(lines[4], format!("[   5.000] scheduled prompt \"[a name]\" run 2 (run now) -> tab \"[a name]\": {LEFT_OUT}"));
+        assert_eq!(lines[5], "[   6.000] could not remove [folder 1]: [what stayed is left out] (os error 32)");
+        assert_eq!(lines[6], "[   7.000] could not remove [folder 1]: [what stayed is left out]");
+        assert_eq!(lines[7], format!("[   8.000] note tab2: {LEFT_OUT}"));
+        assert_eq!(lines[8], format!("[   9.000] git: {LEFT_OUT}"));
+        // What was done and whether it worked is the event
+        assert_eq!(lines[9], format!("[  10.000] git: {{\"act\":\"pull\",\"ok\":false{LEFT_OUT}"));
+        assert!(!said.to_lowercase().contains("acme") && !said.contains("month end") && !said.contains("offer"), "{said}");
+        // A name that is also a word the hiding looks for does not blind it
+        let names = vec![("response".to_string(), "[desk 1]".to_string()), ("https".to_string(), "[a tab]".to_string())];
+        let (said, _) = private("fired tab1 [done]: response 100 chars: the Acme plan\nopened https://github.com/acme/secret-repo\n", &[], &names, Kind::Log);
+        assert!(!said.to_lowercase().contains("acme"), "{said}");
+        // What this program wrote for the report is left as it is: a tab called node does not rename a program
+        let names = vec![("node".to_string(), "[a tab]".to_string())];
+        assert_eq!(private("most cpu: node x6 41%\n", &[], &names, Kind::Record).0, "most cpu: node x6 41%\n");
     }
 
     /// The person's own names are put as what stands for them, as words of
@@ -1732,8 +1919,8 @@ mod tests {
         assert_eq!(said, "Sending state: 2 tabs, desk \"[desk 1]\"; could not remove [folder 1]\\...: in use; branch [folder 1]; desk \"[desk 2]\"; acmeish stays");
         assert_eq!(n, 4);
         // And through the whole of what a report may hold: nothing of the folder is left
-        let (said, _) = private("could not remove d:\\work\\acme-payroll\\target\\debug: in use", &[], &names, true);
-        assert_eq!(said.trim_end(), "could not remove [folder 1]\\...: in use");
+        let (said, _) = private("left d:\\work\\acme-payroll\\target\\Acme Merger\\x.docx: in use", &[], &names, Kind::Log);
+        assert_eq!(said.trim_end(), "left [folder 1]\\...: in use");
     }
 
     /// What a console program printed is read in the letters it was printed in

@@ -391,7 +391,8 @@ try {
   await until(() => /did not get through while this app was away/.test(since()), 'the calls that did not get through', 60000)
     .then(() => check(true, 'the call made while away is told about'))
     .catch(() => check(false, 'the call made while away is told about: ' + bridgeLines(since())));
-  await until(() => /note tab\d+: kept-while-away/.test(since()), 'the kept note to be handed over', 60000)
+  // (the log puts what it quotes of somebody's words between marks)
+  await until(() => /note tab\d+: ⟦?kept-while-away/.test(since()), 'the kept note to be handed over', 60000)
     .then(() => check(/kept while this app was away is handed over/.test(since()), 'the note kept while away is handed over, and done'))
     .catch(() => check(false, 'the note kept while away is handed over, and done: ' + bridgeLines(since())));
 

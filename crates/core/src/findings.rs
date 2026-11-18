@@ -67,14 +67,16 @@ fn named(looks: &[&Seen], heading: &str) -> Vec<(String, usize, String)> {
 
 /// The most the app and what it started were seen using over a stretch: of
 /// the processors, in hundredths, and of the memory, in bytes
-fn own(looks: &[&Seen]) -> Option<(f32, u64)> {
-    let mut most: Option<(f32, u64)> = None;
+fn own(looks: &[&Seen]) -> Option<(f32, u64, bool)> {
+    let mut most: Option<(f32, u64, bool)> = None;
     for seen in looks {
-        for (_, items) in seen.named.iter().filter(|(h, _)| h == "this app's own") {
+        for (heading, items) in seen.named.iter().filter(|(h, _)| h.starts_with("this app's own")) {
+            // Counted with what programs share, the copies add up to more than they hold
+            let shared = heading != "this app's own";
             let cpu = items.iter().find_map(|i| i.strip_prefix("cpu ")).and_then(|v| v.trim_end_matches('%').parse::<f32>().ok()).unwrap_or(0.0);
             let memory = items.iter().find_map(|i| i.strip_prefix("memory ")).and_then(crate::health::unsize).unwrap_or(0);
-            let was = most.unwrap_or((0.0, 0));
-            most = Some((was.0.max(cpu), was.1.max(memory)));
+            let was = most.unwrap_or((0.0, 0, false));
+            most = Some((was.0.max(cpu), was.1.max(memory), was.2 || shared));
         }
     }
     most
@@ -126,8 +128,9 @@ fn stretch(s: &Stretch) -> String {
         }
     }
     let ours = own(&s.looks);
-    if let Some((cpu, memory)) = ours {
-        say(format!("this app and everything it started: up to {cpu:.1}% of the processors and {} of memory", size(memory)));
+    if let Some((cpu, memory, shared)) = ours {
+        let how = if shared { " (counted with what its programs share, so more than they hold)" } else { "" };
+        say(format!("this app and everything it started: up to {cpu:.1}% of the processors and {} of memory{how}", size(memory)));
     }
     // What it most likely means
     let (memory, paging, disk) = (!short.is_empty(), looks.iter().any(|l| l.paging()), looks.iter().any(|l| l.disk_busy()));
@@ -166,7 +169,7 @@ fn stretch(s: &Stretch) -> String {
     } else if was_late {
         reading.push("the app answered late while the machine was short; it may be no more than the machine".into());
     }
-    if let (Some((_, memory)), Some(look)) = (ours, looks.iter().min_by_key(|l| l.free)) {
+    if let (Some((_, memory, false)), Some(look)) = (ours, looks.iter().min_by_key(|l| l.free)) {
         let used = look.total.saturating_sub(look.free);
         if used > 0 && memory.saturating_mul(2) >= used {
             reading.push("half or more of the memory in use was this app's and what it started".into());
