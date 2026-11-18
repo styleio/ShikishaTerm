@@ -54,6 +54,8 @@ fn main() {
     // calling itself the commit before -- which the deploy rightly refused
     watch_git_head();
     println!("cargo:rerun-if-changed=../../tools/build_git_head.rs");
+    // The words the app is written in, for what a saved report keeps of a log
+    vocabulary();
 
     // The library that compresses video where the operating system has no
     // encoder of its own. Said here rather than left to whoever runs the
@@ -65,6 +67,220 @@ fn main() {
     if std::env::var_os("CARGO_FEATURE_VP8").is_some() {
         println!("cargo:rustc-link-lib=vpx");
     }
+}
+
+/// The words this program is written in, put beside the build for the
+/// program to read (`src/diagnose.rs`).
+///
+/// A report somebody saves carries the app's logs, and a log line is the
+/// app's words with somebody's own among them: the name of a desk, a
+/// branch, a machine, a file. Which words are the app's cannot be told from
+/// the line. It can be told from the source: every word the app itself can
+/// write is in it. So the words of the source are listed here -- of what is
+/// built, not of its tests, which are full of made-up names, nor of what is
+/// written about the code -- with the words of the two languages and of the
+/// AI profiles, and a report keeps those and leaves out the rest.
+///
+/// Read again when this crate's sources change and after every commit. A
+/// word added to another crate is known from the next commit on; until then
+/// a report leaves it out, which is the safe way to be wrong
+fn vocabulary() {
+    use std::path::{Path, PathBuf};
+    fn walk(dir: &Path, into: &mut Vec<PathBuf>) {
+        let Ok(read) = std::fs::read_dir(dir) else { return };
+        for entry in read.flatten() {
+            let at = entry.path();
+            match at.is_dir() {
+                true => walk(&at, into),
+                false => into.push(at),
+            }
+        }
+    }
+    let here = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap_or_default());
+    let top = here.join("..").join("..");
+    let mut files = Vec::new();
+    for dir in ["src", "lang", "profiles"] {
+        walk(&top.join(dir), &mut files);
+    }
+    if let Ok(crates) = std::fs::read_dir(top.join("crates")) {
+        for one in crates.flatten() {
+            walk(&one.path().join("src"), &mut files);
+        }
+    }
+    let mut words = std::collections::BTreeSet::new();
+    for file in files {
+        let source = file.extension().is_some_and(|e| e == "rs");
+        if !source && file.extension().is_none_or(|e| e != "json") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&file) else { continue };
+        let text = if source { built(&text) } else { text };
+        let mut run = String::new();
+        for c in text.chars().chain(std::iter::once(' ')) {
+            if c.is_alphabetic() {
+                run.extend(c.to_lowercase());
+            } else if !run.is_empty() {
+                // A word of one or two plain letters says nothing of anybody, and is kept without being listed
+                if !run.is_ascii() || run.len() > 2 {
+                    words.insert(std::mem::take(&mut run));
+                }
+                run.clear();
+            }
+        }
+    }
+    let out = PathBuf::from(std::env::var_os("OUT_DIR").unwrap_or_default()).join("vocabulary.txt");
+    let _ = std::fs::write(out, words.into_iter().collect::<Vec<_>>().join("\n"));
+}
+
+/// A source file as what is built of it: its code and what its code says,
+/// without what is written about the code and without whatever is marked
+/// `#[cfg(test)]` -- a module of tests, wherever in the file it stands, or
+/// one item. Read the way the language is: a brace inside a string or a
+/// comment opens nothing
+fn built(text: &str) -> String {
+    let c: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let (mut i, mut depth) = (0usize, 0i32);
+    // While leaving something out: the depth it began at, and whether its body has opened
+    let mut leaving: Option<(i32, bool)> = None;
+    let at = |i: usize, s: &str| s.chars().enumerate().all(|(k, ch)| c.get(i + k) == Some(&ch));
+    while i < c.len() {
+        // What is written about the code
+        if at(i, "//") {
+            while i < c.len() && c[i] != '\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if at(i, "/*") {
+            let mut open = 1;
+            i += 2;
+            while i < c.len() && open > 0 {
+                if at(i, "/*") {
+                    open += 1;
+                    i += 2;
+                } else if at(i, "*/") {
+                    open -= 1;
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            continue;
+        }
+        // What the code says: a string, written plainly or raw
+        let word_before = i > 0 && (c[i - 1].is_alphanumeric() || c[i - 1] == '_');
+        let raw = (!word_before && (at(i, "r\"") || at(i, "r#"))).then_some(i + 1).or((!word_before && (at(i, "br\"") || at(i, "br#"))).then_some(i + 2));
+        if let Some(mut j) = raw {
+            let mut hashes = 0;
+            while c.get(j) == Some(&'#') {
+                hashes += 1;
+                j += 1;
+            }
+            if c.get(j) == Some(&'"') {
+                j += 1;
+                let from = j;
+                let closes = |j: usize| c.get(j) == Some(&'"') && (1..=hashes).all(|k| c.get(j + k) == Some(&'#'));
+                while j < c.len() && !closes(j) {
+                    j += 1;
+                }
+                if leaving.is_none() {
+                    out.push(' ');
+                    out.extend(&c[from..j.min(c.len())]);
+                    out.push(' ');
+                }
+                i = j + 1 + hashes;
+                continue;
+            }
+        }
+        if c[i] == '"' {
+            let mut j = i + 1;
+            let mut said = String::new();
+            while j < c.len() && c[j] != '"' {
+                if c[j] != '\\' {
+                    said.push(c[j]);
+                    j += 1;
+                    continue;
+                }
+                // What stands for a mark or a letter is read as what it stands for:
+                // "one\ntwo" says one and two, not one and ntwo
+                match c.get(j + 1) {
+                    Some('u') if c.get(j + 2) == Some(&'{') => {
+                        let end = (j + 3..c.len()).find(|k| c[*k] == '}').unwrap_or(c.len());
+                        let number: String = c[j + 3..end].iter().collect();
+                        said.push(u32::from_str_radix(&number, 16).ok().and_then(char::from_u32).unwrap_or(' '));
+                        j = end + 1;
+                    }
+                    Some('"') => {
+                        said.push('"');
+                        j += 2;
+                    }
+                    _ => {
+                        said.push(' ');
+                        j += 2;
+                    }
+                }
+            }
+            if leaving.is_none() {
+                out.push(' ');
+                out.push_str(&said);
+                out.push(' ');
+            }
+            i = j + 1;
+            continue;
+        }
+        // One letter between marks -- and not a name for how long something lives, which begins the same way
+        if c[i] == '\'' {
+            if c.get(i + 1) == Some(&'\\') {
+                let mut j = i + 2;
+                while j < c.len() && c[j] != '\'' {
+                    j += 1;
+                }
+                i = j + 1;
+                continue;
+            }
+            if c.get(i + 2) == Some(&'\'') {
+                i += 3;
+                continue;
+            }
+        }
+        // What is only there when the tests are built
+        if leaving.is_none() && at(i, "#[cfg(test)]") {
+            leaving = Some((depth, false));
+            i += "#[cfg(test)]".len();
+            continue;
+        }
+        match c[i] {
+            '{' => {
+                depth += 1;
+                if let Some((_, opened)) = &mut leaving {
+                    *opened = true;
+                }
+            }
+            '}' => {
+                depth -= 1;
+                match leaving {
+                    // Its body has closed, or what it stood in has
+                    Some((began, opened)) if (opened && depth == began) || depth < began => leaving = None,
+                    _ => {}
+                }
+                i += 1;
+                continue;
+            }
+            // An item with no body ends where it says so
+            ';' if leaving.is_some_and(|(began, opened)| !opened && depth == began) => {
+                leaving = None;
+                i += 1;
+                continue;
+            }
+            _ => {}
+        }
+        if leaving.is_none() {
+            out.push(c[i]);
+        }
+        i += 1;
+    }
+    out
 }
 
 include!("../../tools/build_git_head.rs");

@@ -22509,7 +22509,7 @@ pub fn exec_commands(
                 if let Err(e) = crate::crypto::write_atomic(&path, &json.to_string()) {
                     append_hook_log(&format!("Failed to write result: {e}"));
                 }
-                append_hook_log(&format!("Result code={code} reason={reason} (tab{origin})"));
+                append_hook_log(&format!("Result code={code} reason={} (tab{origin})", log_words(&reason, 400)));
                 *flash = Some(i18n::tp(
                     "msg.result",
                     &[("code", &code.to_string()), ("reason", &reason)],
@@ -22637,8 +22637,9 @@ pub fn exec_commands(
             }
             Command::Notify { dest, text } => {
                 append_hook_log(&format!(
-                    "NOTIFY[{}] {text}",
-                    dest.as_deref().unwrap_or("(primary)")
+                    "NOTIFY[{}] {}",
+                    dest.as_deref().unwrap_or("(primary)"),
+                    log_words(&text, 400)
                 ));
                 *flash = Some(notifier.send_opt(dest.as_deref(), &text));
             }

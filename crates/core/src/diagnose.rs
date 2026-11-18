@@ -922,7 +922,8 @@ const OWN_STARTS: [&str; 4] = ["shikisha", "openconsole", "conpty", "webview2loa
 
 /// Whether a file's name, in small letters, is one the app gave it
 fn own_file(lower: &str) -> bool {
-    OWN_NAMES.contains(&lower) || OWN_STARTS.iter().any(|own| lower.starts_with(own))
+    // (a tab's record in the logs is named after the tab, whatever the tab is called)
+    OWN_NAMES.contains(&lower) || (OWN_STARTS.iter().any(|own| lower.starts_with(own)) && own_words(lower))
 }
 
 /// Which names of a folder are told
@@ -1016,7 +1017,9 @@ const CHOICES: [&str; 3] = ["access", "language", "kind"];
 /// a person chose -- a folder, a machine, a provider, a key -- and is not
 /// said. Every setting of that kind in `crate::config` is here (a test
 /// reads the settings' own source to see that it is)
-const BY_NAME: [&str; 16] = [
+const BY_NAME: [&str; 18] = [
+    "files",
+    "http",
     "folder_colors",
     "server_marks",
     "side_panels",
@@ -1046,9 +1049,9 @@ fn shape(v: &serde_json::Value, key: &str, named: bool, depth: usize, out: &mut 
     // What is filed under this one is filed by name when the setting is a
     // list by name -- or is such a list's own list of words
     let by_name = BY_NAME.contains(&key) || (named && v.as_object().is_some_and(|o| o.values().all(Value::is_string)));
-    // A name the app gave is small letters and underscores; anything else
-    // may be a name a person gave
-    let plain = !named && !key.is_empty() && key.len() <= 40 && key.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+    // A name the app gave is small letters and underscores, in words of
+    // its own; anything else may be a name a person gave
+    let plain = !named && !key.is_empty() && key.len() <= 40 && key.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') && own_words(key);
     let key = if plain || key.starts_with('#') { key } else { "(a name)" };
     match v {
         Value::Null => out.push_str(&format!("{pad}{key}: not set\n")),
@@ -1407,10 +1410,13 @@ fn names_out(text: &str, names: &[(String, String)]) -> (String, usize) {
 /// What kind of file a text is, which says how much of it is somebody's words
 #[derive(Clone, Copy, PartialEq)]
 enum Kind {
-    /// One of the app's logs: lines of events, with names and words in them
+    /// One of the app's logs, or what it keeps as JSON: lines the app
+    /// wrote, with somebody's names and words among its own
     Log,
-    /// The same, written as JSON: its marks are part of what it is
-    Data,
+    /// Where the app says how it ended: what a library said as it failed,
+    /// the names of functions, the programs holding the memory. Its words
+    /// are not all the app's own, and they are what says what went wrong
+    Ending,
     /// What Windows wrote
     Events,
     /// What this program wrote for the report, a number and a file name at
@@ -1419,78 +1425,93 @@ enum Kind {
     Record,
 }
 
-/// What stands for something a person named, in a log
-const A_NAME: &str = "[a name]";
+/// What stands for a word that is not the app's own
+const A_WORD: char = '\u{25af}';
 
-/// What the app itself puts between marks in its logs: the AIs and the
-/// shells, which a fault is often about
-const OWN_WORDS: [&str; 16] =
-    ["claude", "claude code", "codex", "codex cli", "gemini", "gemini cli", "aider", "powershell", "pwsh", "cmd", "cmd.exe", "bash", "shell", "git", "main", "master"];
+/// The words this program is written in (`build.rs` lists them): the only
+/// ones a report keeps of a log
+static OWN_WORDS: LazyLock<std::collections::HashSet<&'static str>> = LazyLock::new(|| include_str!(concat!(env!("OUT_DIR"), "/vocabulary.txt")).lines().collect());
 
-/// A log with what stands between double marks left out, unless it is the
-/// app's own word or already stands for something: a tab's title, a quick
-/// command's label, a scheduled prompt's name are all said that way, and all
-/// are somebody's
-fn marked_out(text: &str) -> (String, usize) {
-    static MARKED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#""([^"\r\n]{1,300})""#).expect("the marks pattern does not compile"));
-    // What git and the others answered is written with marks of its own,
-    // and has had its words taken out already (`SAID`)
-    static ANSWER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:\[[ \d.]+\] )?(?:git|issues|sftp|suggest): ").expect("the answer pattern does not compile"));
-    let mut n = 0;
-    let mut out = String::with_capacity(text.len());
-    for line in text.split_inclusive('\n') {
-        if ANSWER.is_match(line) {
-            out.push_str(line);
-            continue;
-        }
-        out.push_str(&MARKED.replace_all(line, |c: &regex::Captures| {
-        let inner = &c[1];
-        let stands = inner.starts_with('[') && inner.ends_with(']');
-        if stands || OWN_WORDS.contains(&inner.to_lowercase().as_str()) {
-            c[0].to_string()
-        } else {
-            n += 1;
-            format!("\"{A_NAME}\"")
-        }
-        }));
-    }
-    (out, n)
+/// Whether a run of letters is a word of the app's own. One or two plain
+/// letters say nothing of anybody
+fn own_word(run: &str) -> bool {
+    (run.is_ascii() && run.len() <= 2) || OWN_WORDS.contains(run.to_lowercase().as_str())
 }
 
-/// A line that says a folder would not be removed, without what held it:
-/// the file that stayed is named there from the folder down, and it is the
-/// person's file. What the system said about it -- its number -- is kept
-fn kept_out(text: &str) -> (String, usize) {
-    static LINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)(could not remove (?:\[[^\]\r\n]*\]|\S+))([^\r\n]*)$").expect("the removal pattern does not compile"));
-    static CODE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\(os error \d+\)").expect("the code pattern does not compile"));
+/// Whether every word of a name is the app's own: a name the app gave
+fn own_words(name: &str) -> bool {
+    name.split(|c: char| !c.is_alphabetic()).filter(|run| !run.is_empty()).all(own_word)
+}
+
+/// A log with every word that is not the app's own left out, and how many
+/// there were.
+///
+/// A log line is the app's words with somebody's among them, and no list of
+/// the places they turn up is ever whole: a desk's name between marks, a
+/// branch after "on", a machine after an `@`, a file in what git said, the
+/// reason a script gave. So the question is asked the other way round. The
+/// words the app can write are known (`OWN_WORDS`), and a word that is not
+/// one of them is somebody's: it goes, whatever line it is in. Numbers stay,
+/// and so do the marks around the words -- how long a path was, that there
+/// was a name there -- and a number written in letters and digits, which is
+/// what the app calls a tab, a run, a key's place
+fn others_out(text: &str) -> (String, usize) {
+    // What names a thing by a number: left whole, or its letters would be taken for words
+    static NUMBER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b(?:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F-]+|[0-9a-fA-F]{8,})\b").expect("the number pattern does not compile"));
+    let mut out = String::with_capacity(text.len());
     let mut n = 0;
-    let out = LINE.replace_all(text, |c: &regex::Captures| {
-        n += 1;
-        let codes: Vec<&str> = CODE.find_iter(&c[2]).map(|m| m.as_str()).collect();
-        format!("{}: [what stayed is left out] {}", &c[1], codes.join(" ")).trim_end().to_string()
-    });
-    (out.into_owned(), n)
+    let mut words = |piece: &str, out: &mut String| {
+        let mut run = String::new();
+        for c in piece.chars().chain(std::iter::once('\0')) {
+            if c.is_alphabetic() {
+                run.push(c);
+                continue;
+            }
+            if !run.is_empty() {
+                match own_word(&run) {
+                    true => out.push_str(&run),
+                    false => {
+                        n += 1;
+                        out.push(A_WORD);
+                    }
+                }
+                run.clear();
+            }
+            if c != '\0' {
+                out.push(c);
+            }
+        }
+    };
+    let mut at = 0;
+    // (with a digit in it: eight letters that could all be a number's are as often a word)
+    for number in NUMBER.find_iter(text).filter(|m| m.as_str().chars().any(|c| c.is_ascii_digit())) {
+        words(&text[at..number.start()], &mut out);
+        out.push_str(number.as_str());
+        at = number.end();
+    }
+    words(&text[at..], &mut out);
+    (out, n)
 }
 
 /// What a report may hold of a text, and how many things were hidden to
 /// get there. First what `hidden_lines` hides, on the text as it was
 /// written, so that nothing put in afterwards stands where a pattern looks.
-/// Then, in a log, the person's own names put as numbers, what stands
-/// between marks, and the files a removal left. Last, every path told by
-/// no more than its file
+/// Then the person's own names put as numbers, where there can be any.
+/// Then every path told by no more than its file. Last, in a log, every
+/// word that is not the app's own
 fn private(text: &str, known: &[String], names: &[(String, String)], kind: Kind) -> (String, usize) {
-    let (mut text, mut n) = hidden_lines(text, known, matches!(kind, Kind::Log | Kind::Data));
+    let (mut text, mut n) = hidden_lines(text, known, matches!(kind, Kind::Log | Kind::Ending));
     if kind != Kind::Record {
         let (named, more) = names_out(&text, names);
         (text, n) = (named, n + more);
     }
+    let (mut text, paths) = folders_out(&text);
+    n += paths;
     if kind == Kind::Log {
-        let (kept, more) = kept_out(&text);
-        let (marked, others) = marked_out(&kept);
-        (text, n) = (marked, n + more + others);
+        let (own, more) = others_out(&text);
+        (text, n) = (own, n + more);
     }
-    let (text, paths) = folders_out(&text);
-    (text, n + paths)
+    (text, n)
 }
 
 /// What kind of file each one in the report is
@@ -1498,7 +1519,7 @@ fn kind_of(name: &str) -> Kind {
     match name {
         "health.log" | "findings.txt" | "now.txt" | "about.txt" | "storage.txt" | "files.txt" | "settings.txt" | "dumps.txt" | "short-runs.txt" => Kind::Record,
         "events.txt" => Kind::Events,
-        _ if name.ends_with(".json") => Kind::Data,
+        "crash.log" | "last-run-ended.txt" | "memory.log" => Kind::Ending,
         _ => Kind::Log,
     }
 }
@@ -1520,7 +1541,10 @@ pub fn bundle() -> Result<(String, Vec<u8>, usize)> {
     static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
     let known = known_keys();
-    let names = own_names();
+    // The settings may be on a share that has stopped answering: read off
+    // to one side, and done without after a moment. Without the names, a
+    // log still keeps only the app's own words
+    let names = later("names", own_names).recv_timeout(Duration::from_secs(8)).unwrap_or_default();
     let mut hid = 0;
     // The moment first and by itself: counting the folders works the disk,
     // and measured beside it that work would be told as the machine's trouble
@@ -1558,7 +1582,7 @@ pub fn bundle() -> Result<(String, Vec<u8>, usize)> {
     first.push_str(&crate::findings::of_week(health.as_deref().unwrap_or_default()));
     first.push('\n');
     first.push_str(&crate::findings::of_log(hooks.as_deref().unwrap_or_default()));
-    let about = about() + &machine(git.recv_timeout(Duration::from_secs(6)).ok().flatten());
+    let about = later("about", about).recv_timeout(Duration::from_secs(8)).unwrap_or_else(|_| "the settings did not answer in time\n".to_string()) + &machine(git.recv_timeout(Duration::from_secs(6)).ok().flatten());
     let mut files: Vec<(&str, String)> = vec![("findings.txt", first), ("about.txt", about)];
     if let Some((text, _, _)) = moment {
         files.push(("now.txt", text));
@@ -1789,6 +1813,9 @@ mod tests {
             "appearance": {"theme": "dark", "font": "Cascadia Mono"},
             "desks": [{"name": "Acme shop", "file": "desks/acme.json", "auto": true}],
             "Acme Corp": {"token": "s3cr3t-value"},
+            // A name a person gave in small letters, as the app's own are written
+            "zorblatt_ledger": true,
+            "capabilities": {"files": {"quuxley_books": {"read": true}}},
             "language": "A Sentence Somebody Typed",
             // Lists by name: what they are filed under is somebody's word,
             // small letters or not
@@ -1803,7 +1830,8 @@ mod tests {
         for kept in ["keep_terminals: false", "max_chain: 4", "theme: text, 4 letters", "font: text, 13 letters", "desks: 1 of them", "#1:", "auto: true", "name: text, 9 letters", "language: text, 25 letters"] {
             assert!(said.contains(kept), "{kept} is not in:\n{said}");
         }
-        for gone in ["Acme", "acme", "Cascadia", "s3cr3t", "a note", "Somebody"] {
+        assert!(said.contains("files:\n      (a name):\n        read: true"), "{said}");
+        for gone in ["Acme", "acme", "Cascadia", "s3cr3t", "a note", "Somebody", "zorblatt", "quuxley"] {
             assert!(!said.contains(gone), "{gone} is in:\n{said}");
         }
         assert!(said.contains("(a name):"), "{said}");
@@ -1864,46 +1892,54 @@ mod tests {
         assert_eq!(folders_out(r"D:\a\b.exe and D:\c\d").1, 2);
     }
 
-    /// In a log, what stands between marks is left out unless it is the
-    /// app's own word, and so is what a line quoted of somebody's words and
-    /// the file a removal left behind
+    /// A log keeps the app's own words and the numbers, and nothing else:
+    /// whatever line somebody's word is in, and however it is written there
     #[test]
-    fn a_log_keeps_the_event_and_not_the_persons_words() {
-        let names = vec![("Acme".to_string(), "[desk 1]".to_string()), (r"D:\repo".to_string(), "[folder 1]".to_string())];
+    fn a_log_keeps_the_apps_own_words_and_no_others() {
+        let names = vec![("Zorblatt".to_string(), "[desk 1]".to_string()), (r"D:\repo".to_string(), "[folder 1]".to_string())];
         let log = [
-            "[   1.000] Startup: desk \"Acme\" (first desk)",
+            "[   1.000] Startup: desk \"Zorblatt\" (first desk)",
             "[   2.000] \"claude\" starts clean: this desk remembers nothing for it in this folder",
-            "[   3.000] tab1 \"acme payroll - vim\" is running a helper",
-            "[   4.000] scheduled prompt \"month end\" run 3 (run now) -> tab \"books\": \u{27e6}pay the Acme invoices and\u{2026}\u{27e7}",
-            "[   5.000] scheduled prompt \"month end\" run 2 (run now) -> tab \"books\": pay the Acme invoices, as before the marks",
-            "[   6.000] could not remove D:\\repo: customers\\Acme Merger\\offer.xlsx could not be deleted: it is in use (os error 32)",
-            "[   7.000] could not remove D:\\repo\\Acme Merger\\offer.docx at all",
-            "[   8.000] note tab2: call Acme back",
-            "[   9.000] git: {\"branch\":\"acme-merger\"}",
-            "[  10.000] git: {\"act\":\"pull\",\"ok\":false,\"err\":\"no such branch acme-merger\"}",
+            "[   3.000] tab1 \"quuxley ledger - frobnitz\" is running a helper",
+            "[   4.000] scheduled prompt \"wibbly\" run 3 (run now) -> tab \"books\": \u{27e6}pay the Quuxley invoices and\u{2026}\u{27e7}",
+            "[   5.000] could not remove D:\\repo: customers\\Quuxley Merger\\offer.xlsx could not be deleted: it is in use (os error 32)",
+            "[   6.000] pr news QuuxleyCorp/wibbly-repo#123",
+            "[   7.000] far terminal 2: the line to frobnitz@quuxhost01:22 went; waiting for it to come back",
+            "[   8.000] write_file reports/customers/Quuxley/offer.txt (12 bytes)",
+            "[   9.000] State tab2 WAIT->BUSY [Wibbly Profile] said=None prompted=false",
+            "[  10.000] far terminal for 810668f8-e46b-409b-ac8b-afe984ff8d2f: to be opened on this PC once its line is up",
+            "[  11.000] this PC's resident process: no line to it (~\\AppData\\Local\\ShikishaTerm\\keeper\\f81736d6f45330d2\\run\\keep.key is not there: (os error 3))",
+            "[  12.000] \u{30c7}\u{30b9}\u{30af}\u{300c}\u{7d4c}\u{7406}\u{90e8}\u{300d}",
         ]
         .join("\n");
         let (said, _) = private(&log, &[], &names, Kind::Log);
         let lines: Vec<&str> = said.lines().collect();
+        for gone in ["zorblatt", "quux", "frobnitz", "wibbly", "\u{7d4c}\u{7406}"] {
+            assert!(!said.to_lowercase().contains(gone), "{gone} is still in it:\n{said}");
+        }
+        // What the app itself said is all there
         assert_eq!(lines[0], "[   1.000] Startup: desk \"[desk 1]\" (first desk)");
         assert_eq!(lines[1], "[   2.000] \"claude\" starts clean: this desk remembers nothing for it in this folder");
-        assert_eq!(lines[2], "[   3.000] tab1 \"[a name]\" is running a helper");
-        assert_eq!(lines[3], format!("[   4.000] scheduled prompt \"[a name]\" run 3 (run now) -> tab \"[a name]\": {LEFT_OUT}"));
-        assert_eq!(lines[4], format!("[   5.000] scheduled prompt \"[a name]\" run 2 (run now) -> tab \"[a name]\": {LEFT_OUT}"));
-        assert_eq!(lines[5], "[   6.000] could not remove [folder 1]: [what stayed is left out] (os error 32)");
-        assert_eq!(lines[6], "[   7.000] could not remove [folder 1]: [what stayed is left out]");
-        assert_eq!(lines[7], format!("[   8.000] note tab2: {LEFT_OUT}"));
-        assert_eq!(lines[8], format!("[   9.000] git: {LEFT_OUT}"));
-        // What was done and whether it worked is the event
-        assert_eq!(lines[9], format!("[  10.000] git: {{\"act\":\"pull\",\"ok\":false{LEFT_OUT}"));
-        assert!(!said.to_lowercase().contains("acme") && !said.contains("month end") && !said.contains("offer"), "{said}");
+        assert!(lines[2].starts_with("[   3.000] tab1 \"") && lines[2].ends_with("\" is running a helper"), "{}", lines[2]);
+        assert!(lines[3].starts_with("[   4.000] scheduled prompt \"\u{25af}\" run 3 (run now) -> tab \"") && lines[3].ends_with(LEFT_OUT), "{}", lines[3]);
+        // ...with the reason a folder stayed, and not the file that held it
+        assert!(lines[4].starts_with("[   5.000] could not remove [folder 1]: ") && lines[4].ends_with(" could not be deleted: it is in use (os error 32)"), "{}", lines[4]);
+        assert!(lines[5].starts_with("[   6.000] pr news \u{25af}/") && lines[5].ends_with("#123"), "{}", lines[5]);
+        assert!(lines[6].contains("\u{25af}@\u{25af}01:22 went; waiting for it to come back"), "{}", lines[6]);
+        assert!(lines[7].starts_with("[   8.000] write_file ") && lines[7].ends_with(" (12 bytes)") && lines[7].contains('\u{25af}'), "{}", lines[7]);
+        assert!(lines[8].starts_with("[   9.000] State tab2 WAIT->BUSY [\u{25af} ") && lines[8].ends_with("said=None prompted=false"), "{}", lines[8]);
+        // A number written with letters is left whole
+        assert_eq!(lines[9], "[  10.000] far terminal for 810668f8-e46b-409b-ac8b-afe984ff8d2f: to be opened on this PC once its line is up");
+        assert_eq!(lines[10], "[  11.000] this PC's resident process: no line to it ([a folder]\\keep.key is not there: (os error 3))");
         // A name that is also a word the hiding looks for does not blind it
         let names = vec![("response".to_string(), "[desk 1]".to_string()), ("https".to_string(), "[a tab]".to_string())];
-        let (said, _) = private("fired tab1 [done]: response 100 chars: the Acme plan\nopened https://github.com/acme/secret-repo\n", &[], &names, Kind::Log);
-        assert!(!said.to_lowercase().contains("acme"), "{said}");
+        let (said, _) = private("fired tab1 [done]: response 100 chars: the Quuxley plan\nopened https://github.com/quuxley/wibbly-repo\n", &[], &names, Kind::Log);
+        assert!(!said.to_lowercase().contains("quux") && !said.contains("wibbly"), "{said}");
         // What this program wrote for the report is left as it is: a tab called node does not rename a program
         let names = vec![("node".to_string(), "[a tab]".to_string())];
-        assert_eq!(private("most cpu: node x6 41%\n", &[], &names, Kind::Record).0, "most cpu: node x6 41%\n");
+        assert_eq!(private("most cpu: quuxleyd x6 41%\n", &[], &names, Kind::Record).0, "most cpu: quuxleyd x6 41%\n");
+        // ...and where the app says how it ended, the words of what failed are kept
+        assert!(private("thread 'main' panicked at quuxley: index out of bounds\n", &[], &[], Kind::Ending).0.contains("quuxley: index out of bounds"));
     }
 
     /// The person's own names are put as what stands for them, as words of
@@ -1922,6 +1958,21 @@ mod tests {
         // And through the whole of what a report may hold: nothing of the folder is left
         let (said, _) = private("left d:\\work\\acme-payroll\\target\\Acme Merger\\x.docx: in use", &[], &names, Kind::Log);
         assert_eq!(said.trim_end(), "left [folder 1]\\...: in use");
+    }
+
+    /// Every setting that is a list by name is known as one: a new one that
+    /// is not would have its names -- a customer's, a machine's -- in the
+    /// report whenever they are written the way the app writes its own
+    #[test]
+    fn every_setting_filed_by_name_is_known_as_one() {
+        // (the settings, and the gates a person names in them)
+        let source = [include_str!("config.rs"), include_str!("caps.rs")].concat();
+        let filed = Regex::new(r"pub (\w+): (?:Option<)?(?:std::collections::)?(?:HashMap|BTreeMap)<String").unwrap();
+        let found: Vec<&str> = filed.captures_iter(&source).map(|c| c.get(1).unwrap().as_str()).collect();
+        assert!(found.len() >= 10, "the settings' lists by name were not found in their source: {found:?}");
+        for name in found {
+            assert!(BY_NAME.contains(&name), "the setting {name} is a list by name and is not in BY_NAME: its names would be in a report");
+        }
     }
 
     /// What a console program printed is read in the letters it was printed in
@@ -1952,10 +2003,12 @@ mod tests {
         std::fs::write(dir.join("secrets.json-acme.backup"), [0u8; 10]).unwrap();
         std::fs::write(dir.join("acme-payroll-20261118.log"), [0u8; 10]).unwrap();
         std::fs::write(dir.join("hooks.log"), [0u8; 10]).unwrap();
+        // ...and a tab's record whose tab was called after the app
+        std::fs::write(dir.join("shikisha-QuuxleyLedger-20261118.log"), [0u8; 10]).unwrap();
         let far = std::time::Instant::now() + std::time::Duration::from_secs(60);
         let said = listing("a folder", &dir, Told::Own, &mut 1000, far);
         assert!(said.contains("logs/") && said.contains("in 1 files") && said.contains("SHIKISHA-TERM.exe"), "{said}");
-        assert!(!said.contains("acme") && said.contains("(5 more that are not the app's own") && said.contains("hooks.log"), "{said}");
+        assert!(!said.contains("acme") && !said.contains("Quuxley") && said.contains("(6 more that are not the app's own") && said.contains("hooks.log"), "{said}");
         let all = listing("a folder", &dir, Told::All, &mut 1000, far);
         assert!(all.contains("acme-shop/"), "{all}");
         let _ = std::fs::remove_dir_all(&dir);
