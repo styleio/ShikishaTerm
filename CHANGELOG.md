@@ -8,6 +8,34 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+### Added
+- **Saved diagnostics that answer the question by themselves.** One press of
+  **Save diagnostics** now also reads what can only be read at that moment:
+  what every program on the machine is using of the processors and the
+  memory and how much it reads and writes (the system's own programs and
+  the virus scanner too, which the app could not see before), which part of
+  the app itself is working, what Windows wrote down over the week about
+  programs that crashed, memory running out and disks failing, what the app
+  keeps on disk, and which of its settings are switched on. The zip's first
+  file, `findings.txt`, says in words what all of it comes to: when
+  something was off, what it was, which programs were behind it, and what
+  the records cannot say. The week's record (`logs/health.log`) notes a few
+  more numbers a line -- how busy the disk was, how much memory was being
+  read back from it, how much of the machine this app and what it started
+  were using -- and stays as small as it was. What you typed into the
+  settings, the PC's name and who is logged in are never in the zip.
+
+### Fixed
+- **Removing a large folder no longer has a second program walking it the
+  whole time.** While a worktree was being deleted, the count of what was
+  left started again the moment it ended; in a folder of hundreds of
+  thousands of files that doubled the work of a disk already busy with the
+  deleting. It now takes a fifth of the time at most.
+- **A fault that repeats no longer fills the log.** When this PC's resident
+  process could not be reached, the same line was written every two seconds
+  and pushed everything else out of the log. It is written once, and then
+  every so often with how many times it has been.
+
 ## [0.31.0] - 2026-11-17
 
 ### Added

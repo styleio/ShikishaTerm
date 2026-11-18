@@ -2263,6 +2263,10 @@ fn discard_waiting_from(folder: &Path, approved: Option<&str>, progress: &std::s
 /// what is left is counted instead: once before, and again every so often on
 /// a thread of its own until the deleting ends. A count walks the folder the
 /// way a delete does, so it is taken at the pace a person reads, not faster
+/// -- and never for more than a fifth of the time: in a folder of hundreds
+/// of thousands of files on a disk already busy with the deleting, one count
+/// takes seconds, and counting again the moment it ended kept a second
+/// program walking the folder for as long as the deleting ran
 fn count_while<T>(folder: &Path, deleting: &std::sync::Mutex<Option<FileProgress>>, delete: impl FnOnce() -> T) -> T {
     const EVERY: std::time::Duration = std::time::Duration::from_millis(500);
     let put = |p: Option<FileProgress>| *deleting.lock().unwrap_or_else(|e| e.into_inner()) = p;
@@ -2278,8 +2282,11 @@ fn count_while<T>(folder: &Path, deleting: &std::sync::Mutex<Option<FileProgress
     let (ended, wait) = std::sync::mpsc::channel::<()>();
     let said = std::thread::scope(|s| {
         s.spawn(move || {
-            while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = wait.recv_timeout(EVERY) {
+            let mut pause = EVERY;
+            while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = wait.recv_timeout(pause) {
+                let began = std::time::Instant::now();
                 put(Some(at(files_in(folder))));
+                pause = EVERY.max(began.elapsed() * 4);
             }
         });
         let said = delete();
@@ -2326,7 +2333,10 @@ impl Removal {
         let removal = Removal { kept_branch, folder: folder.clone(), approved: approved.clone(), released: released.clone(), on: None, outcome: Default::default(), deleting: Default::default() };
         let (outcome, deleting) = (removal.outcome.clone(), removal.deleting.clone());
         std::thread::spawn(move || {
+            let began = std::time::Instant::now();
             let said = count_while(&folder, &deleting, || discard_waiting_from(&folder, approved.as_deref(), &released)).map_err(|e| format!("{e:#}"));
+            // One that took long is in the record of how the machine was doing
+            crate::health::took("removing a folder", began, if said.is_ok() { "it went" } else { "it stayed" });
             if let Err(why) = &said {
                 crate::append_hook_log(&format!("could not remove {}: {why}", folder.display()));
             }

@@ -139,9 +139,30 @@ pub fn connect_soon() {
         return;
     }
     let _ = std::thread::Builder::new().name("this PC's resident process".into()).spawn(|| {
-        if let Err(e) = connect_or(wanted()) {
-            crate::append_hook_log(&format!("this PC's resident process: no line to it ({e:#})"));
+        // Asked again every couple of seconds for as long as a tab waits. The
+        // same reason is written once and then every so often, with how many
+        // times it has been: written each time, it was nine lines in ten of
+        // the log, and pushed out of it what would have said why
+        static WHY: std::sync::Mutex<(String, u32)> = std::sync::Mutex::new((String::new(), 0));
+        const SAID_EVERY: u32 = 300;
+        let made = connect_or(wanted());
+        let mut why = WHY.lock().unwrap_or_else(|e| e.into_inner());
+        match made {
+            Ok(_) => *why = (String::new(), 0),
+            Err(e) => {
+                let e = format!("{e:#}");
+                if why.0 != e {
+                    *why = (e.clone(), 1);
+                    crate::append_hook_log(&format!("this PC's resident process: no line to it ({e})"));
+                } else {
+                    why.1 += 1;
+                    if why.1 % SAID_EVERY == 0 {
+                        crate::append_hook_log(&format!("this PC's resident process: still no line to it after {} tries ({e})", why.1));
+                    }
+                }
+            }
         }
+        drop(why);
         MAKING.store(false, Ordering::SeqCst);
     });
 }
