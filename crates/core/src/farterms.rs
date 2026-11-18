@@ -980,7 +980,13 @@ impl Terms {
             tab: m["tab"].as_str().unwrap_or_default().to_string(),
             cwd: m["cwd"].as_str().unwrap_or_default().to_string(),
             seen: Mutex::new(Seen {
-                parser: vt100::Parser::new_with_callbacks(rows, cols, SCROLLBACK_KEPT, held),
+                parser: {
+                    let mut p = vt100::Parser::new_with_callbacks(rows, cols, SCROLLBACK_KEPT, held);
+                    // On Windows the terminal is Windows' pseudo console (see
+                    // `Grid::set_reflow_keeps_top`)
+                    p.screen_mut().set_reflow_keeps_top(cfg!(windows));
+                    p
+                },
                 edge: crate::termstate::Boundary::default(),
                 seq: 0,
                 owner: None,

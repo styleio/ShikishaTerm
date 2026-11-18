@@ -13,6 +13,10 @@ pub struct Grid {
     scrollback: std::collections::VecDeque<crate::row::Row>,
     scrollback_len: usize,
     scrollback_offset: usize,
+    /// NOTE (vendored patch): whether a change of width keeps the row at the
+    /// top of the screen where it is, rather than the last row
+    /// (`set_reflow_keeps_top`)
+    reflow_keeps_top: bool,
 }
 
 impl Grid {
@@ -29,7 +33,24 @@ impl Grid {
             scrollback: std::collections::VecDeque::new(),
             scrollback_len,
             scrollback_offset: 0,
+            reflow_keeps_top: false,
         }
+    }
+
+    /// NOTE (vendored patch): lay the screen out again after a change of
+    /// width the way Windows' pseudo console lays out its own: the row at
+    /// the top of the screen stays at the top, and what is under it moves up
+    /// or down -- unless the cursor would leave the screen, which then
+    /// follows it. That console sends nothing when the width changes, and
+    /// the next thing it writes puts the cursor where its own laying out
+    /// left it, by row and column: laid out any other way here, what is
+    /// typed next lands on another row (measured, `pty_probe --resize`)
+    pub fn set_reflow_keeps_top(&mut self, on: bool) {
+        self.reflow_keeps_top = on;
+    }
+
+    pub fn reflow_keeps_top(&self) -> bool {
+        self.reflow_keeps_top
     }
 
     pub fn allocate_rows(&mut self) {
@@ -110,11 +131,18 @@ impl Grid {
         let mut cursor: Option<(usize, usize)> = None;
         let mut line: Vec<crate::Cell> = Vec::new();
         let mut cursor_in_line: Option<usize> = None;
+        // Where in its line the row at the top of the screen began, and the
+        // row it is laid out on
+        let mut top_in_line: Option<usize> = None;
+        let mut top_at: Option<usize> = None;
         let last = old.len().saturating_sub(1);
         for (i, row) in old.into_iter().enumerate() {
             let runs_on = row.wrapped() && i < last;
             if i == cursor_row {
                 cursor_in_line = Some(line.len() + cursor_col);
+            }
+            if i == above {
+                top_in_line = Some(line.len());
             }
             let mut cells = row.into_cells();
             // A row that runs on ends in something written, unless a wide
@@ -129,6 +157,9 @@ impl Grid {
             }
             line.extend(cells);
             if !runs_on {
+                if let Some(offset) = top_in_line.take() {
+                    top_at = Some(laid.len() + offset / cols.max(1));
+                }
                 let at = lay_out(
                     std::mem::take(&mut line),
                     cursor_in_line.take(),
@@ -156,7 +187,13 @@ impl Grid {
         // which keeps the most rows under it, and only those that still do
         // not fit are dropped. Blank rows under the text were never counted
         // (`used` above), so nothing that shows is dropped while room is left
-        let mut top = laid.len().saturating_sub(screen_rows);
+        let mut top = match (self.reflow_keeps_top, top_at) {
+            (true, Some(at)) => at.min(laid.len().saturating_sub(1)).max(
+                // ...unless the cursor would fall off the bottom
+                (cursor_at + 1).saturating_sub(screen_rows),
+            ),
+            _ => laid.len().saturating_sub(screen_rows),
+        };
         if cursor_at < top {
             top = cursor_at;
         }
@@ -1034,6 +1071,8 @@ impl Grid {
             scrollback,
             scrollback_len,
             scrollback_offset: 0,
+            // Not part of the state: the terminal reading it says
+            reflow_keeps_top: false,
         })
     }
 }

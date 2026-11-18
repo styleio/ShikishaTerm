@@ -137,6 +137,13 @@ once it reaches its first tagged release.
   address it was at -- not loaded again the way it was reached, so a page
   reached by sending a form does not send the form a second time. One that
   dies three times in a minute, or for want of memory, is left as it is.
+- **Typing after widening a Windows terminal lands on the right row.**
+  When a terminal on this PC was made wider, its lines were laid out again
+  keeping the last row in place, while Windows' own console keeps the top
+  row in place; the next thing typed went where Windows put the cursor,
+  which was two rows above the prompt here, over other text. Both now lay
+  the screen out the same way (measured with what the console really sends
+  around a change of width).
 
 ## [0.31.0] - 2026-11-17
 

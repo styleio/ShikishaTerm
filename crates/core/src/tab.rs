@@ -5273,6 +5273,11 @@ impl Tab {
                     .unwrap_or(true),
             },
         )));
+        // A terminal of this PC's on Windows is Windows' pseudo console, which
+        // lays its screen out again at a new width keeping the top row where
+        // it is; this side does the same, or the next thing it writes lands
+        // on another row. A terminal on another machine draws itself again
+        parser.lock().unwrap_or_else(|e| e.into_inner()).screen_mut().set_reflow_keeps_top(cfg!(windows) && local);
         // Held by the bridge, the terminal is open from the moment it is:
         // nothing waits for a MicroVM's own terminal to open
         let far_live = if far_term.is_some() { None } else { far_live };
@@ -8868,5 +8873,62 @@ mod unix_command_tests {
         assert_eq!(resolve_command(&path), Some(tool.clone()));
         assert_eq!(resolve_command(&dir.display().to_string()), None, "a folder was taken for a program");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod width_change {
+    //! What Windows' pseudo console sends around a change of width, as it
+    //! sent it (`pty_probe --resize`, Windows build 26300, cmd.exe printing
+    //! a line of 150 characters and then waiting at its prompt; the folder
+    //! names in it replaced by others of the same length). It sends nothing
+    //! at the change itself, and lays out its own screen again; what it
+    //! writes next puts the cursor where its own laying out left it. The
+    //! screen here, laid out again by this side, has to agree, or the next
+    //! thing typed lands on the wrong row or column.
+
+    const NARROW_BEFORE: &[u8] = b"\x1b[1t\x1b[6n\x1b[c\x1b[?1004h\x1b[?9001h\x1b[30;1H\x1b[?7l\x1b[?7h\x1b]0;cmd\x1b\\AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC\x0d\x0ashort line\x0d\x0a\x1b]0;cmd\x1b\\\x0d\x0aC:\\work\\projects\\example-app\\checkouts\\feature-branch-folder-xyz>";
+    const NARROW_AFTER: &[u8] = b"\x1b[30;16Hecho PROBE_OK\x1b[30;29H\x1b[30;29H\x0d\x0a\x1b]0;cmd\x1b\\PROBE_OK\x0d\x0a\x1b]0;cmd\x1b\\\x0d\x0aC:\\work\\projects\\example-app\\checkouts\\feature-branch-folder-xyz>";
+    const WIDE_BEFORE: &[u8] = b"\x1b[1t\x1b[6n\x1b[c\x1b[?1004h\x1b[?9001h\x1b[30;1H\x1b[?7l\x1b[?7h\x1b]0;cmd\x1b\\AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC\x0d\x0ashort line\x0d\x0a\x1b]0;cmd\x1b\\\x0d\x0aC:\\work\\projects\\example-app\\checkouts\\feature-branch-folder-xyz>";
+    const WIDE_AFTER: &[u8] = b"\x1b[28;66Hecho PROBE_OK\x1b[28;79H\x1b[28;79H\x0d\x0a\x1b]0;cmd\x1b\\PROBE_OK\x0d\x0a\x1b]0;cmd\x1b\\\x0d\x0aC:\\work\\projects\\example-app\\checkouts\\feature-branch-folder-xyz>";
+
+    fn replay(from: u16, to: u16, before: &[u8], after: &[u8]) -> vt100::Parser {
+        let mut p = vt100::Parser::new(30, from, 1000);
+        p.screen_mut().set_reflow_keeps_top(true);
+        p.process(before);
+        p.screen_mut().set_size(30, to);
+        p.process(after);
+        p
+    }
+
+    /// The rows of the screen with something on them, as they read
+    fn rows(p: &vt100::Parser) -> Vec<String> {
+        p.screen().rows(0, p.screen().size().1).map(|r| r.trim_end().to_string()).filter(|r| !r.is_empty()).collect()
+    }
+
+    #[test]
+    fn narrowed_the_screen_agrees_with_the_pseudo_console() {
+        let p = replay(100, 50, NARROW_BEFORE, NARROW_AFTER);
+        let rows = rows(&p);
+        let prompt = "C:\\work\\projects\\example-app\\checkouts\\feature-branch-folder-xyz>";
+        // The prompt, laid out at fifty, and what was typed after it on the
+        // same row -- not over it, and not on a row of its own
+        let typed = rows.iter().position(|r| r.ends_with("echo PROBE_OK")).expect("what was typed is not on the screen");
+        assert_eq!(format!("{}{}", rows[typed - 1], rows[typed]), format!("{prompt}echo PROBE_OK"), "{rows:#?}");
+        assert!(rows.iter().any(|r| r == "PROBE_OK"), "{rows:#?}");
+        // The long line laid out at fifty, whole
+        let a = rows.iter().position(|r| r.starts_with("AAAA")).expect("the long line is gone");
+        assert_eq!(rows[a..a + 3].concat(), format!("{}{}{}", "A".repeat(60), "B".repeat(60), "C".repeat(30)), "{rows:#?}");
+    }
+
+    #[test]
+    fn widened_the_screen_agrees_with_the_pseudo_console() {
+        let p = replay(50, 100, WIDE_BEFORE, WIDE_AFTER);
+        let rows = rows(&p);
+        let prompt = "C:\\work\\projects\\example-app\\checkouts\\feature-branch-folder-xyz>";
+        assert!(rows.iter().any(|r| *r == format!("{prompt}echo PROBE_OK")), "{rows:#?}");
+        assert!(rows.iter().any(|r| r == "PROBE_OK"), "{rows:#?}");
+        let a = rows.iter().position(|r| r.starts_with("AAAA")).expect("the long line is gone");
+        assert_eq!(rows[a..a + 2].concat(), format!("{}{}{}", "A".repeat(60), "B".repeat(60), "C".repeat(30)), "{rows:#?}");
     }
 }

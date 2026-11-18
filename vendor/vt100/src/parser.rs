@@ -53,7 +53,10 @@ impl<CB: crate::callbacks::Callbacks> Parser<CB> {
     /// one made by [`Screen::from_snapshot`](crate::Screen::from_snapshot)
     /// is. The parser starts from its ground state: what was half-read of a
     /// sequence is the sender's to hand over again
-    pub fn restore(&mut self, screen: crate::Screen) {
+    /// How a change of width lays the screen out is the terminal's, not
+    /// the screen's: it stays as this parser had it
+    pub fn restore(&mut self, mut screen: crate::Screen) {
+        screen.set_reflow_keeps_top(self.screen.screen.reflow_keeps_top());
         self.parser = vte::Parser::new();
         self.screen.screen = screen;
     }

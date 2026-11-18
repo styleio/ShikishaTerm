@@ -143,6 +143,19 @@ impl Screen {
         self.attrs.set_link(id);
     }
 
+    /// NOTE (vendored patch): a change of width keeps the row at the top of
+    /// the screen at the top, as Windows' pseudo console does with its own
+    /// (see `Grid::set_reflow_keeps_top`). Off, the last rows stay in view
+    pub fn set_reflow_keeps_top(&mut self, on: bool) {
+        self.grid.set_reflow_keeps_top(on);
+    }
+
+    /// NOTE (vendored patch): whether a change of width keeps the top row
+    #[must_use]
+    pub fn reflow_keeps_top(&self) -> bool {
+        self.grid.reflow_keeps_top()
+    }
+
     /// Resizes the terminal.
     pub fn set_size(&mut self, rows: u16, cols: u16) {
         // NOTE (vendored patch): the main screen's lines are laid out again
