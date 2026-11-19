@@ -405,6 +405,120 @@ const NOT_ASKED: u8 = 0;
 const ASKED: u8 = 1;
 const ENDED: u8 = 2;
 
+/// Whether the resident process on `l` is another version's than this app:
+/// one started by the version before an update, which runs on across it --
+/// that is what it is for -- with that version's code. Not known before it
+/// has named itself; one that names no version is older than any that does
+pub fn of_another_version(l: &Link) -> bool {
+    l.version.lock().ok().and_then(|v| v.clone()).is_some_and(|v| v != env!("CARGO_PKG_VERSION"))
+}
+
+/// Open a new terminal on this PC's resident process with `open`, the
+/// resident process first replaced by one of this version when it is
+/// another version's and holds nothing any more.
+///
+/// A resident process of another version holds the terminals that ran
+/// across the update, and must hold them for as long as they run: replaced
+/// only once there are none, and asked at the moment a new terminal is to
+/// be opened -- the one moment that decides which version that terminal
+/// runs under. Until then the new terminal is opened on the old one, as
+/// before. Where how much it holds cannot be told, it is kept: ending
+/// terminals nobody counted is the one thing this must never do.
+///
+/// One at a time, and `open` under the same turn while the old one stays:
+/// a terminal being opened on it by another tab is not in its list until it
+/// is open, and must not be ended under that tab by a replacement that did
+/// not see it
+pub fn opening_new<R>(open: impl FnOnce() -> R) -> R {
+    static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    if !link().is_some_and(|l| of_another_version(&l)) {
+        return open();
+    }
+    let _turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
+    // Looked at again in the turn: the tab before may have replaced it
+    if let Some(l) = link().filter(|l| of_another_version(l)) {
+        let theirs = l.version.lock().ok().and_then(|v| v.clone()).unwrap_or_default();
+        match drained() {
+            Ok(true) if wanted() => match replace(&l) {
+                Ok(()) => crate::append_hook_log(&format!(
+                    "this PC's resident process: the one of version {theirs} held nothing any more; replaced by one of {}",
+                    env!("CARGO_PKG_VERSION")
+                )),
+                Err(e) => crate::append_hook_log(&format!("this PC's resident process: the one of version {theirs} was not replaced: {e:#}")),
+            },
+            // With the setting off no new one is to be started: the old one
+            // is used for what it is still used for
+            Ok(true) => {}
+            Ok(false) => crate::append_hook_log(&format!(
+                "this PC's resident process: the one of version {theirs} still holds terminals; the new one is opened on it"
+            )),
+            Err(e) => crate::append_hook_log(&format!(
+                "this PC's resident process: the one of version {theirs} is kept, since what it holds could not be told ({e:#})"
+            )),
+        }
+    }
+    open()
+}
+
+/// Whether this PC's resident process holds nothing that is still wanted: no
+/// terminal still running, and none ended whose end a tab of this app has
+/// still to come back for (it is written down for it). An error when it did
+/// not say what it holds
+fn drained() -> Result<bool> {
+    let held = crate::farterm::list_held(&crate::farterm::Place::Here).ok_or_else(|| anyhow!("it did not say what it holds"))?;
+    drained_by(&held, crate::farterm::owed_here).ok_or_else(|| anyhow!("it did not say what it holds"))
+}
+
+/// The same, read from what it said it holds (`held`), with `owed` saying
+/// whether a tab will come back for an ended terminal. None when what it
+/// said is not a list of terminals
+fn drained_by(held: &serde_json::Value, owed: impl Fn(&str, u64) -> bool) -> Option<bool> {
+    let generation = held["gen"].as_str().unwrap_or_default();
+    let terms = held["terms"].as_array()?;
+    // A terminal not said to have ended is taken for running, and one with
+    // no number for one a tab comes back for
+    let wanted = terms.iter().any(|t| t["ended"].as_bool() != Some(true) || t["term"].as_u64().is_none_or(|term| owed(generation, term)));
+    Some(!wanted)
+}
+
+#[cfg(test)]
+#[test]
+fn an_older_resident_process_is_replaced_only_once_it_holds_nothing_still_wanted() {
+    let none = |_: &str, _: u64| false;
+    let said = |terms: serde_json::Value| json!({ "did": "list", "gen": "g1", "terms": terms });
+    // Nothing held
+    assert_eq!(drained_by(&said(json!([])), none), Some(true));
+    // One still running, and one that says nothing of having ended
+    assert_eq!(drained_by(&said(json!([{ "term": 1, "ended": false }])), none), Some(false));
+    assert_eq!(drained_by(&said(json!([{ "term": 1 }])), none), Some(false));
+    // Ended, and no tab of this app to come back for it
+    assert_eq!(drained_by(&said(json!([{ "term": 1, "ended": true }])), none), Some(true));
+    // Ended, and written down for a tab that has not taken its end yet
+    let owed = |generation: &str, term: u64| generation == "g1" && term == 1;
+    assert_eq!(drained_by(&said(json!([{ "term": 1, "ended": true }, { "term": 2, "ended": true }])), owed), Some(false));
+    assert_eq!(drained_by(&said(json!([{ "term": 2, "ended": true }])), owed), Some(true));
+    // What it said is not a list: not known, so kept
+    assert_eq!(drained_by(&json!({ "did": "list" }), none), None);
+}
+
+/// End the resident process on `l`, which holds nothing any more, and start
+/// one of this version in its place. Not `end`: that is the person's "stop
+/// them", and a tab waiting for its line in the meantime would take it for
+/// its own terminal ended (`ended_on_purpose`)
+fn replace(l: &Link) -> Result<()> {
+    l.call("end_resident", json!({}), END_WAIT).map_err(|e| anyhow!("it did not answer \"end\": {e}"))?;
+    crate::farlink::let_go_key(KEY);
+    let door = keep_door()?;
+    let until = Instant::now() + Duration::from_secs(8);
+    while !matches!(crate::fardaemon::find(&door), crate::fardaemon::Found::Nobody) {
+        if Instant::now() >= until {
+            bail!("it did not go when it was asked to");
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    connect().map(|_| ())
+}
+
 /// Whether the resident process was ended on purpose (`end`) and none started
 /// since. While the asking is still out, waits to hear how it ended: a line
 /// that went then is the answer's doing only if the answer was "ending"

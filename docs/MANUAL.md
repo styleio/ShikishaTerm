@@ -710,6 +710,9 @@ screen, and what the AI there asks of the app through `shikisha` reaches the app
 that is running now. Quitting says how many terminals go on running; to stop them,
 answer **No** (stop every terminal and AI, then quit) there. The first time a
 terminal is opened this way, a card in the left column says the same, once.
+After an update, the background process of the version before goes on holding the
+terminals that ran across the update; once every one of them has ended, the next
+terminal you open replaces it with the new version's.
 
 Turned off, terminals opened from then on run inside the app and stop when it
 quits. Those opened while it was on and still running go on running (their tabs

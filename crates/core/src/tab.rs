@@ -5145,7 +5145,13 @@ impl Tab {
             let away = crate::config::Away::Always;
             Some(match crate::farterm::left_running(&at, &folder, &uid, called) {
                 Some(left) => crate::farterm::reattach(&at, left, (rows, cols), started, Some(run), away),
-                None if crate::localkeep::link().is_some() => crate::farterm::open(&at, &uid, (rows, cols), started, Some(run), away)?,
+                // Opened at once on a resident process of this version. One of
+                // another version may be replaced before anything is opened on
+                // it, which takes seconds: done by the tab's own reader, as a
+                // terminal opened once the line is up is
+                None if crate::localkeep::link().is_some_and(|l| !crate::localkeep::of_another_version(&l)) => {
+                    crate::farterm::open(&at, &uid, (rows, cols), started, Some(run), away)?
+                }
                 None => crate::farterm::open_later(&at, &uid, (rows, cols), started, Some(run), away),
             })
         } else {

@@ -314,6 +314,14 @@ pub fn written_here(uid: &str) -> bool {
     read_saved().iter().any(|s| s.machine == machine && s.tab == uid)
 }
 
+/// Whether a tab of this app will come back to this PC's resident process
+/// for its terminal `term` of `generation`: it is written down, and so its
+/// end -- the code and the last screen -- has not been taken by its tab yet
+pub fn owed_here(generation: &str, term: u64) -> bool {
+    let machine = Place::Here.machine_key();
+    read_saved().iter().any(|s| s.machine == machine && s.generation == generation && s.term == term)
+}
+
 /// Tell this PC's resident process when to keep the PC up while it holds
 /// terminals (the "keep awake" setting, and which of its terminals an AI is
 /// working in as this app sees it), so that the setting goes on applying
@@ -1048,7 +1056,12 @@ impl FarReader {
     /// Or there was none yet (`open_later`), and this is its first
     fn open_in_its_place(&mut self) -> bool {
         let (rows, cols) = self.term.size.lock().map(|s| *s).unwrap_or((24, 80));
-        match ask_open(&self.term.at, &self.term.tab, (rows, cols), self.term.cwd.as_deref(), self.term.then.as_deref(), self.term.run.as_ref(), self.term.away()) {
+        let open = || ask_open(&self.term.at, &self.term.tab, (rows, cols), self.term.cwd.as_deref(), self.term.then.as_deref(), self.term.run.as_ref(), self.term.away());
+        // A new terminal on this PC goes to a resident process of this
+        // version: one of another that holds nothing any more is replaced
+        // first (`localkeep::opening_new`)
+        let opened = if self.term.here() { crate::localkeep::opening_new(open) } else { open() };
+        match opened {
             Ok((id, generation, rx, link)) => {
                 if self.fresh {
                     crate::append_hook_log(&format!("far terminal {id} opened on {} once its line was up", self.term.at.address()));

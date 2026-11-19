@@ -727,18 +727,19 @@ pub fn test_temp(what: &str) -> std::path::PathBuf {
     static EMPTIED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
     let family = format!("shikisha-{what}-");
     let at = std::env::temp_dir().join(format!("{family}{}", std::process::id()));
-    let first = EMPTIED
-        .get_or_init(|| Mutex::new(HashSet::new()))
-        .lock()
-        .map(|mut seen| seen.insert(what.to_string()))
-        .unwrap_or(false);
-    if !first {
-        return at;
+    // Emptied while the list is held: a second test of the family asking at
+    // the same moment waits until it is empty, rather than making its files
+    // there and having them taken away under it by the first
+    {
+        let mut seen = EMPTIED.get_or_init(|| Mutex::new(HashSet::new())).lock().unwrap_or_else(|e| e.into_inner());
+        if !seen.insert(what.to_string()) {
+            return at;
+        }
+        // Links go before the tree does, or whatever removes it walks into a
+        // junction and takes the other side's contents with it (see unhook_links)
+        crate::worktree::unhook_links(&at);
+        let _ = std::fs::remove_dir_all(&at);
     }
-    // Links go before the tree does, or whatever removes it walks into a
-    // junction and takes the other side's contents with it (see unhook_links)
-    crate::worktree::unhook_links(&at);
-    let _ = std::fs::remove_dir_all(&at);
     let stale = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 60 * 60);
     let Ok(rd) = std::fs::read_dir(std::env::temp_dir()) else { return at };
     for e in rd.flatten() {
