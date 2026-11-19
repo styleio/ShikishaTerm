@@ -316,10 +316,22 @@ pub fn written_here(uid: &str) -> bool {
 
 /// Whether a tab of this app will come back to this PC's resident process
 /// for its terminal `term` of `generation`: it is written down, and so its
-/// end -- the code and the last screen -- has not been taken by its tab yet
-pub fn owed_here(generation: &str, term: u64) -> bool {
+/// end -- the code and the last screen -- has not been taken by its tab yet.
+/// None when the file is there and could not be read: not known
+pub fn owed_here(generation: &str, term: u64) -> Option<bool> {
     let machine = Place::Here.machine_key();
-    read_saved().iter().any(|s| s.machine == machine && s.generation == generation && s.term == term)
+    Some(read_saved_surely(&crate::config::state_path(SAVED_FILE))?.iter().any(|s| s.machine == machine && s.generation == generation && s.term == term))
+}
+
+/// What is written down in `file`, telling a file that is not there (nothing
+/// written down) from one that could not be read or is not understood (None)
+fn read_saved_surely(file: &std::path::Path) -> Option<Vec<Saved>> {
+    let _one = SAVED_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    match std::fs::read_to_string(file) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(Vec::new()),
+        Err(_) => None,
+        Ok(t) => serde_json::from_str::<SavedFile>(&t).ok().filter(|f| f.version == SAVED_VERSION).map(|f| f.terms),
+    }
 }
 
 /// Tell this PC's resident process when to keep the PC up while it holds
@@ -1781,5 +1793,27 @@ mod tests {
         assert_eq!(back.terms, vec![saved("vm", "/w", "t", "g", 7)]);
         let later = text.replace(&format!("\"version\":{SAVED_VERSION}"), "\"version\":99");
         assert!(serde_json::from_str::<SavedFile>(&later).ok().filter(|f| f.version == SAVED_VERSION).is_none());
+    }
+
+    /// Read to decide whether anything is still owed: a file that is not
+    /// there is nothing written down; one that cannot be read or understood
+    /// is not known -- never taken for nothing written down
+    #[test]
+    fn a_note_that_cannot_be_read_is_not_taken_for_an_empty_one() {
+        let at = crate::test_temp("farterm-saved");
+        std::fs::create_dir_all(&at).unwrap();
+        let file = at.join(SAVED_FILE);
+        let _ = std::fs::remove_file(&file);
+        assert_eq!(read_saved_surely(&file), Some(Vec::new()), "not there: nothing written down");
+        let text = serde_json::to_string(&SavedFile { version: SAVED_VERSION, terms: vec![saved("this-pc", "/w", "t", "g", 7)] }).unwrap();
+        std::fs::write(&file, &text).unwrap();
+        assert_eq!(read_saved_surely(&file), Some(vec![saved("this-pc", "/w", "t", "g", 7)]));
+        std::fs::write(&file, &text[..text.len() / 2]).unwrap();
+        assert_eq!(read_saved_surely(&file), None, "half a file is not known");
+        std::fs::write(&file, text.replace(&format!("\"version\":{SAVED_VERSION}"), "\"version\":99")).unwrap();
+        assert_eq!(read_saved_surely(&file), None, "another shape is not known");
+        let _ = std::fs::remove_file(&file);
+        std::fs::create_dir_all(&file).unwrap();
+        assert_eq!(read_saved_surely(&file), None, "a file that cannot be read is not known");
     }
 }

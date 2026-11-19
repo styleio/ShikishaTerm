@@ -428,14 +428,49 @@ pub fn of_another_version(l: &Link) -> bool {
 /// One at a time, and `open` under the same turn while the old one stays:
 /// a terminal being opened on it by another tab is not in its list until it
 /// is open, and must not be ended under that tab by a replacement that did
-/// not see it
+/// not see it. With no line at all, too, the turn is waited for: that is
+/// also what the line is while one is being replaced, and an open let
+/// through then finds no line and takes its tab for ended
 pub fn opening_new<R>(open: impl FnOnce() -> R) -> R {
     static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    if !link().is_some_and(|l| of_another_version(&l)) {
+    let line = || match link() {
+        Some(l) if !of_another_version(&l) => Line::Current,
+        Some(_) => Line::Other,
+        None => Line::None,
+    };
+    in_turn(&TURN, line, replace_if_drained, open)
+}
+
+/// What the line to this PC's resident process is, as a new terminal is
+/// about to be opened
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Line {
+    /// Up, to one of this version
+    Current,
+    /// Up, to one of another version
+    Other,
+    /// Not up: none there yet, or the one there being replaced
+    None,
+}
+
+/// The order of `opening_new`, apart from what it opens and replaces: open
+/// at once on one of this version; otherwise in the turn, the one there
+/// `settle`d first if it is still another version's once the turn is had
+fn in_turn<R>(turn: &std::sync::Mutex<()>, line: impl Fn() -> Line, settle: impl FnOnce(), open: impl FnOnce() -> R) -> R {
+    if line() == Line::Current {
         return open();
     }
-    let _turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
+    let _turn = turn.lock().unwrap_or_else(|e| e.into_inner());
     // Looked at again in the turn: the tab before may have replaced it
+    if line() == Line::Other {
+        settle();
+    }
+    open()
+}
+
+/// The resident process of another version on the line now, replaced when it
+/// holds nothing still wanted (`opening_new`); kept, with why, otherwise
+fn replace_if_drained() {
     if let Some(l) = link().filter(|l| of_another_version(l)) {
         let theirs = l.version.lock().ok().and_then(|v| v.clone()).unwrap_or_default();
         match drained() {
@@ -457,7 +492,49 @@ pub fn opening_new<R>(open: impl FnOnce() -> R) -> R {
             )),
         }
     }
-    open()
+}
+
+/// A terminal opened by another tab while the one of another version is
+/// being replaced -- the line is down then -- waits for the replacement, and
+/// is opened on the new one; never let through to find no line
+#[cfg(test)]
+#[test]
+fn an_open_while_the_resident_process_is_replaced_waits_for_the_new_one() {
+    use std::sync::atomic::{AtomicU8, Ordering::SeqCst};
+    use std::sync::{Arc, Mutex};
+    const OTHER: u8 = 0;
+    const DOWN: u8 = 1;
+    const CURRENT: u8 = 2;
+    let turn = Arc::new(Mutex::new(()));
+    let state = Arc::new(AtomicU8::new(OTHER));
+    let line_of = |state: Arc<AtomicU8>| {
+        move || match state.load(SeqCst) {
+            OTHER => Line::Other,
+            DOWN => Line::None,
+            _ => Line::Current,
+        }
+    };
+    let (down_tx, down_rx) = std::sync::mpsc::channel();
+    let replacing = {
+        let (turn, state) = (Arc::clone(&turn), Arc::clone(&state));
+        std::thread::spawn(move || {
+            let settle = || {
+                // Let go of the old one: the line is down until the new one is up
+                state.store(DOWN, SeqCst);
+                down_tx.send(()).unwrap();
+                std::thread::sleep(Duration::from_millis(300));
+                state.store(CURRENT, SeqCst);
+            };
+            in_turn(&turn, line_of(Arc::clone(&state)), settle, || state.load(SeqCst))
+        })
+    };
+    down_rx.recv().unwrap();
+    // Another tab opens in the middle of it
+    let other = in_turn(&turn, line_of(Arc::clone(&state)), || panic!("settled twice"), || state.load(SeqCst));
+    assert_eq!(other, CURRENT, "opened only once the new one was up");
+    assert_eq!(replacing.join().unwrap(), CURRENT);
+    // Once it is the current version's, nothing waits and nothing is settled
+    assert_eq!(in_turn(&turn, line_of(state), || panic!("settled a current one"), || 7), 7);
 }
 
 /// Whether this PC's resident process holds nothing that is still wanted: no
@@ -466,25 +543,33 @@ pub fn opening_new<R>(open: impl FnOnce() -> R) -> R {
 /// not say what it holds
 fn drained() -> Result<bool> {
     let held = crate::farterm::list_held(&crate::farterm::Place::Here).ok_or_else(|| anyhow!("it did not say what it holds"))?;
-    drained_by(&held, crate::farterm::owed_here).ok_or_else(|| anyhow!("it did not say what it holds"))
+    drained_by(&held, crate::farterm::owed_here).ok_or_else(|| anyhow!("what it holds, or what this app's tabs are owed of it, could not be read"))
 }
 
 /// The same, read from what it said it holds (`held`), with `owed` saying
-/// whether a tab will come back for an ended terminal. None when what it
-/// said is not a list of terminals
-fn drained_by(held: &serde_json::Value, owed: impl Fn(&str, u64) -> bool) -> Option<bool> {
+/// whether a tab will come back for an ended terminal (None: not known).
+/// None when what it said is not a list of terminals, or what is owed could
+/// not be told
+fn drained_by(held: &serde_json::Value, owed: impl Fn(&str, u64) -> Option<bool>) -> Option<bool> {
     let generation = held["gen"].as_str().unwrap_or_default();
-    let terms = held["terms"].as_array()?;
-    // A terminal not said to have ended is taken for running, and one with
-    // no number for one a tab comes back for
-    let wanted = terms.iter().any(|t| t["ended"].as_bool() != Some(true) || t["term"].as_u64().is_none_or(|term| owed(generation, term)));
-    Some(!wanted)
+    for t in held["terms"].as_array()? {
+        // A terminal not said to have ended is taken for running, and one
+        // with no number for one a tab comes back for
+        if t["ended"].as_bool() != Some(true) {
+            return Some(false);
+        }
+        let Some(term) = t["term"].as_u64() else { return Some(false) };
+        if owed(generation, term)? {
+            return Some(false);
+        }
+    }
+    Some(true)
 }
 
 #[cfg(test)]
 #[test]
 fn an_older_resident_process_is_replaced_only_once_it_holds_nothing_still_wanted() {
-    let none = |_: &str, _: u64| false;
+    let none = |_: &str, _: u64| Some(false);
     let said = |terms: serde_json::Value| json!({ "did": "list", "gen": "g1", "terms": terms });
     // Nothing held
     assert_eq!(drained_by(&said(json!([])), none), Some(true));
@@ -494,9 +579,13 @@ fn an_older_resident_process_is_replaced_only_once_it_holds_nothing_still_wanted
     // Ended, and no tab of this app to come back for it
     assert_eq!(drained_by(&said(json!([{ "term": 1, "ended": true }])), none), Some(true));
     // Ended, and written down for a tab that has not taken its end yet
-    let owed = |generation: &str, term: u64| generation == "g1" && term == 1;
+    let owed = |generation: &str, term: u64| Some(generation == "g1" && term == 1);
     assert_eq!(drained_by(&said(json!([{ "term": 1, "ended": true }, { "term": 2, "ended": true }])), owed), Some(false));
     assert_eq!(drained_by(&said(json!([{ "term": 2, "ended": true }])), owed), Some(true));
+    // Ended, and the note of what is owed could not be read: not known, so kept
+    assert_eq!(drained_by(&said(json!([{ "term": 2, "ended": true }])), |_: &str, _: u64| None), None);
+    // ...but with nothing ended to ask about, the note is not needed
+    assert_eq!(drained_by(&said(json!([])), |_: &str, _: u64| None), Some(true));
     // What it said is not a list: not known, so kept
     assert_eq!(drained_by(&json!({ "did": "list" }), none), None);
 }
