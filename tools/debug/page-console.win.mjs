@@ -31,6 +31,7 @@ import net from 'node:net';
 import http from 'node:http';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
+import { stateFolder } from './lib/copy.mjs';
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
 const SHOTS = path.join(ROOT, 'target', 'shots');
@@ -135,7 +136,7 @@ async function connect(target) {
 }
 // The external API: the pipe, with the token the copy wrote beside itself
 async function openDoor() {
-  const tokenFile = path.join(APP, 'data', 'api-token');
+  const tokenFile = path.join(stateFolder(APP, LOCAL), 'api-token');
   await until(() => fs.existsSync(tokenFile), 'the API token', 60000);
   const sock = net.connect(`\\\\.\\pipe\\shikisha-${pid}`);
   await new Promise((r, j) => { sock.once('connect', r); sock.once('error', j); });

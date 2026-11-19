@@ -28,6 +28,7 @@ import net from 'node:net';
 import http from 'node:http';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
+import { stateFolder } from './lib/copy.mjs';
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
 const PORT = 9353;
@@ -109,7 +110,7 @@ child.unref();
 // ── Doors: the pipe to read tabs, the page to type as the person ──────────
 let door;
 const openDoor = async () => {
-  const tokenFile = path.join(APP, 'data', 'api-token');
+  const tokenFile = path.join(stateFolder(APP, path.join(RUN, 'localappdata')), 'api-token');
   const end = Date.now() + 60000;
   while (!fs.existsSync(tokenFile) && Date.now() < end) await sleep(500);
   const sock = net.connect(`\\\\.\\pipe\\shikisha-${pid}`);

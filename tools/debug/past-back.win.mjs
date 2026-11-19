@@ -39,6 +39,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
+import { stateFolder } from './lib/copy.mjs';
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
 const PORT = 9349;
@@ -230,7 +231,7 @@ try {
   console.log('5. a tab that lost the conversation written down for it says so');
   stopApp();
   await sleep(1500);
-  fs.writeFileSync(path.join(APP, 'data', 'last-session'), JSON.stringify({
+  fs.writeFileSync(path.join(stateFolder(APP, path.join(RUN, 'localappdata')), 'last-session'), JSON.stringify({
     version: 1,
     desks: [{
       name: 'Check', id: 'check',
@@ -251,7 +252,7 @@ try {
   check(hookLog().includes('"claude" starts clean:'),
     'the log says why this tab came up clean');
   const kept = (() => {
-    try { return fs.readFileSync(path.join(APP, 'data', 'last-session.prev'), 'utf8'); } catch { return ''; }
+    try { return fs.readFileSync(path.join(stateFolder(APP, path.join(RUN, 'localappdata')), 'last-session.prev'), 'utf8'); } catch { return ''; }
   })();
   check(kept.includes('44444444-4444-4444-8444-444444444444'),
     'the start kept a copy of the memory it was handed');
@@ -286,7 +287,7 @@ try {
       ] }],
     }],
   }, null, 2));
-  fs.rmSync(path.join(APP, 'data', 'last-session'), { force: true });
+  fs.rmSync(path.join(stateFolder(APP, path.join(RUN, 'localappdata')), 'last-session'), { force: true });
   fs.rmSync(ARGV, { force: true });
   run = await connect();
   await until(() => Promise.resolve(/--session-id/.test(launched())), 'the CLI to be launched');

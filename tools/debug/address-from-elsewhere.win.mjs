@@ -36,6 +36,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
+import { stateFolder } from './lib/copy.mjs';
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
 const RUN = path.join(os.tmpdir(), 'sk-address');
@@ -95,7 +96,7 @@ env.LOCALAPPDATA = path.join(RUN, 'localappdata');
 env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = `--remote-debugging-port=${WINDOW_CDP}`;
 spawn(path.join(APP, 'SHIKISHA-TERM.exe'), ['--behind'], { cwd: APP, env, detached: true, stdio: 'ignore' }).unref();
 
-const tokenFile = path.join(APP, 'data', 'remote-token');
+const tokenFile = path.join(stateFolder(APP, path.join(RUN, 'localappdata')), 'remote-token');
 let token = '';
 for (let i = 0; i < 160 && !token; i++) {
   try { token = fs.readFileSync(tokenFile, 'utf8').trim(); } catch { await sleep(250); }

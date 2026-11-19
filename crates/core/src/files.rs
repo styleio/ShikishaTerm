@@ -77,6 +77,59 @@ pub fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// The same, with a link inside -- a symbolic link, or on Windows a junction
+/// -- made again as a link to where it points, rather than followed or taken
+/// for a file: an account's folder links into the CLI's own, and a copy
+/// that followed the link would copy the CLI's whole history
+pub fn copy_tree_keeping_links(from: &Path, to: &Path) -> std::io::Result<()> {
+    let meta = std::fs::symlink_metadata(from)?;
+    if meta.file_type().is_symlink() || is_junction(from) {
+        return copy_link(from, to);
+    }
+    if !meta.is_dir() {
+        return std::fs::copy(from, to).map(|_| ());
+    }
+    if to.starts_with(from) {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "a folder cannot be copied into itself"));
+    }
+    std::fs::create_dir(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        copy_tree_keeping_links(&entry.path(), &to.join(entry.file_name()))?;
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn is_junction(p: &Path) -> bool {
+    junction::exists(p).unwrap_or(false)
+}
+
+#[cfg(not(windows))]
+fn is_junction(_: &Path) -> bool {
+    false
+}
+
+#[cfg(windows)]
+fn copy_link(from: &Path, to: &Path) -> std::io::Result<()> {
+    if is_junction(from) {
+        return junction::create(junction::get_target(from)?, to);
+    }
+    let target = std::fs::read_link(from)?;
+    let made = match std::fs::metadata(from).is_ok_and(|m| m.is_dir()) {
+        true => std::os::windows::fs::symlink_dir(&target, to),
+        false => std::os::windows::fs::symlink_file(&target, to),
+    };
+    // A symbolic link wants developer mode on Windows: without it, what the
+    // link points at is copied, the way the link was read
+    made.or_else(|_| copy_tree(&std::fs::canonicalize(from)?, to))
+}
+
+#[cfg(not(windows))]
+fn copy_link(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(std::fs::read_link(from)?, to)
+}
+
 /// Into the recycle bin, where it can be taken back from. A drive with no
 /// recycle bin (a network share) has Windows itself ask before it deletes for
 /// good, since the question the page asked promised the bin. A machine with no
@@ -1298,6 +1351,30 @@ mod tests {
 
     fn ask(q: &str) -> Ask {
         Ask { q: q.into(), ..Default::default() }
+    }
+
+    /// A link to a folder inside what is copied is made again as a link to
+    /// the same place -- a junction on Windows, which needs no developer
+    /// mode -- and what it points at is neither copied nor touched
+    #[test]
+    fn a_folder_link_inside_a_copy_stays_a_link() {
+        let at = std::env::temp_dir().join(format!("shikisha-links-{}", crate::random_hex(6)));
+        let (target, from) = (at.join("cli-projects"), at.join("from"));
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("big-history"), "x").unwrap();
+        std::fs::create_dir_all(from.join("home")).unwrap();
+        let link = from.join("home").join("projects");
+        #[cfg(windows)]
+        junction::create(&target, &link).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let to = at.join("to");
+        copy_tree_keeping_links(&from, &to).unwrap();
+        let copied = to.join("home").join("projects");
+        let is_link = std::fs::symlink_metadata(&copied).unwrap().file_type().is_symlink() || is_junction(&copied);
+        assert!(is_link, "the link was followed and its folder copied");
+        assert_eq!(std::fs::read_to_string(copied.join("big-history")).unwrap(), "x", "it points where it pointed");
+        let _ = std::fs::remove_dir_all(&at);
     }
 
     #[test]

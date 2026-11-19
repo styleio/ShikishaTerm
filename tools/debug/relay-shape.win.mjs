@@ -25,6 +25,7 @@ import { spawn, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { stateNow } from './lib/copy.mjs';
 
 const argAt = process.argv.indexOf('--at');
 if (argAt < 0) {
@@ -37,7 +38,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // Where that copy answers, and what it wants to hear
 const settings = JSON.parse(fs.readFileSync(path.join(ROOT, 'config', 'config.json'), 'utf8'));
 const port = (settings.remote && settings.remote.port) || 8787;
-const token = fs.readFileSync(path.join(ROOT, 'data', 'remote-token'), 'utf8').trim();
+const token = fs.readFileSync(path.join(stateNow(ROOT), 'remote-token'), 'utf8').trim();
 const exe = path.join(ROOT, 'SHIKISHA-TERM.exe');
 
 const pid = Number(

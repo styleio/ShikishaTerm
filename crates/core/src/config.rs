@@ -1784,7 +1784,7 @@ fn browser_store(leaf: &str) -> std::path::PathBuf {
         .and_then(|c| c.browser_data)
         .unwrap_or_default();
     match mode.trim() {
-        "portable" => root_dir().join("data").join(leaf),
+        "portable" => install_path(leaf),
         "" | "local" => local_appdata().join("ShikishaTerm").join(leaf),
         // A folder the person named. The window's store went straight into it,
         // so that is where it stays, and anything else goes beside it
@@ -7033,11 +7033,13 @@ pub fn packaged() -> bool {
 }
 
 /// Root of the layout that holds what belongs to the person using it: config,
-/// data, logs, desks.
+/// logs, desks, and what goes with the program (see [`install_path`]). What
+/// belongs to a machine -- its databases, keys and the marks of a run -- is
+/// kept apart from it (see [`state_path`]).
 ///
 /// Portable by default -- beside the exe. That is the promise the download
-/// makes: unzip it anywhere, copy the folder to another machine whole, delete
-/// the folder and nothing of it is left behind.
+/// makes: unzip it anywhere, and copy the folder to another machine whole to
+/// take the settings along.
 ///
 /// A copy installed from the Store cannot keep that promise. It runs from
 /// `Program Files\WindowsApps`, which is read-only to the very program stored
@@ -7130,8 +7132,7 @@ pub fn migrate_legacy_config() {
     // The desk that was open last is remembered under the same word, and a
     // start that cannot find it opens the first desk instead of the one the
     // person left
-    let data = root.join("data");
-    let (was, now) = (data.join("last-workspace"), data.join("last-desk"));
+    let (was, now) = (state_path("last-workspace"), state_path("last-desk"));
     if was.is_file() && !now.exists() {
         let _ = std::fs::rename(&was, &now);
     }
@@ -7155,14 +7156,341 @@ pub fn migrate_legacy_config() {
         }
 }
 
-/// Path to the config file the web GUI edits.
-/// Returns the existing file's path if present, otherwise the path where a new one would be created beside the exe.
-/// Home for state files (ones a human doesn't edit), gathered under the root's data folder.
-/// The exe is the only file directly at the root (folders are config / data / logs / lang / desks / scripts)
+/// Which copy of the program this is, on this machine and for this account: a
+/// short mark of the folder it runs from. Two copies on one machine each have
+/// their own things under it, and the same folder always has the same mark
+pub fn install_mark() -> String {
+    install_mark_of(&root_dir())
+}
+
+fn install_mark_of(root: &std::path::Path) -> String {
+    mark_of(&root.to_string_lossy().to_lowercase())
+}
+
+/// The mark a copy's state folder is named by. The same as [`install_mark`]
+/// where names ignore case; where the case is the name (Linux), two folders
+/// spelled apart only by it are two copies, and are not handed one database
+fn state_mark_of(root: &std::path::Path) -> String {
+    let named = root.to_string_lossy();
+    mark_of(&match crate::FOLDERS_IGNORE_CASE {
+        true => named.to_lowercase(),
+        false => named.into_owned(),
+    })
+}
+
+fn mark_of(root: &str) -> String {
+    use sha2::Digest as _;
+    let mut h = sha2::Sha256::new();
+    h.update(root.as_bytes());
+    h.update(b"\n");
+    h.update(std::env::var("USERNAME").unwrap_or_default().to_lowercase().as_bytes());
+    h.finalize().iter().take(8).map(|b| format!("{b:02x}")).collect()
+}
+
+/// Home for state files (ones a human doesn't edit): the databases, the keys,
+/// the marks of a run, what was last seen and asked.
+///
+/// They belong to this machine, never to the program's folder: that folder
+/// may be one a cloud drive copies between machines (a copy unpacked into a
+/// synced folder is), and two machines running at once would each write the
+/// same database through the copying -- which breaks it, or keeps one side's
+/// writes and drops the other's -- and would hand each other's keys around.
+/// So a copy that runs from a folder of its own keeps them in this machine's
+/// folder for a program's things, under its mark. A copy whose whole layout
+/// is already there (the Store's, an installed one), or was put somewhere on
+/// purpose (`SHIKISHA_HOME`), keeps them in its `data` folder as it always has.
+///
+/// What the `data` folder held is taken across by the program itself
+/// ([`take_over_state`]), once it holds the layout alone; until then every
+/// process of the copy goes on with the `data` folder
 pub fn state_path(name: &str) -> std::path::PathBuf {
+    let p = state_dir();
+    let _ = std::fs::create_dir_all(&p);
+    p.join(name)
+}
+
+/// Where the program that holds the layout settled its state for the rest of
+/// its run, by taking it across or by failing to ([`take_over_state`]), or by
+/// handing it back before an older version starts ([`give_back_state`]).
+/// Other processes of the copy -- a hook, a command, the window of a split
+/// run -- look at the folder each time instead
+static SETTLED: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex::new(None);
+
+/// The folder [`state_path`] names things in
+pub fn state_dir() -> std::path::PathBuf {
+    if let Some(dir) = SETTLED.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+        return dir;
+    }
+    state_dir_of(&root_dir())
+}
+
+/// Whether a state folder is one the program finished taking across: the
+/// file saying whose it is is written last
+fn taken_over(dir: &std::path::Path) -> bool {
+    dir.join(STATE_FOR).is_file()
+}
+
+/// Takes what the program's `data` folder holds across to this machine's
+/// state folder, the first time this copy starts with one, and settles where
+/// this process keeps its state for the rest of its run -- the `data` folder
+/// still, when taking it across failed, so that no record of this run is
+/// split between the two.
+///
+/// Copied, not moved: the folder may be another machine's as well, and that
+/// machine takes its own copy when it first starts this version. Called by
+/// the program once it holds the layout alone -- the copy it replaced, or one
+/// started by hand beside it, has gone and writes nothing more -- and before
+/// it opens anything kept there. A hook or a command run before then keeps to
+/// the `data` folder, and writes nothing the copy then misses
+pub fn take_over_state() {
+    let mut settled = SETTLED.lock().unwrap_or_else(|e| e.into_inner());
+    // Once a run: settled is settled, the `data` folder included when taking
+    // across failed -- a second try later in the same run would split it
+    if settled.is_some() {
+        return;
+    }
+    let root = root_dir();
+    let dir = state_home(&root);
+    if dir != root.join("data") && !taken_over(&dir) {
+        seed_state(&root, &dir);
+    }
+    *settled = Some(state_dir_of(&root));
+}
+
+
+/// Hands this machine's state back to the program's `data` folder, for an
+/// older version about to start in this one's place: it knows only the
+/// `data` folder, and would otherwise go on from what was there before this
+/// version took it across. The state folder is no longer marked as taken
+/// across, so this version, started again, takes across what the older one
+/// wrote in the meantime. What this process writes from here on goes to the
+/// `data` folder as well.
+///
+/// Asked only once nothing writes to the state any more (as the program
+/// starts, or as its run ends). A file held a moment by something else -- a
+/// cloud drive's client reading the `data` folder -- is waited for a little;
+/// what still fails is said, and the state folder stays the copy's, marked
+pub fn give_back_state() -> anyhow::Result<()> {
+    let root = root_dir();
+    let (dir, data) = (state_home(&root), root.join("data"));
+    if dir == data || !taken_over(&dir) {
+        return Ok(());
+    }
+    let mut tried = 0;
+    while let Err(e) = give_back(&dir, &data) {
+        tried += 1;
+        if tried == 3 {
+            return Err(e);
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+    *SETTLED.lock().unwrap_or_else(|e| e.into_inner()) = Some(data.clone());
+    crate::append_hook_log(&format!("State: handed back to {} for an older version", data.display()));
+    Ok(())
+}
+
+/// The state folder `dir` copied over the `data` folder, and its mark taken
+/// off last. What the `data` folder holds of a machine's state and the state
+/// folder does not is taken away first: a database's journal left from
+/// before would be read back into the database handed over, and undo it
+fn give_back(dir: &std::path::Path, data: &std::path::Path) -> anyhow::Result<()> {
+    std::fs::create_dir_all(data)?;
+    for e in std::fs::read_dir(data)? {
+        let e = e?;
+        let name = e.file_name();
+        let n = name.to_string_lossy();
+        if STAYS_WITH_THE_PROGRAM.contains(&n.as_ref()) || OF_ONE_RUN.contains(&n.as_ref()) || is_a_door(&n) {
+            continue;
+        }
+        if std::fs::symlink_metadata(dir.join(&name)).is_err() {
+            remove_entry(&e.path())?;
+        }
+    }
+    for e in std::fs::read_dir(&dir)? {
+        let e = e?;
+        let name = e.file_name();
+        let n = name.to_string_lossy();
+        if n == STATE_FOR || OF_ONE_RUN.contains(&n.as_ref()) || is_a_door(&n) {
+            continue;
+        }
+        let to = data.join(&name);
+        // What is there already is the older copy of the same thing
+        if std::fs::symlink_metadata(&to).is_ok() {
+            remove_entry(&to)?;
+        }
+        crate::files::copy_tree_keeping_links(&e.path(), &to)?;
+    }
+    std::fs::remove_file(dir.join(STATE_FOR))?;
+    Ok(())
+}
+
+/// A file, a folder whole, or a link as a link (never what it points at)
+fn remove_entry(p: &std::path::Path) -> std::io::Result<()> {
+    let m = std::fs::symlink_metadata(p)?;
+    if m.is_dir() && !m.file_type().is_symlink() {
+        return std::fs::remove_dir_all(p);
+    }
+    std::fs::remove_file(p).or_else(|_| std::fs::remove_dir(p))
+}
+
+/// The state handed back, and the older version then not put in place after
+/// all: this run goes on, so it takes the state across again -- the `data`
+/// folder is the whole of it, just written -- rather than go on writing a
+/// folder a cloud drive may be copying
+pub fn take_back_state() {
+    *SETTLED.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    take_over_state();
+}
+
+/// A door a run opened beside its state, which means nothing to another run
+fn is_a_door(name: &str) -> bool {
+    name.starts_with("api-") && name.ends_with(".sock")
+}
+
+/// Where the copy whose program folder is `root` keeps its state on this
+/// machine, for this account, as things stand -- this copy or another one:
+/// its `data` folder until it has been taken across
+pub fn state_dir_of(root: &std::path::Path) -> std::path::PathBuf {
+    let dir = state_home(root);
+    match taken_over(&dir) {
+        true => dir,
+        false => root.join("data"),
+    }
+}
+
+/// Where that copy's state belongs, taken across or not
+fn state_home(root: &std::path::Path) -> std::path::PathBuf {
+    // Spelled the one way the program's own folder is: a separator on the end
+    // or slashes the other way round name the same folder
+    let root: std::path::PathBuf = root.components().collect();
+    let root = root.as_path();
+    let told = cfg!(unix) && std::env::var_os("SHIKISHA_HOME").is_some_and(|s| !s.is_empty());
+    state_dir_for(root, crate::machine_data_dir().as_deref(), told, &state_mark_of(root))
+}
+
+/// Home for what goes with the program's folder rather than with a machine:
+/// the version its settings were last brought up to, the copies of them kept
+/// before that, an update being put in place, and a browser store asked to
+/// travel with it (`browser_data: "portable"`)
+pub fn install_path(name: &str) -> std::path::PathBuf {
     let p = root_dir().join("data");
     let _ = std::fs::create_dir_all(&p);
     p.join(name)
+}
+
+/// The names in the program's `data` folder that stay there (see
+/// [`install_path`])
+const STAYS_WITH_THE_PROGRAM: &[&str] = &["version", "backup", "update", "webview2", "window-chromium", "chromium"];
+
+/// The names in it that were one run's, and mean nothing to the next: the
+/// mark that a copy is running, and the folder of commands each run writes
+/// anew
+const OF_ONE_RUN: &[&str] = &["running.lock", "running.json", "bin"];
+
+/// The file in a copy's state folder that says which program folder it is
+/// for, since its name is only a mark
+pub const STATE_FOR: &str = "program-folder.txt";
+
+/// Where a copy at `root` keeps its state, `machine` being this machine's
+/// folder for a program's things and `told` whether the layout was put
+/// where it is on purpose
+fn state_dir_for(root: &std::path::Path, machine: Option<&std::path::Path>, told: bool, mark: &str) -> std::path::PathBuf {
+    let beside = root.join("data");
+    let Some(machine) = machine else { return beside };
+    let (r, m) = (crate::folder_key(root), crate::folder_key(machine));
+    if told || r == m || r.starts_with(&format!("{m}/")) {
+        return beside;
+    }
+    machine.join("ShikishaTerm").join("state").join(mark)
+}
+
+/// Where a file named as `<program folder>/data/<name>` is now, for a name
+/// that moved to the state folder: what a script was told to point at before
+/// is still found
+pub fn moved_state(written: &std::path::Path) -> Option<std::path::PathBuf> {
+    let name = written.file_name()?.to_str()?;
+    let data = written.parent()?;
+    if data.file_name()? != "data" || STAYS_WITH_THE_PROGRAM.contains(&name) {
+        return None;
+    }
+    let now = state_dir_of(data.parent()?).join(name);
+    (now != written).then_some(now)
+}
+
+/// What the program's `data` folder holds is copied into a folder beside
+/// `dir`, and that folder becomes `dir` in one rename -- so two processes of
+/// the copy starting at once never both copy into it, and one stopped partway
+/// leaves nothing that looks finished. Anything that could not be copied
+/// leaves the copy on its `data` folder for this run, to try again next start:
+/// half the records taken across is records lost
+fn seed_state(root: &std::path::Path, dir: &std::path::Path) {
+    let Some(parent) = dir.parent() else { return };
+    if std::fs::create_dir_all(parent).is_err() {
+        return;
+    }
+    let fresh = parent.join(format!(
+        ".{}-{}",
+        dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+        crate::random_hex(6)
+    ));
+    if std::fs::create_dir(&fresh).is_err() {
+        return;
+    }
+    let old = root.join("data");
+    let copied = copy_state(&old, &fresh).and_then(|n| {
+        std::fs::write(fresh.join(STATE_FOR), root.display().to_string()).map_err(|e| format!("{STATE_FOR}: {e}"))?;
+        Ok(n)
+    });
+    let copied = match copied {
+        Ok(n) => n,
+        Err(why) => {
+            crate::append_hook_log(&format!("State: still kept in {} this run; taking it to {} failed at {why}", old.display(), dir.display()));
+            let _ = std::fs::remove_dir_all(&fresh);
+            return;
+        }
+    };
+    // A folder there that is not marked is no copy's: one stopped before it
+    // was marked, or one handed back to an older version. The `data` folder
+    // is what every process used meanwhile, so it is the one taken across
+    let aside = (dir.exists() && !taken_over(dir)).then(|| parent.join(format!(".unfinished-{}", crate::random_hex(6))));
+    if let Some(aside) = &aside {
+        let _ = std::fs::rename(dir, aside);
+    }
+    match std::fs::rename(&fresh, dir) {
+        Ok(()) => {
+            crate::append_hook_log(&format!("State: kept in {} from now on ({copied} taken from {})", dir.display(), old.display()));
+            if let Some(aside) = &aside {
+                let _ = std::fs::remove_dir_all(aside);
+            }
+        }
+        // Another process of this copy got there first, and its folder is the one
+        Err(_) => {
+            let _ = std::fs::remove_dir_all(&fresh);
+        }
+    }
+}
+
+/// What the `data` folder holds that is a machine's state, copied into
+/// `to`, and how many entries that was. A `data` folder that is not there is
+/// nothing to copy; one that cannot be read is a failure, not an empty one
+fn copy_state(old: &std::path::Path, to: &std::path::Path) -> Result<usize, String> {
+    let entries = match std::fs::read_dir(old) {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(format!("{}: {e}", old.display())),
+    };
+    let mut copied = 0;
+    for e in entries {
+        let e = e.map_err(|e| format!("{}: {e}", old.display()))?;
+        let name = e.file_name();
+        let n = name.to_string_lossy();
+        if OF_ONE_RUN.contains(&n.as_ref()) || is_a_door(&n) || STAYS_WITH_THE_PROGRAM.contains(&n.as_ref()) {
+            continue;
+        }
+        crate::files::copy_tree_keeping_links(&e.path(), &to.join(&name)).map_err(|err| format!("{n}: {err}"))?;
+        copied += 1;
+    }
+    Ok(copied)
 }
 
 /// Home for logs. Pinned to the root's logs folder rather than the current directory
@@ -9231,16 +9559,16 @@ mod tests {
         assert_eq!(resolved(Some(0)), None, "0 waits forever (no limit)");
     }
 
-    /// The download keeps everything beside the exe, and must go on doing so.
+    /// The download keeps its settings beside the exe, and must go on doing so.
     ///
-    /// A Store copy has to put the person's config, data and logs under
+    /// A Store copy has to put the person's config and logs under
     /// LOCALAPPDATA, because the folder it runs from is read-only to it. That
     /// belongs to the packaged copy alone: the download's promise is that the
-    /// folder holds the whole of it -- copy it to another machine and the
-    /// settings come along, delete it and nothing is left behind. A test run is
-    /// never packaged, so this is the download's layout being asserted.
+    /// folder holds the settings -- copy it to another machine and they come
+    /// along. A test run is never packaged, so this is the download's layout
+    /// being asserted.
     #[test]
-    fn the_portable_layout_keeps_everything_beside_the_exe() {
+    fn the_portable_layout_keeps_the_settings_beside_the_exe() {
         assert!(!packaged(), "a test run should not be a packaged one");
         #[cfg(windows)]
         assert_eq!(root_dir(), exe_dir(), "the portable layout moved away from beside the exe");
@@ -9261,9 +9589,162 @@ mod tests {
         std::fs::create_dir_all(&plain).unwrap();
         assert_eq!(shipped_dir_for(&plain), plain, "an unpacked folder");
         let _ = std::fs::remove_dir_all(&root);
-        for p in [logs_dir(), state_path("x")] {
-            assert!(p.starts_with(root_dir()), "{p:?} went outside the data folder");
+        for p in [logs_dir(), install_path("x")] {
+            assert!(p.starts_with(root_dir()), "{p:?} went outside the program's folder");
         }
+        assert!(state_path("x").starts_with(state_dir()));
+    }
+
+    /// A copy that runs from a folder of its own keeps its state in this
+    /// machine's folder, one folder per copy; a copy already laid out there,
+    /// or put somewhere on purpose, keeps it where it always did
+    #[test]
+    fn state_belongs_to_the_machine_unless_the_whole_copy_already_does() {
+        let machine = std::path::Path::new(if cfg!(windows) { r"C:\Users\someone\AppData\Local" } else { "/home/someone/.local/share" });
+        let synced = std::path::Path::new(if cfg!(windows) { r"D:\Synced\SHIKISHA-TERM" } else { "/home/someone/Synced/shikisha" });
+        assert_eq!(
+            state_dir_for(synced, Some(machine), false, "0123abcd"),
+            machine.join("ShikishaTerm").join("state").join("0123abcd")
+        );
+        let inside = machine.join("SHIKISHA-TERM");
+        assert_eq!(state_dir_for(&inside, Some(machine), false, "m"), inside.join("data"), "the Store's copy");
+        assert_eq!(state_dir_for(synced, Some(machine), true, "m"), synced.join("data"), "SHIKISHA_HOME");
+        assert_eq!(state_dir_for(synced, None, false, "m"), synced.join("data"), "a system with no such folder");
+        // A folder whose name only begins like the machine's is not inside it
+        let alike = std::path::PathBuf::from(format!("{}Other", machine.display()));
+        assert_ne!(state_dir_for(&alike, Some(machine), false, "m"), alike.join("data"));
+        // Two copies, two folders, and the same copy however it is spelled
+        let other = synced.with_file_name("SHIKISHA-TERM-demo");
+        assert_ne!(install_mark_of(synced), install_mark_of(&other));
+        let spelled = std::path::PathBuf::from(format!("{}{}", synced.display(), std::path::MAIN_SEPARATOR));
+        assert_eq!(state_home(&spelled), state_home(synced));
+    }
+
+    /// The first look copies what the program's `data` folder holds -- but not
+    /// what stays with the program, nor the marks of a run -- and leaves the
+    /// folder as it was, for another machine that shares it
+    #[test]
+    fn the_first_look_copies_the_state_and_leaves_the_old_folder() {
+        let at = std::env::temp_dir().join(format!("shikisha-seed-{}", crate::random_hex(6)));
+        let (root, dir) = (at.join("program"), at.join("machine").join("state").join("m"));
+        let data = root.join("data");
+        std::fs::create_dir_all(data.join("ai-accounts").join("one")).unwrap();
+        std::fs::create_dir_all(data.join("backup").join("0.1.0")).unwrap();
+        std::fs::create_dir_all(data.join("bin")).unwrap();
+        for (name, text) in [
+            ("conversations.db", "db"),
+            ("conversations.db-wal", "wal"),
+            ("remote-token", "secret"),
+            ("version", "0.1.0"),
+            ("running.lock", ""),
+            ("api-42.sock", ""),
+        ] {
+            std::fs::write(data.join(name), text).unwrap();
+        }
+        std::fs::write(data.join("ai-accounts").join("one").join("auth"), "a").unwrap();
+        // A folder left there unfinished is not taken for the copy's own
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("conversations.db"), "empty").unwrap();
+        assert!(!taken_over(&dir));
+        seed_state(&root, &dir);
+        assert!(taken_over(&dir));
+        assert_eq!(std::fs::read_to_string(dir.join("conversations.db")).unwrap(), "db", "the unfinished folder was taken for the copy's");
+        let has = |n: &str| dir.join(n).exists();
+        assert!(has("conversations.db") && has("conversations.db-wal") && has("remote-token"));
+        assert!(dir.join("ai-accounts").join("one").join("auth").is_file(), "folders come whole");
+        for n in ["version", "backup", "running.lock", "api-42.sock", "bin"] {
+            assert!(!has(n), "{n} was copied");
+        }
+        assert_eq!(std::fs::read_to_string(dir.join(STATE_FOR)).unwrap(), root.display().to_string());
+        assert!(data.join("remote-token").is_file(), "the old folder was emptied");
+        // Only once: what this machine wrote since is not written over
+        std::fs::write(dir.join("remote-token"), "newer").unwrap();
+        seed_state(&root, &dir);
+        assert_eq!(std::fs::read_to_string(dir.join("remote-token")).unwrap(), "newer");
+        let left: Vec<String> = std::fs::read_dir(dir.parent().unwrap())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| !n.starts_with(".unfinished-"))
+            .collect();
+        assert_eq!(left, ["m"], "a half-made folder was left beside it");
+        let _ = std::fs::remove_dir_all(&at);
+    }
+
+    /// A `data` folder that cannot be read is not an empty one: nothing is
+    /// marked as taken across, and the copy stays on it to try again
+    #[test]
+    fn a_data_folder_that_cannot_be_read_is_not_taken_for_an_empty_one() {
+        let at = std::env::temp_dir().join(format!("shikisha-unread-{}", crate::random_hex(6)));
+        let (root, dir) = (at.join("program"), at.join("machine").join("state").join("m"));
+        std::fs::create_dir_all(&root).unwrap();
+        // A file where the folder should be: read_dir fails, and not with NotFound
+        std::fs::write(root.join("data"), "not a folder").unwrap();
+        seed_state(&root, &dir);
+        assert!(!taken_over(&dir), "an unreadable data folder was taken across as nothing");
+        assert!(copy_state(&root.join("data"), &at).is_err());
+        assert_eq!(copy_state(&at.join("nowhere"), &at), Ok(0), "no data folder at all is nothing to take");
+        let _ = std::fs::remove_dir_all(&at);
+    }
+
+    /// Handed back for an older version: the `data` folder has what this
+    /// machine wrote since, the state folder is no longer marked, and taking
+    /// it across again brings what the older version wrote meanwhile
+    #[test]
+    fn handed_back_and_taken_again_nothing_is_lost_either_way() {
+        let at = std::env::temp_dir().join(format!("shikisha-back-{}", crate::random_hex(6)));
+        let (root, dir) = (at.join("program"), at.join("machine").join("state").join("m"));
+        let data = root.join("data");
+        std::fs::create_dir_all(data.join("ai-accounts").join("old")).unwrap();
+        std::fs::write(data.join("remote-token"), "before").unwrap();
+        seed_state(&root, &dir);
+        assert!(taken_over(&dir));
+        std::fs::write(dir.join("remote-token"), "with this version").unwrap();
+        std::fs::create_dir_all(dir.join("ai-accounts").join("new")).unwrap();
+        std::fs::remove_dir_all(dir.join("ai-accounts").join("old")).unwrap();
+        // A journal the older run left beside its database, which this
+        // machine's copy no longer has: read back, it would undo the database
+        std::fs::write(data.join("conversations.db-wal"), "stale").unwrap();
+        std::fs::write(data.join("version"), "0.1.0").unwrap();
+        give_back(&dir, &data).unwrap();
+        assert!(!data.join("conversations.db-wal").exists(), "a stale journal was left beside the database handed back");
+        assert!(data.join("version").is_file(), "what stays with the program was taken away");
+        assert!(!taken_over(&dir));
+        assert_eq!(std::fs::read_to_string(data.join("remote-token")).unwrap(), "with this version");
+        assert!(data.join("ai-accounts").join("new").is_dir() && !data.join("ai-accounts").join("old").exists(), "a folder goes whole");
+        // The older version writes; this one starts again
+        std::fs::write(data.join("remote-token"), "with the older one").unwrap();
+        seed_state(&root, &dir);
+        assert!(taken_over(&dir));
+        assert_eq!(std::fs::read_to_string(dir.join("remote-token")).unwrap(), "with the older one");
+        let beside: Vec<_> = std::fs::read_dir(dir.parent().unwrap()).unwrap().flatten().map(|e| e.file_name()).collect();
+        assert_eq!(beside.len(), 1, "the handed-back folder was left beside the new one: {beside:?}");
+        let _ = std::fs::remove_dir_all(&at);
+    }
+
+    /// Where the case of a name is the name, two folders apart only by it
+    /// are two copies with two state folders
+    #[test]
+    fn folders_apart_only_by_case_share_state_only_where_names_ignore_case() {
+        let (a, b) = (std::path::Path::new("/opt/Desk"), std::path::Path::new("/opt/desk"));
+        assert_eq!(state_mark_of(a) == state_mark_of(b), crate::FOLDERS_IGNORE_CASE);
+        // Where case is ignored, the mark is the one the resident process
+        // has always gone by
+        if crate::FOLDERS_IGNORE_CASE {
+            assert_eq!(state_mark_of(a), install_mark_of(a));
+        }
+    }
+
+    /// A script pointed at the key file where it used to be still finds it,
+    /// once it has moved; until then it is where the script says
+    #[test]
+    fn a_key_file_named_where_it_used_to_be_is_found() {
+        let old = root_dir().join("data").join("api-token");
+        assert_eq!(moved_state(&old), Some(state_dir().join("api-token")).filter(|p| *p != old));
+        assert_eq!(moved_state(&root_dir().join("data").join("version")), None, "stays with the program");
+        assert_eq!(moved_state(&root_dir().join("elsewhere").join("api-token")), None);
+        let never = std::env::temp_dir().join(format!("shikisha-never-{}", crate::random_hex(6)));
+        assert_eq!(moved_state(&never.join("data").join("api-token")), None, "a copy not taken across");
     }
 
     /// Where a copy on Linux keeps things, in each of the four situations it

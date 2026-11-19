@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
+import { stateFolder } from './lib/copy.mjs';
 
 const root = path.resolve(import.meta.dirname, '../..');
 const run = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-quick-commands-'));
@@ -52,13 +53,13 @@ try {
   assert.ok(base && pid, 'the launcher named this copy');
   const mcp = async (name, params = []) => {
     const output = await processOutput(path.join(instance, 'app/SHIKISHA-TERM.exe'),
-      ['--mcp', '--pid', pid, '--token-file', path.join(instance, 'app/data/api-token')],
+      ['--mcp', '--pid', pid, '--token-file', path.join(stateFolder(path.join(instance, 'app'), path.join(instance, 'localappdata')), 'api-token')],
       JSON.stringify({jsonrpc:'2.0', id:1, method:'tools/call', params:{name:'shikisha_' + name, arguments:{params}}}) + '\n');
     const reply = JSON.parse(output.trim()).result;
     assert.equal(reply.isError, false, output);
     return reply.content.map(c => c.text || '').join('');
   };
-  const token = fs.readFileSync(path.join(instance, 'app/data/remote-token'), 'utf8').trim();
+  const token = fs.readFileSync(path.join(stateFolder(path.join(instance, 'app'), path.join(instance, 'localappdata')), 'remote-token'), 'utf8').trim();
   const paired = await fetch(base + '/?t=' + encodeURIComponent(token), {redirect:'manual'});
   await paired.text();
   const cookie = paired.headers.getSetCookie().map(c => c.split(';')[0]).join('; ');

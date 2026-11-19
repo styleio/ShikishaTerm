@@ -52,7 +52,11 @@ mod imp {
             .read(true)
             .write(true)
             .truncate(false)
-            .open(crate::config::state_path("running.lock"))
+            // Beside the program, never in the state folder: which folder that
+            // is changes as the state is taken across, and a lock is only a
+            // lock if every copy on the layout takes the same file. A lock
+            // holds on this machine alone, so a synced folder shares nothing
+            .open(crate::config::install_path("running.lock"))
         else {
             // The filesystem would not say either way. Running is the safer of
             // the two mistakes: a second copy beats one that will not start

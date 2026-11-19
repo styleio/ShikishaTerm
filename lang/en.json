@@ -1201,6 +1201,7 @@
   "msg.tabbar_width": ">> Tab bar width: {width} (you can fix it with \"tab_bar_width\" in config.json)",
   "msg.settings_here": "Settings opened in this window",
   "msg.update.carry_failed": ">> Carrying your settings forward from version {version} stopped. The copy made first is at {path}. See Settings › Update.",
+  "msg.update.back_failed": "Going back to version {version} did not happen, so this version started again. Your records were left as they were. Why: {e}",
   "msg.settings_opened": ">> Settings opened: {url}",
   "msg.settings_failed": ">> Could not open settings: {error}",
   "msg.settings_wait": "Press Enter to quit…",

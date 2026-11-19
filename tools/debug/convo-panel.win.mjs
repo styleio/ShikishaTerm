@@ -42,6 +42,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { stateFolder } from './lib/copy.mjs';
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
 const PORT = 9353;
@@ -182,7 +183,7 @@ try {
   board = await connect(targets[0]);
   const { run } = board;
   // The door a remote page uses, with the key the board wrote for it
-  const tokenFile = path.join(APP, 'data', 'remote-token');
+  const tokenFile = path.join(stateFolder(APP, path.join(RUN, 'localappdata')), 'remote-token');
   await until(async () => fs.existsSync(tokenFile) && fs.readFileSync(tokenFile, 'utf8').trim(), 'the remote board', 30000);
   const token = fs.readFileSync(tokenFile, 'utf8').trim();
   // Opening the link is what grants a device its session, as a phone does
@@ -347,7 +348,7 @@ try {
   await until(() => run(`S.active === ${front}`), 'the stand-in in front again');
 
   console.log('12. the record');
-  const db = path.join(APP, 'data', 'conversations.db');
+  const db = path.join(stateFolder(APP, path.join(RUN, 'localappdata')), 'conversations.db');
   check(fs.existsSync(db), 'data/conversations.db is there');
   const bytes = fs.readFileSync(db).toString('latin1') + (fs.existsSync(db + '-wal') ? fs.readFileSync(db + '-wal').toString('latin1') : '');
   check(!bytes.includes('fix the parser please') && !bytes.includes('and the docs too'), 'it holds none of the words sent');

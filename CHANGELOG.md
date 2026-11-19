@@ -273,6 +273,21 @@ once it reaches its first tagged release.
   `github_comment` and the state commands also take `"owner/repo#12"`.
 
 ### Changed
+- **This PC's records are kept in a folder of this PC's own.** A copy
+  unzipped into a folder that Google Drive or the like synchronises kept
+  its databases, keys and the marks of a run beside the program, so two PCs
+  running at once wrote the same database through the copying -- which
+  breaks it or drops one side's writes -- and handed each other their keys.
+  They are now kept under `%LOCALAPPDATA%\ShikishaTerm\state\` on Windows
+  (`~/.local/share/ShikishaTerm/state/` on Linux), one folder per copy of
+  the program. The first start of this version copies what the `data`
+  folder held there and leaves the `data` folder as it is, so another PC
+  that shares it takes its own copy; settings stay beside the program. A
+  script pointed at the old `data\api-token` still finds the key. Going
+  back to an older version copies the records back into the `data` folder
+  first, and starting this version again takes them across anew. The
+  Store's copy, an installed one and the Mac app already lived in a folder
+  of the PC's own and are unchanged.
 - **A page's alert, confirm and prompt are no longer answered for you.**
   The app used to press OK on every box a page in a browser tab opened,
   so "Delete this?" was answered yes before anybody read it. Now the page

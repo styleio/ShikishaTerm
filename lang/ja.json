@@ -1203,6 +1203,7 @@
   "msg.tabbar_width": ">> タブバー幅: {width}（config.json の \"tab_bar_width\" で固定できます）",
   "msg.settings_here": "設定をこの窓の中に開きました",
   "msg.update.carry_failed": ">> バージョン {version} からの設定の引き継ぎが止まりました。先に取った写しは {path} にあります。設定の「更新」を見てください。",
+  "msg.update.back_failed": "バージョン {version} に戻せなかったため、このバージョンをもう一度起動しました。記録はそのまま残っています。理由: {e}",
   "msg.settings_opened": ">> 設定画面: {url}",
   "msg.settings_failed": ">> 設定画面を開けません: {error}",
   "msg.settings_wait": "Enterキーで終了します...",

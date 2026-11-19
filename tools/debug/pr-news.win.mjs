@@ -39,6 +39,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
+import { stateFolder, readyStateFolder } from './lib/copy.mjs';
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
 const RUN = path.join(os.tmpdir(), 'sk-pr-news');
@@ -99,7 +100,8 @@ const bot = (p) => p === withFindings
 stopApp();
 await sleep(800);
 fs.rmSync(RUN, { recursive: true, force: true });
-for (const d of [APP, LOCAL, SHOTS, path.join(APP, 'data')]) fs.mkdirSync(d, { recursive: true });
+for (const d of [APP, LOCAL, SHOTS]) fs.mkdirSync(d, { recursive: true });
+readyStateFolder(APP, LOCAL);
 const dirs = {};
 for (const [key, p] of [['review', withFindings], ['thumb', thumbed]]) {
   dirs[key] = path.join(RUN, key);
@@ -144,7 +146,7 @@ const remembered = () => {
       ended_at: 0, ended: 'none', ended_on: '', ci_running: '', ci_told: '', at: 1,
     };
   }
-  fs.writeFileSync(path.join(APP, 'data', 'pr-news.json'), JSON.stringify({ version: 1, prs }, null, 2));
+  fs.writeFileSync(path.join(stateFolder(APP, LOCAL), 'pr-news.json'), JSON.stringify({ version: 1, prs }, null, 2));
 };
 
 const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(CLAUDE|ANTHROPIC|SHIKISHA)/i.test(k)));
@@ -256,7 +258,7 @@ try {
   check(!(await toastOf(withFindings.number)), 'the review was not told on screen');
   const sent = reviewSent(hooksLog().slice(logBefore), withFindings.number);
   check(sent.length === 0, 'nothing was sent of its review' + (sent.length ? ': ' + sent.join(' | ') : ''));
-  const left = JSON.parse(fs.readFileSync(path.join(APP, 'data', 'pr-news.json'), 'utf8')).prs[`${REPO.toLowerCase()}#${withFindings.number}`];
+  const left = JSON.parse(fs.readFileSync(path.join(stateFolder(APP, LOCAL), 'pr-news.json'), 'utf8')).prs[`${REPO.toLowerCase()}#${withFindings.number}`];
   check(left && left.head === withFindings.headRefOid && left.ended === 'reviewed', 'what came of it is remembered all the same');
 } catch (e) {
   console.error(e.message || e);

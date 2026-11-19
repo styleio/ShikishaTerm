@@ -34,6 +34,7 @@ import os from 'node:os';
 import net from 'node:net';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
+import { stateFolder, readyStateFolder } from './lib/copy.mjs';
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
 const SHOTS = path.join(ROOT, 'target', 'shots');
@@ -88,8 +89,8 @@ fs.mkdirSync(path.dirname(CONFIG), { recursive: true });
 fs.writeFileSync(CONFIG, JSON.stringify(settingsAt('127.0.0.1'), null, 2));
 // The board's own token, known here so the phone can pair without reading the app's screen.
 // Not a fixed token (that is the sticky mode's, and keeps the token in the address)
-fs.mkdirSync(path.join(APP, 'data'), { recursive: true });
-fs.writeFileSync(path.join(APP, 'data', 'remote-token'), KEY);
+readyStateFolder(APP, LOCAL);
+fs.writeFileSync(path.join(stateFolder(APP, LOCAL), 'remote-token'), KEY);
 const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(CLAUDE|ANTHROPIC|SHIKISHA)/i.test(k)));
 env.LOCALAPPDATA = LOCAL;
 spawn(path.join(APP, 'SHIKISHA-TERM.exe'), ['--behind'], { cwd: APP, env, detached: true, stdio: 'ignore' }).unref();
@@ -171,7 +172,7 @@ try {
       console.log('    (the phone shows: ' + await phone.run(`(${veil} || {}).textContent || location.href`) + ')');
       const jar = await phone.send('Network.getCookies', { urls: [`http://127.0.0.2:${PORT}/`] }).catch(() => ({ cookies: [] }));
       console.log('    (its cookies there: ' + jar.cookies.map((c) => c.name).join(', ') + ')');
-      const book = path.join(APP, 'data', 'clients.json');
+      const book = path.join(stateFolder(APP, LOCAL), 'clients.json');
       console.log('    (the book: ' + (fs.existsSync(book) ? fs.readFileSync(book, 'utf8').replace(/\s+/g, ' ') : 'none') + ')');
       const log = path.join(APP, 'logs', 'hooks.log');
       if (fs.existsSync(log)) console.log(fs.readFileSync(log, 'utf8').split(/\r?\n/).filter((l) => /remote/.test(l)).slice(-6).join('\n'));

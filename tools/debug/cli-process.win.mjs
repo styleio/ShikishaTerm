@@ -13,6 +13,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import {connectCdp, startChrome} from './chrome.mjs';
+import { stateFolder } from './lib/copy.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const target = path.join(root, 'target');
@@ -210,7 +211,7 @@ try {
     check(true, id + ' finishes independently');
   }
   await until(async () => {
-    const file = path.join(instance, 'app/data/last-session');
+    const file = path.join(stateFolder(path.join(instance, 'app'), path.join(instance, 'localappdata')), 'last-session');
     if (!fs.existsSync(file)) return false;
     const saved = JSON.parse(fs.readFileSync(file)).desks.flatMap(d => d.tabs);
     return ['alpha','beta','resume','legacy'].every(id => saved.some(t => t.id === id && t.session === 'session-' + id));

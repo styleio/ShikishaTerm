@@ -30,6 +30,7 @@ import net from 'node:net';
 import http from 'node:http';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { stateFolder } from './lib/copy.mjs';
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
 const KEEP = process.argv.includes('--keep');
@@ -138,7 +139,7 @@ if (!pid || !port) die('the launcher did not identify its copy');
 console.log('isolated copy: ' + RUN);
 
 // ── The door: the pipe, as the person, a connection a call ─────────────────
-const dataDir = () => [path.join(APP, 'data'), path.join(RUN, 'localappdata', 'ShikishaTerm', 'data')]
+const dataDir = () => [stateFolder(APP, path.join(INSTANCE, 'localappdata'))]
   .find((d) => fs.existsSync(path.join(d, 'api-token')));
 const call = async (method, ...params) => {
   const sock = net.connect(`\\\\.\\pipe\\shikisha-${pid}`);

@@ -33,6 +33,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { startChrome } from './chrome.mjs';
+import { stateFolder } from './lib/copy.mjs';
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
 const RUN = path.join(os.tmpdir(), 'sk-ai-accounts');
@@ -155,7 +156,7 @@ try {
   check(/CFG=\[\]/.test(plainSays), `the other tab is pointed at no folder (${(plainSays.match(/CFG=\[[^\]]*\]/) || [''])[0]})`);
   check(/KEY=\[\]/.test(workerSays), `the account's tab is not handed a key that would sign it in as somebody else (${(workerSays.match(/KEY=\[[^\]]*\]/) || [''])[0]})`);
   check(/KEY=\[leaked-key\]/.test(plainSays), 'the other tab keeps the environment it always had');
-  check(!fs.existsSync(path.join(APP, 'data', 'ai-accounts')), 'nothing of the account is in the app\'s own folder, which may be synced');
+  check(!fs.existsSync(path.join(stateFolder(APP, path.join(RUN, 'localappdata')), 'ai-accounts')), 'nothing of the account is in the app\'s own folder, which may be synced');
 
   // Made up from the usual folder
   check(linked(path.join(ACCOUNT, 'projects')) && fs.existsSync(path.join(ACCOUNT, 'projects', 'C--old', 'old-conversation.jsonl')), 'the account sees the usual folder\'s conversations through a link');

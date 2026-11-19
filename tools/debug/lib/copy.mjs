@@ -34,6 +34,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..', '..');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -80,7 +81,44 @@ async function startWindows({ run, config, args, release }) {
     `($_.ExecutablePath -and $_.ExecutablePath -like '${run}\\*') -or ` +
     `(($_.Name -eq 'msedgewebview2.exe' -or $_.Name -eq 'chrome.exe') -and ($_.CommandLine + '') -like '*${path.basename(run)}\\localappdata*') } | ` +
     `ForEach-Object { $t += [double]$_.KernelModeTime + [double]$_.UserModeTime }; $t / 1e7`).stdout.trim()) || 0;
-  return { home: app, data: path.join(app, 'data'), logs: path.join(app, 'logs'), stop, cpuSeconds };
+  return { home: app, data: stateFolder(app, local), logs: path.join(app, 'logs'), stop, cpuSeconds };
+}
+
+/**
+ * Where a copy on Windows whose program folder is `app`, started with
+ * LOCALAPPDATA set to `local`, keeps its state (the databases, the keys, the
+ * marks of a run): this machine's folder, under a mark of the program folder
+ * and the account -- `config::state_dir` in the app, worked out the same way
+ */
+export function stateFolder(app, local) {
+  const mark = createHash('sha256')
+    .update(`${path.resolve(app).toLowerCase()}\n${(process.env.USERNAME || '').toLowerCase()}`)
+    .digest('hex').slice(0, 16);
+  return path.join(local, 'ShikishaTerm', 'state', mark);
+}
+
+/**
+ * Where such a copy's state is as things stand: the state folder once the
+ * app has taken its `data` folder across (and marked it so), the `data`
+ * folder until then. `local` defaults to the `localappdata` folder beside
+ * the program folder, the way instance.win.ps1 lays a copy out
+ */
+export function stateNow(app, local = path.join(path.dirname(path.resolve(app)), 'localappdata')) {
+  const dir = stateFolder(app, local);
+  return fs.existsSync(path.join(dir, 'program-folder.txt')) ? dir : path.join(app, 'data');
+}
+
+/**
+ * The same folder, made before the copy first starts, for a run that puts
+ * state in it beforehand. Marked as the copy's own, the way the app marks it
+ * once it has taken its old `data` folder across -- an unmarked one would be
+ * put aside as unfinished
+ */
+export function readyStateFolder(app, local) {
+  const dir = stateFolder(app, local);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'program-folder.txt'), path.resolve(app));
+  return dir;
 }
 
 function startMac({ run, config, args }) {

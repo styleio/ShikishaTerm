@@ -32,6 +32,7 @@ import net from 'node:net';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { startChrome } from './chrome.mjs';
+import { stateFolder } from './lib/copy.mjs';
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
 const REAL_GEMINI = process.argv.includes('--real');
@@ -187,7 +188,7 @@ try {
 
   if (REAL_GEMINI) {
     // The real CLI in the written worktree, and in one that was not written
-    const dataDir = () => [path.join(APP, 'data'), path.join(RUN, 'localappdata', 'ShikishaTerm', 'data')].find((x) => fs.existsSync(path.join(x, 'api-token')));
+    const dataDir = () => [stateFolder(APP, path.join(INSTANCE, 'localappdata'))].find((x) => fs.existsSync(path.join(x, 'api-token')));
     const call = async (method, ...params) => {
       const sock = net.connect(`\\\\.\\pipe\\shikisha-${pid}`);
       await new Promise((r, j) => { sock.once('connect', r); sock.once('error', j); });

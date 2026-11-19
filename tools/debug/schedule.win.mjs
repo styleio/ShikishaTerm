@@ -21,6 +21,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
+import { stateFolder } from './lib/copy.mjs';
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
 const RUN = path.join(os.tmpdir(), 'sk-schedule');
@@ -96,7 +97,7 @@ try {
   check(count('every_1m') === 2, `...and again a minute later, once (${count('every_1m')})`);
   await until(async () => count(`at_${hhmm}`) >= 1, `at_${hhmm} to run`, 200000);
   check(count(`at_${hhmm}`) === 1, `at_${hhmm} ran when ${hhmm.slice(0, 2)}:${hhmm.slice(2)} came, once`);
-  const kept = JSON.parse(fs.readFileSync(path.join(APP, 'data', 'schedule.json'), 'utf8')).last;
+  const kept = JSON.parse(fs.readFileSync(path.join(stateFolder(APP, path.join(RUN, 'localappdata')), 'schedule.json'), 'utf8')).last;
   check(Object.keys(kept).some((k) => k.endsWith(`#at_${hhmm}#` + k.split('#')[2])) && Object.keys(kept).length === 2, `the times are kept (${Object.keys(kept).length})`);
 
   // Started again: the time of day is not run a second time

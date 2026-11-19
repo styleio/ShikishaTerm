@@ -217,7 +217,47 @@ fn boot() -> Result<()> {
     // A copy started to finish an update waits for the copy that started it
     // to leave, so nothing below reads files the old one is still writing
     update::wait_for_handoff();
-    if !client {
+    // Started with no words at all and a hook's event on its input: a CLI
+    // read the hook this app wrote into its settings and ran the program
+    // without what follows it. That is not somebody opening the app, and
+    // nothing is opened -- nor claimed, nor carried forward
+    if std::env::args().len() == 1 && shikisha_core::agenthook::started_as_a_hook_with_no_words() {
+        return Ok(());
+    }
+    // One program per layout (see instance.rs), claimed before anything
+    // below touches the layout's files: an update put right, a version on
+    // trial judged (and perhaps gone back from), settings carried forward,
+    // this machine's state taken across. Started again over the same folders
+    // -- a second click on the shortcut while the first is put away in the
+    // notification area -- this one asks the first to show its window and
+    // leaves, the way any resident program does, having changed nothing and
+    // counted as no start of a version on trial. A copy on another layout
+    // (demo, portable beside a different exe) is not this one and runs. A
+    // window onto a runtime elsewhere claims nothing. The two modes of their
+    // own below run beside the program as well: they hold the claim when it
+    // is free -- the program then waits for them -- and when it is not, they
+    // run without it and touch none of the layout's housekeeping below
+    let of_their_own = matches!(std::env::args().nth(1).as_deref(), Some("--settings") | Some("--cast-test"));
+    let claim = match client {
+        true => None,
+        false => match instance::claim() {
+            instance::Standing::First(claim) => Some(claim),
+            instance::Standing::Second if of_their_own => None,
+            instance::Standing::Second => {
+                append_hook_log("Already running from this layout; asked the running copy to show its window");
+                instance::ask_to_show();
+                return Ok(());
+            }
+        },
+    };
+    // Only by the copy holding the layout: when a mode of its own runs beside
+    // the program, the program is the one whose files these are
+    if claim.is_some() {
+        // Holding the layout alone -- the copy an update replaced, or one
+        // started by hand, is gone and writes nothing more -- this copy takes
+        // what the `data` folder holds across to this machine's state folder,
+        // before anything kept there is read or opened
+        config::take_over_state();
         // An update that was interrupted mid-swap is put back, and one that
         // finished is tidied, before any of the files it touched is read
         update::finish_last();
@@ -303,27 +343,8 @@ fn boot() -> Result<()> {
         return cast_test(&url);
     }
 
-    // Started with no words at all and a hook's event on its input: a CLI
-    // read the hook this app wrote into its settings and ran the program
-    // without what follows it. That is not somebody opening the app, and
-    // nothing is opened
-    if std::env::args().len() == 1 && shikisha_core::agenthook::started_as_a_hook_with_no_words() {
-        return Ok(());
-    }
-
-    // One program per layout (see instance.rs). Started again over the same
-    // folders -- a second click on the shortcut while the first is put away in
-    // the notification area -- this one asks the first to show its window and
-    // leaves, the way any resident program does. A copy on another layout
-    // (demo, portable beside a different exe) is not this one and runs
-    let _instance = match instance::claim() {
-        instance::Standing::First(claim) => claim,
-        instance::Standing::Second => {
-            append_hook_log("Already running from this layout; asked the running copy to show its window");
-            instance::ask_to_show();
-            return Ok(());
-        }
-    };
+    // The layout's claim, taken above, held for the life of the program
+    let _instance = claim;
 
     // Which pseudo console this run got, written down before the first tab
     // opens. Both ways of ending up on the older one are silent -- a download

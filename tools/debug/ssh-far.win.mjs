@@ -30,6 +30,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { spawn, spawnSync } from 'node:child_process';
+import { stateFolder } from './lib/copy.mjs';
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
 // A folder of this run's own: two sessions running this at once must not
@@ -108,7 +109,7 @@ const b64 = (s) => Buffer.from(s).toString('base64');
 const cleanThere = () => there(`rm -rf ${DIR} "$HOME/.claude/projects/${MARK}"; pkill -f "${DIR}/bin/claude" 2>/dev/null; true`);
 const calls = async () => (await there(`cat ${CALLS} 2>/dev/null`)).split('\n').filter(Boolean);
 const remembered = () => {
-  const f = path.join(APP, 'data', 'last-session');
+  const f = path.join(stateFolder(APP, LOCAL), 'last-session');
   if (!fs.existsSync(f)) return null;
   return (JSON.parse(fs.readFileSync(f, 'utf8')).desks || []).flatMap((d) => d.tabs || []).find((t) => t.id === 'ai') || null;
 };
@@ -133,7 +134,7 @@ const boardOf = async () => {
 };
 // One of the app's own primitives, through its --mcp door
 const primitive = (name, params) => new Promise((res) => {
-  const door = spawn(exe, ['--mcp', '--pid', appPid(), '--token-file', path.join(APP, 'data', 'api-token')], { stdio: ['pipe', 'pipe', 'ignore'] });
+  const door = spawn(exe, ['--mcp', '--pid', appPid(), '--token-file', path.join(stateFolder(APP, LOCAL), 'api-token')], { stdio: ['pipe', 'pipe', 'ignore'] });
   let out = '';
   const done = (v) => { try { door.kill(); } catch {} res(v); };
   door.stdout.on('data', (b) => {

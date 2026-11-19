@@ -199,7 +199,7 @@ pub fn url_kind(url: &str) -> &'static str {
 ///
 /// The phone screens show this machine's own address, and the QR carries the
 /// token that opens it — a picture of that, published anywhere, is a picture of
-/// a door and its key. When `data\demo-remote` holds a URL, every screen that
+/// a door and its key. When `demo-remote` in the state folder holds a URL, every screen that
 /// offers the link uses that one instead, so a promotional shot has nothing
 /// real in the frame. The announce shooter writes the file; an installation
 /// somebody is actually using has no reason to have one.

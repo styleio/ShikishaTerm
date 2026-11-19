@@ -23,6 +23,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
+import { stateNow, readyStateFolder } from './lib/copy.mjs';
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
 const arg = (name, dflt) => (process.argv.find((a) => a.startsWith(`--${name}=`)) || `--${name}=${dflt}`).split('=')[1];
@@ -95,6 +96,11 @@ for (const name of held) {
   if (fs.existsSync(path.join(CACHE, name))) fs.copyFileSync(path.join(CACHE, name), path.join(update, 'prev', BACK, name));
 }
 fs.writeFileSync(path.join(update, 'trial.json'), JSON.stringify({ version: NOW, from: BACK, starts: 2 }));
+// This version took this PC's records across on an earlier start, and wrote
+// one since: going back to a version that knows only the `data` folder must
+// hand it back there
+const STATE = readyStateFolder(APP, path.join(RUN, 'localappdata'));
+fs.writeFileSync(path.join(STATE, 'remote-token'), 'written-by-this-version-0123456789');
 
 const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(CLAUDE|ANTHROPIC|SHIKISHA)/i.test(k)));
 env.LOCALAPPDATA = path.join(RUN, 'localappdata');
@@ -138,14 +144,17 @@ try {
     await until(async () => log().includes(`Update: now running ${BACK} (was ${NOW})`), `${BACK} to be running`, 60000);
     check(true, `${BACK} is put back and started`);
     check(hash(appExe) === backHash && hash(appExe) !== nowHash, 'the program in the folder is the kept version');
-    check(read(path.join(APP, 'data', 'update-skipped')).trim() === NOW, `${NOW} is passed over, not offered again`);
+    check(read(path.join(stateNow(APP, path.join(RUN, 'localappdata')), 'update-skipped')).trim() === NOW, `${NOW} is passed over, not offered again`);
     check(!fs.existsSync(path.join(update, 'trial.json')), 'the trial is over');
+    check(read(path.join(APP, 'data', 'remote-token')) === 'written-by-this-version-0123456789', 'this PC\'s records were handed back to the data folder');
+    check(!fs.existsSync(path.join(STATE, 'program-folder.txt')), 'the state folder is no longer taken for the copy\'s');
   } else {
     await until(async () => log().includes('Sending state'), 'this version to start', 60000);
     check(hash(appExe) === nowHash, 'the program in the folder is still this version');
     const trial = JSON.parse(read(path.join(update, 'trial.json')) || '{}');
     check(trial.version === NOW && trial.starts === 1, `this version is on trial afresh (${JSON.stringify(trial)})`);
-    check(!read(path.join(APP, 'data', 'update-skipped')).includes(NOW), 'this version is not passed over');
+    check(!read(path.join(stateNow(APP, path.join(RUN, 'localappdata')), 'update-skipped')).includes(NOW), 'this version is not passed over');
+    check(read(path.join(STATE, 'remote-token')) === 'written-by-this-version-0123456789', 'this PC\'s records stay where they are');
   }
 } catch (e) {
   console.error(e);

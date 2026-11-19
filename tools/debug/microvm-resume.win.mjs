@@ -34,6 +34,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
+import { stateFolder } from './lib/copy.mjs';
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
 // A folder of this run's own: two sessions running this at once must not
@@ -112,7 +113,7 @@ const inside = async (cmd) => {
 };
 const calls = async () => (await inside(`cat ${CALLS} 2>/dev/null`)).split('\n').filter(Boolean);
 const remembered = () => {
-  const f = [path.join(APP, 'last-session'), path.join(APP, 'data', 'last-session')].find((p) => fs.existsSync(p));
+  const f = [path.join(APP, 'last-session'), path.join(stateFolder(APP, LOCAL), 'last-session')].find((p) => fs.existsSync(p));
   if (!f) return null;
   const s = JSON.parse(fs.readFileSync(f, 'utf8'));
   return (s.desks || []).flatMap((d) => d.tabs || []).find((t) => t.id === 'ai') || null;
@@ -133,7 +134,7 @@ const boardOf = async () => {
 // them: the app's --mcp door, pointed at the copy that is running
 const appPid = () => ps('-Command', `(Get-Process -Name 'SHIKISHA-TERM' | Where-Object { $_.Path -like '${RUN}*' } | Select-Object -First 1).Id`).stdout.trim();
 const primitive = (name, params) => new Promise((res) => {
-  const door = spawn(exe, ['--mcp', '--pid', appPid(), '--token-file', path.join(APP, 'data', 'api-token')], { stdio: ['pipe', 'pipe', 'ignore'] });
+  const door = spawn(exe, ['--mcp', '--pid', appPid(), '--token-file', path.join(stateFolder(APP, LOCAL), 'api-token')], { stdio: ['pipe', 'pipe', 'ignore'] });
   let out = '';
   const done = (v) => { try { door.kill(); } catch {} res(v); };
   door.stdout.on('data', (b) => {

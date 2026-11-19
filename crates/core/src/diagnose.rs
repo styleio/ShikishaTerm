@@ -1014,6 +1014,10 @@ fn inventory() -> String {
     for (part, told) in [("config", Told::Own), ("data", Told::All), ("logs", Told::Own)] {
         out.push_str(&listing(&format!("the app's folder: {part}"), &root.join(part), told, &mut left, until));
     }
+    let state = crate::config::state_dir();
+    if state != root.join("data") {
+        out.push_str(&listing("this machine's state", &state, Told::All, &mut left, until));
+    }
     let program = crate::config::exe_dir();
     if program != root {
         out.push_str(&listing("the program's folder", &program, Told::Own, &mut left, until));

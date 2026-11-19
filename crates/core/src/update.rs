@@ -345,7 +345,7 @@ fn now_secs() -> u64 {
 }
 
 fn update_dir() -> PathBuf {
-    crate::config::state_path("update")
+    crate::config::install_path("update")
 }
 
 fn version_dir(v: &str) -> PathBuf {
@@ -629,7 +629,7 @@ fn notes(s: &State) -> Option<String> {
 
 /// Where the newest copy of the settings was put, when one was
 fn newest_backup() -> Option<PathBuf> {
-    let rd = std::fs::read_dir(crate::config::state_path("backup")).ok()?;
+    let rd = std::fs::read_dir(crate::config::install_path("backup")).ok()?;
     let mut dirs: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
     dirs.sort();
     dirs.pop()
@@ -1060,7 +1060,17 @@ pub fn go_back_from_failed_starts(failed: &str, to: &str) -> Result<()> {
     crate::append_hook_log(&format!("Update: {failed} stopped while starting {FAILED_STARTS} times in a row; going back to {to}"));
     write_text("update-skipped", failed);
     remove_version_dir(failed);
-    put_in_place(&Apply::Rollback { version: to.to_string() })
+    // Asked as the program starts, holding the layout alone and before
+    // anything kept in the state is opened: the older version may know only
+    // the `data` folder, so this machine's state is handed back there first.
+    // When it cannot be, nothing is put back, and this version starts
+    crate::config::give_back_state().context("hand this PC's records back to the data folder")?;
+    let put = put_in_place(&Apply::Rollback { version: to.to_string() });
+    if put.is_err() {
+        // This version goes on starting: it takes its state across again
+        crate::config::take_back_state();
+    }
+    put
 }
 
 // ── Putting it in place ────────────────────────────────────────────
@@ -1242,6 +1252,18 @@ fn keep_previous(root: &Path, from: &str) {
 /// copy's files are already the old ones, set aside. Whatever stops it
 /// leaves the card saying why, never "under way" for good
 pub fn apply(what: &Apply) -> Result<()> {
+    // Going back while this version runs: done as the run ends instead
+    // ([`at_the_end`]), once every record of it is written, so this machine's
+    // state can be handed to the older version whole before it starts
+    #[cfg(not(target_os = "macos"))]
+    if let Apply::Rollback { version } = what {
+        *BACK_AT_THE_END.lock().unwrap_or_else(|e| e.into_inner()) = Some(version.clone());
+        crate::append_hook_log(&format!("Update: going back to {version} as this run ends"));
+        let mut s = lock();
+        s.phase = Phase::Restarting { version: version.clone() };
+        s.restart_at = Some(Instant::now());
+        return Ok(());
+    }
     let r = put_in_place(what);
     if let Err(e) = &r {
         let mut s = lock();
@@ -1251,6 +1273,44 @@ pub fn apply(what: &Apply) -> Result<()> {
     }
     r
 }
+
+/// The version to go back to as this run ends, when one was asked for
+#[cfg(not(target_os = "macos"))]
+static BACK_AT_THE_END: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// The last thing a run does: when going back was asked for, this machine's
+/// state is handed back to the `data` folder the older version knows, and
+/// only then is the older version put in place and started -- so it never
+/// starts on records this run was still writing. When the state cannot be
+/// handed back, or the older version cannot be put in place, this version
+/// is started again instead and says why: going back on half the records
+/// is worse than not going back
+#[cfg(not(target_os = "macos"))]
+pub fn at_the_end() {
+    let Some(version) = BACK_AT_THE_END.lock().unwrap_or_else(|e| e.into_inner()).take() else { return };
+    // Nothing may write to the state while it is handed back: the look at the
+    // CLIs' records, on a thread of its own, has to have stopped
+    let quiet = match crate::tokens::stop() {
+        true => Ok(()),
+        false => Err(anyhow!("the record of tokens was still being written after 10 seconds")),
+    };
+    let went = quiet
+        .and_then(|()| crate::config::give_back_state().context("hand this PC's records back to the data folder"))
+        .and_then(|()| put_in_place(&Apply::Rollback { version: version.clone() }));
+    if let Err(e) = went {
+        crate::append_hook_log(&format!("Update: going back to {version} did not happen: {e:#}; this version starts again"));
+        let words = crate::i18n::tp("msg.update.back_failed", &[("version", &version), ("e", &format!("{e:#}"))]);
+        let _ = crate::notify::send_blocking(&crate::notify::Destination::Windows {}, &words);
+        let exe = std::env::current_exe().unwrap_or_else(|_| crate::config::root_dir().join(EXE));
+        let _ = std::process::Command::new(&exe)
+            .current_dir(crate::config::root_dir())
+            .env("SHIKISHA_HANDOFF", std::process::id().to_string())
+            .spawn();
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub fn at_the_end() {}
 
 #[cfg(target_os = "macos")]
 fn put_in_place(what: &Apply) -> Result<()> {
@@ -1281,24 +1341,38 @@ fn put_in_place(what: &Apply) -> Result<()> {
         crate::append_hook_log(&format!("Update to {version} could not be put in place, files put back: {e:#}"));
         return Err(e);
     }
+    let exe = std::env::current_exe().unwrap_or_else(|_| root.join(EXE));
+    // The journal says the copy is started before it is: the copy reads it
+    // as it starts, and one left saying "swap" is put back as an interrupted
+    // update. Started before what was set aside is let go of: a journal that
+    // cannot be written, or a copy that cannot be started, leaves the files
+    // put back as they were, this version again
+    j.step = "launched".into();
+    let started = write_journal(&j).and_then(|()| {
+        std::process::Command::new(&exe)
+            .current_dir(&root)
+            .env("SHIKISHA_HANDOFF", std::process::id().to_string())
+            .spawn()
+            .map(|_| ())
+            .with_context(|| format!("start {}", exe.display()))
+    });
+    if let Err(e) = started {
+        restore_aside(&root);
+        let _ = std::fs::remove_file(journal_path());
+        set_phase(Phase::Failed { version: Some(version.clone()), message: format!("{e:#}") });
+        crate::append_hook_log(&format!("Update to {version} could not be started, files put back: {e:#}"));
+        return Err(e);
+    }
     if rollback {
         // Going back keeps nothing older; going forward again refetches
         let _ = std::fs::remove_dir_all(prev_root());
         for held in HELD_OPEN {
-            let p = if *held == EXE { aside(&std::env::current_exe().unwrap_or_else(|_| root.join(EXE))) } else { aside(&root.join(held)) };
+            let p = if *held == EXE { aside(&exe) } else { aside(&root.join(held)) };
             let _ = std::fs::remove_file(p);
         }
     } else {
         keep_previous(&root, &from);
     }
-    let exe = std::env::current_exe().unwrap_or_else(|_| root.join(EXE));
-    std::process::Command::new(&exe)
-        .current_dir(&root)
-        .env("SHIKISHA_HANDOFF", std::process::id().to_string())
-        .spawn()
-        .with_context(|| format!("start {}", exe.display()))?;
-    j.step = "launched".into();
-    write_journal(&j)?;
     crate::append_hook_log(&format!("Update: {from} -> {version} put in place; the new copy is starting"));
     let mut s = lock();
     s.phase = Phase::Restarting { version };

@@ -29,6 +29,7 @@ import os from 'node:os';
 import net from 'node:net';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
+import { stateFolder } from './lib/copy.mjs';
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
 const OUT = path.join(ROOT, 'target', 'orch-real');
@@ -148,7 +149,7 @@ child.unref();
 let door;
 const openDoor = async () => {
   const end = Date.now() + 60000;
-  const file = path.join(APP, 'data', 'api-token');
+  const file = path.join(stateFolder(APP, path.join(RUN, 'localappdata')), 'api-token');
   while (!fs.existsSync(file) && Date.now() < end) await sleep(500);
   if (!fs.existsSync(file)) die('no api-token appeared');
   const sock = net.connect(`\\\\.\\pipe\\shikisha-${pid}`);

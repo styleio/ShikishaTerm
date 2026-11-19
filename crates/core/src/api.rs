@@ -67,7 +67,7 @@ pub enum Access {
     #[default]
     Children,
     /// Anything running as this user. The token is also written to
-    /// `data\api-token` so a script of your own can read it
+    /// `api-token` in the state folder so a script of your own can read it
     User,
     /// No pipe at all
     Off,

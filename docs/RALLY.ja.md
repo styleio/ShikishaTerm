@@ -265,8 +265,8 @@ AIはCLI（claude/codex等）なので、決まった書式で読み書きする
 | 関数 | 説明 |
 |---|---|
 | `show(対象)` | 表示タブ切替（`0`=INDEX）。手番ごとに見える画面を動かす |
-| `record(text)` / `record_reset()` | 実行Luaを `data/last-rally.lua` に追記／始め直し（貼れば再生） |
-| `set_result(code, reason)` | 終了コードと理由（`data/last-result.json`＋ログ＋UI） |
+| `record(text)` / `record_reset()` | 実行Luaを この PC の記録の `last-rally.lua` に追記／始め直し（貼れば再生） |
+| `set_result(code, reason)` | 終了コードと理由（この PC の記録の `last-result.json`＋ログ＋UI） |
 | `sleep(ms)` / `wait(tab, 正規表現, ms)` / `browser_wait(name, opts)` | 待機（コルーチンでyield） |
 | `run_scoped(name, code)` | AI製Luaを browser限定サンドボックスで実行。返りは `err, out` の2値（成功=`nil`＋返り値の文字列化、失敗=エラー文字列＋`nil`）。裸の式はREPL式に値になる |
 | `send_to_tab(tab, text)` / `get_var` / `set_var` | タブへ送信 / スクリプト間共有変数 |
@@ -298,11 +298,11 @@ AIはCLI（claude/codex等）なので、決まった書式で読み書きする
    `secrets_allow: ["example_login"]`（危険承知の全許可は `secrets_allow_all: true`）。
 3. **`_shared.lua` を編集**：`RALLY.browser = "br"`、`goal` を目的に。
 4. **AUTO ON で起動**。AIが手を出し、ブラウザで実行され、往復する様子を観戦できる。
-5. うまくいったら `data/last-rally.lua` を保存 → 別タブの `on_done.lua` に貼れば AI無しで再生。
+5. うまくいったら この PC の記録の `last-rally.lua` を保存 → 別タブの `on_done.lua` に貼れば AI無しで再生。
 
 ## 15. 記録と再生
 
-各手番のAI製Luaは `data/last-rally.lua` に順に積まれる（値の秘密は鍵名で参照されるので
+各手番のAI製Luaは この PC の記録の `last-rally.lua` に順に積まれる（値の秘密は鍵名で参照されるので
 生値は残らない）。これを丸ごと `on_load.lua`/`on_done.lua` の本体に貼れば、AI無しで同じ
 ブラウザ操作を再生できる。人間待ち（`browser_ask`/`browser_wait`）も記録されるので、
 再生時もログイン待ちで止まる。

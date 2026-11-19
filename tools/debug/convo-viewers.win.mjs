@@ -7,6 +7,7 @@ import http from 'node:http';
 import {randomBytes} from 'node:crypto';
 import {spawn} from 'node:child_process';
 import assert from 'node:assert/strict';
+import { stateFolder } from './lib/copy.mjs';
 
 const root = path.resolve(import.meta.dirname, '../..');
 const run = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-convo-viewers-'));
@@ -36,7 +37,7 @@ try {
   const started=await ps(['-File',launcher,'-At',instance,'-Work',work,'-Cdp','0']);
   const base=/board=(http:\/\/127\.0\.0\.1:\d+)/.exec(started)?.[1];
   assert.ok(base,'the launcher named its board');
-  const token=fs.readFileSync(path.join(instance,'app/data/remote-token'),'utf8').trim();
+  const token=fs.readFileSync(path.join(stateFolder(path.join(instance, 'app'), path.join(instance, 'localappdata')), 'remote-token'),'utf8').trim();
   const opened=await fetch(base+'/?t='+encodeURIComponent(token),{redirect:'manual'});
   await opened.text();
   const cookie=opened.headers.getSetCookie().map(c=>c.split(';')[0]).join('; ');

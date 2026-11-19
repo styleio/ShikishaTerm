@@ -38,6 +38,7 @@ import net from 'node:net';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { spawn, spawnSync } from 'node:child_process';
+import { stateFolder } from './lib/copy.mjs';
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
 const WHERE = (process.argv.find((a) => a.startsWith('--where=')) || '--where=ssh').slice(8);
@@ -164,7 +165,7 @@ const b64 = (s) => Buffer.from(s).toString('base64');
 // ── The copy ──────────────────────────────────
 let door;
 const openDoor = async (pid) => {
-  const tokenFile = path.join(APP, 'data', 'api-token');
+  const tokenFile = path.join(stateFolder(APP, LOCAL), 'api-token');
   await until(() => fs.existsSync(tokenFile), 'the api token', 60000);
   const token = fs.readFileSync(tokenFile, 'utf8').trim();
   // One connection per call: a held call (ask_tab) keeps its line busy

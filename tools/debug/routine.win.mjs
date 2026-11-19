@@ -34,6 +34,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { startChrome } from './chrome.mjs';
+import { stateFolder } from './lib/copy.mjs';
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
 const RUN = path.join(os.tmpdir(), 'sk-routine');
@@ -147,7 +148,7 @@ const until = async (test, what, ms) => {
   while (Date.now() < end) { try { const v = await test(); if (v) return v; } catch {} await sleep(1000); }
   throw new Error('timed out waiting for ' + what);
 };
-const book = () => { const f = path.join(APP, 'data', 'routine-runs.json'); return fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, 'utf8')).runs || {} : {}; };
+const book = () => { const f = path.join(stateFolder(APP, path.join(RUN, 'localappdata')), 'routine-runs.json'); return fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, 'utf8')).runs || {} : {}; };
 const runs = (id) => book()[id] || [];
 const tabs = async () => { const s = await (await send(`/api/state?t=${TOKEN}`)).json(); return ((s.ui || s).tabs || []); };
 const log = () => { const f = path.join(APP, 'logs', 'hooks.log'); return fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : ''; };

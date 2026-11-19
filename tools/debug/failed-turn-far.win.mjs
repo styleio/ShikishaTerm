@@ -24,6 +24,7 @@ import os from 'node:os';
 import net from 'node:net';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
+import { stateFolder } from './lib/copy.mjs';
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
 const KEEP = process.argv.includes('--keep');
@@ -135,7 +136,7 @@ const cleanup = async () => {
 // ── The copy here ──────────────────────────────────────────────────────────
 let door;
 const openDoor = async (pid) => {
-  const tokenFile = path.join(APP, 'data', 'api-token');
+  const tokenFile = path.join(stateFolder(APP, LOCAL), 'api-token');
   await until(() => fs.existsSync(tokenFile), 'the api token', 60000);
   const token = fs.readFileSync(tokenFile, 'utf8').trim();
   door = async (method, ...params) => {

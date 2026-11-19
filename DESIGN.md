@@ -550,7 +550,7 @@ poll only while the socket is down. Browser (relay) tabs use the same discipline
 | Handling | Remote input is treated as **a human's action** (resets the auto-chain; a locked tab is refused) |
 
 Connecting is done by QR code (no typing a URL and token by hand). It appears in the settings screen's
-"Use from your phone" and via the TUI's `[i]`. The token is saved to `data\remote-token` and reused, so
+"Use from your phone" and via the TUI's `[i]`. The token is saved among this PC's records (`remote-token`) and reused, so
 a restart doesn't force you to re-pair.
 
 **It's pointless if people can't use it**, so enabling is a single checkbox in the settings; saving it

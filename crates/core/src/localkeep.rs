@@ -33,20 +33,10 @@ pub const KEY: &str = "this-pc";
 /// How long a resident process just started may take to open its door
 const UP_WAIT: Duration = Duration::from_secs(15);
 
-/// Which install and account this is: the folder's name
-fn mark() -> String {
-    use sha2::Digest as _;
-    let mut h = sha2::Sha256::new();
-    h.update(crate::config::root_dir().to_string_lossy().to_lowercase().as_bytes());
-    h.update(b"\n");
-    h.update(std::env::var("USERNAME").unwrap_or_default().to_lowercase().as_bytes());
-    h.finalize().iter().take(8).map(|b| format!("{b:02x}")).collect()
-}
-
 /// The resident process's folder
 pub fn home() -> Result<PathBuf> {
     let base = crate::machine_data_dir().ok_or_else(|| anyhow!("this system names no folder for a program's own things"))?;
-    Ok(base.join("ShikishaTerm").join("keeper").join(mark()))
+    Ok(base.join("ShikishaTerm").join("keeper").join(crate::config::install_mark()))
 }
 
 fn keep_door() -> Result<PathBuf> {

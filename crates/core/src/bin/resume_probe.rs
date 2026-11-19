@@ -8,8 +8,8 @@
 //!
 //!     cargo run -p shikisha-core --bin resume_probe -- <install folder>
 //!
-//! The install folder is the one the app runs out of: its `config/config.json`
-//! and its `data/last-session`.
+//! The install folder is the one the app runs out of: its `config/config.json`,
+//! and its `last-session` in the state folder this machine keeps for it.
 
 use shikisha_core::{config, desk, lastsession, tab, view};
 
@@ -21,7 +21,7 @@ fn main() {
     };
     let root = std::path::Path::new(at);
     let cfg_at = root.join("config").join("config.json");
-    let saved_at = root.join("data").join("last-session");
+    let saved_at = config::state_dir_of(root).join("last-session");
 
     let text = std::fs::read_to_string(&cfg_at).unwrap_or_else(|e| {
         eprintln!("{}: {e}", cfg_at.display());

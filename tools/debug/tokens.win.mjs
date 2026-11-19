@@ -29,6 +29,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { startChrome } from './chrome.mjs';
+import { stateFolder } from './lib/copy.mjs';
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
 const RUN = path.join(os.tmpdir(), 'sk-tokens');
@@ -150,7 +151,7 @@ try {
     'by model lists every model, the archived conversation\'s too');
   check(first.report.folders.length === 1 && path.resolve(first.report.folders[0].name) === path.resolve(WORK), 'by folder names the folder they worked in');
   check(first.report.sessions.length === 3, 'every conversation is among the latest');
-  check(fs.existsSync(path.join(APP, 'data', 'tokens.db')), 'the record is in the app\'s data folder');
+  check(fs.existsSync(path.join(stateFolder(APP, path.join(RUN, 'localappdata')), 'tokens.db')), 'the record is in the copy\'s state folder');
   const one = (await (await send('/api/tokens?days=7&cli=codex')).json()).report.total;
   check(one.calls === 2 && near(one.cost, codexCost), `one AI alone is that AI's (${one.calls}, ${one.cost})`);
 

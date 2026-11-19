@@ -33,6 +33,7 @@ import os from 'node:os';
 import net from 'node:net';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
+import { stateFolder } from './lib/copy.mjs';
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
 const OUT = path.join(ROOT, 'target', 'ask-tab-poc');
@@ -158,7 +159,7 @@ child.unref();
 
 // ── The door: the same pipe an AI's MCP server uses, as the person ─────────
 const tokenFile = () => {
-  for (const p of [path.join(APP, 'data', 'api-token'), path.join(RUN, 'localappdata', 'ShikishaTerm', 'data', 'api-token')]) {
+  for (const p of [path.join(stateFolder(APP, path.join(RUN, 'localappdata')), 'api-token')]) {
     if (fs.existsSync(p)) return p;
   }
   return null;

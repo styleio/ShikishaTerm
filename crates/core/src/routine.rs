@@ -26,7 +26,7 @@
 //! two copies of the same work, one on top of the other, is never what was
 //! wanted.
 //!
-//! **What happened is written down** ([`Book`], `data/routine-runs.json`):
+//! **What happened is written down** ([`Book`], `routine-runs.json`):
 //! every run, with when it was due, how it went and what the AI answered, so
 //! a person who was away can read the morning's answer without hunting for
 //! the tab. The same reason given time after time (the tab was busy, every

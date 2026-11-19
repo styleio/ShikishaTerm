@@ -19,7 +19,7 @@
 //! time; later than that, it is written down as missed and not run -- an hour
 //! late is still the morning's summary, a day late is not.
 //!
-//! When each one last ran is kept (`data/schedule.json`), so a restart does
+//! When each one last ran is kept (`schedule.json`), so a restart does
 //! not run a time twice and a time is never run for the past it was not
 //! there for: one seen for the first time starts counting from now.
 

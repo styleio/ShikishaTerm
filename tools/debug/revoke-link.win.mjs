@@ -21,6 +21,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
+import { stateFolder } from './lib/copy.mjs';
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
 const RUN = path.join(os.tmpdir(), 'sk-revoke-link');
@@ -74,7 +75,7 @@ const device = () => {
   };
   return { send, jar };
 };
-const tokenFile = path.join(APP, 'data', 'remote-token');
+const tokenFile = path.join(stateFolder(APP, path.join(RUN, 'localappdata')), 'remote-token');
 const token = () => (fs.existsSync(tokenFile) ? fs.readFileSync(tokenFile, 'utf8').trim() : '');
 const until = async (test, what, ms) => {
   const end = Date.now() + ms;

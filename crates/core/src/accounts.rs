@@ -4,7 +4,7 @@
 //! the program but in the folder it keeps its settings in -- `~/.claude` for
 //! Claude Code, `~/.codex` for Codex -- and each lets an environment variable
 //! name another folder (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`). So an account here
-//! is a folder of its own (`data/ai-accounts/<id>/home`), and a tab started
+//! is a folder of its own (`ai-accounts/<id>/home` in the state folder), and a tab started
 //! with that account is started with the variable naming it. Nothing is
 //! installed twice, and the sign-in itself is the CLI's own: this app never
 //! reads or writes a password, a token or a credentials file.

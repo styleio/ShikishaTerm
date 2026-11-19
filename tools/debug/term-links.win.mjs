@@ -42,6 +42,7 @@ import os from 'node:os';
 import http from 'node:http';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
+import { stateFolder } from './lib/copy.mjs';
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
 const SHOTS = path.join(ROOT, 'target', 'shots');
@@ -231,14 +232,14 @@ try {
     console.log('0. the window of a program split in two is this PC\'s own window');
     check(await board.run('REMOTE === true && AT_PC === true'), 'its page comes from the board and knows it is at this PC');
     const devices = () => {
-      const b = path.join(APP, 'data', 'clients.json');
+      const b = path.join(stateFolder(APP, LOCAL), 'clients.json');
       return fs.existsSync(b) ? (JSON.parse(fs.readFileSync(b, 'utf8')).clients || []).length : 0;
     };
     check(devices() === 0, 'it is not written into the list of devices');
     check(!(await board.run('!!document.getElementById("remotecut")')), 'it is not taken for a phone ("a phone is connected" is not up)');
     // A press a phone is refused, with an effect that can be read without
     // opening anything on this PC's screen: "not now" on the star card
-    const asked = path.join(APP, 'data', 'thanks-asked');
+    const asked = path.join(stateFolder(APP, LOCAL), 'thanks-asked');
     await board.run('send({kind:"thanks", open:false}); true');
     await until(() => fs.existsSync(asked), 'the answer to be written down', 10000).catch(() => {});
     check(fs.existsSync(asked), 'a press only this PC\'s window may make reached the app');

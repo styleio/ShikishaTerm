@@ -126,7 +126,7 @@ pub fn looking() -> Looking {
 pub fn look(now_please: bool) {
     {
         let mut l = LOOKING.lock().unwrap_or_else(|e| e.into_inner());
-        if l.running || (!now_please && l.ended + FRESH_SECS > now()) {
+        if STOPPING.load(std::sync::atomic::Ordering::SeqCst) || l.running || (!now_please && l.ended + FRESH_SECS > now()) {
             return;
         }
         *l = Looking { running: true, ended: l.ended, ..Default::default() };
@@ -138,6 +138,28 @@ pub fn look(now_please: bool) {
         l.ended = now();
         l.error = result.err().map(|e| format!("{e:#}"));
     });
+}
+
+/// Set as the program ends: no look starts, and one going on stops at the
+/// next record
+static STOPPING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Stops looking at the records, and waits (a while, no longer) for a look
+/// going on to stop and let go of the record -- so that nothing writes to
+/// it once the program has finished with it. Says whether it did: a look
+/// still going is one that may yet write
+pub fn stop() -> bool {
+    STOPPING.store(true, std::sync::atomic::Ordering::SeqCst);
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if !LOOKING.lock().unwrap_or_else(|e| e.into_inner()).running {
+            return true;
+        }
+        if std::time::Instant::now() >= until {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
 }
 
 /// Every record of every CLI on this PC, each once: an account whose folder
@@ -166,6 +188,9 @@ fn look_now(db: &Path) -> Result<()> {
     let files = records();
     LOOKING.lock().unwrap_or_else(|e| e.into_inner()).total = files.len();
     for (i, (cli, file)) in files.iter().enumerate() {
+        if STOPPING.load(std::sync::atomic::Ordering::SeqCst) {
+            return Ok(());
+        }
         let failed = read_one(&mut conn, cli, file).err();
         if let Some(e) = &failed {
             crate::append_hook_log(&format!("tokens: {} could not be read: {e:#}", file.display()));

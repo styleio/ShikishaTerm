@@ -17015,6 +17015,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // Then every machine this run spoke to is paused rather than left to run
     // out its minutes, billed, with nothing of this program on it
     crate::e2b::pause_all(Duration::from_secs(5));
+    // Last: nothing of this run writes to this machine's state from here on,
+    // so an older version asked for is handed it whole and put in place
+    crate::update::at_the_end();
     Ok(())
 }
 /// A value made safe to put in a URL's query.

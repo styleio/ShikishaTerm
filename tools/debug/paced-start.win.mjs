@@ -23,6 +23,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
+import { stateFolder, readyStateFolder } from './lib/copy.mjs';
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
 const AFTER = (process.argv.find((a) => a.startsWith('--after=')) || '--after=one').slice(8);
@@ -48,7 +49,7 @@ stopApp();
 await sleep(800);
 fs.rmSync(RUN, { recursive: true, force: true });
 fs.mkdirSync(path.join(APP, 'config'), { recursive: true });
-fs.mkdirSync(path.join(APP, 'data'), { recursive: true });
+readyStateFolder(APP, path.join(RUN, 'localappdata'));
 const staged = ps('-File', path.join(ROOT, 'tools', 'stage.ps1'), '-Dest', APP, '-Package', '-Exe', exe);
 const appExe = path.join(APP, 'SHIKISHA-TERM.exe');
 if (!fs.existsSync(appExe)) die('staging failed:\n' + staged.stdout + staged.stderr);
@@ -65,8 +66,8 @@ fs.writeFileSync(path.join(APP, 'config', 'config.json'), JSON.stringify({
 }, null, 2));
 // What a run that died leaves: its mark, of a process long gone, and for
 // the second case one short run already counted before it
-fs.writeFileSync(path.join(APP, 'data', 'running.json'), JSON.stringify({ pid: 4000000, version: '0.27.0', started: 1, settled: false }));
-fs.writeFileSync(path.join(APP, 'data', 'short-runs'), AFTER === 'two' ? '1' : '0');
+fs.writeFileSync(path.join(stateFolder(APP, path.join(RUN, 'localappdata')), 'running.json'), JSON.stringify({ pid: 4000000, version: '0.27.0', started: 1, settled: false }));
+fs.writeFileSync(path.join(stateFolder(APP, path.join(RUN, 'localappdata')), 'short-runs'), AFTER === 'two' ? '1' : '0');
 
 const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(CLAUDE|ANTHROPIC|SHIKISHA)/i.test(k)));
 env.LOCALAPPDATA = path.join(RUN, 'localappdata');

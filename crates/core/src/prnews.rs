@@ -431,7 +431,7 @@ struct Store {
 }
 
 pub fn path() -> PathBuf {
-    crate::config::root_dir().join("data").join(FILE)
+    crate::config::state_path(FILE)
 }
 
 /// What a pull request is remembered by: its repository and number

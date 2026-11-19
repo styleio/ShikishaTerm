@@ -25,6 +25,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
+import { stateFolder } from './lib/copy.mjs';
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
 const RUN = path.join(os.tmpdir(), 'sk-microvm-longest-' + process.pid);
@@ -109,7 +110,7 @@ const log = () => (fs.existsSync(LOG) ? fs.readFileSync(LOG, 'utf8') : '');
 // One of the app's own primitives, through its --mcp door
 const appPid = () => ps('-Command', `(Get-Process -Name 'SHIKISHA-TERM' | Where-Object { $_.Path -like '${RUN}*' } | Select-Object -First 1).Id`).stdout.trim();
 const primitive = (name, params) => new Promise((res) => {
-  const door = spawn(exe, ['--mcp', '--pid', appPid(), '--token-file', path.join(APP, 'data', 'api-token')], { stdio: ['pipe', 'pipe', 'ignore'] });
+  const door = spawn(exe, ['--mcp', '--pid', appPid(), '--token-file', path.join(stateFolder(APP, LOCAL), 'api-token')], { stdio: ['pipe', 'pipe', 'ignore'] });
   let out = '';
   const done = (v) => { try { door.kill(); } catch {} res(v); };
   door.stdout.on('data', (d) => {

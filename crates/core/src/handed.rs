@@ -47,7 +47,7 @@ struct Handed {
 }
 
 pub fn path() -> PathBuf {
-    crate::config::root_dir().join("data").join(FILE)
+    crate::config::state_path(FILE)
 }
 
 /// What a pull request is known by here: its project and number, or the

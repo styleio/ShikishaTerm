@@ -33,6 +33,7 @@ import net from 'node:net';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { spawn, spawnSync } from 'node:child_process';
+import { stateFolder } from './lib/copy.mjs';
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
 const WHERE = (process.argv.find((a) => a.startsWith('--where=')) || '--where=ssh').slice(8);
@@ -237,7 +238,7 @@ const writeConfig = (bridges) => fs.writeFileSync(CONFIG, JSON.stringify({
 
 let door;
 const openDoor = async (pid) => {
-  const tokenFile = path.join(APP, 'data', 'api-token');
+  const tokenFile = path.join(stateFolder(APP, LOCAL), 'api-token');
   await until(() => fs.existsSync(tokenFile), 'the api token', 60000);
   const token = fs.readFileSync(tokenFile, 'utf8').trim();
   door = async (method, ...params) => {

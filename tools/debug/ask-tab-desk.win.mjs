@@ -21,6 +21,7 @@ import os from 'node:os';
 import net from 'node:net';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
+import { stateFolder } from './lib/copy.mjs';
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
 // A folder of its own each run: a browser process of the last run can still
@@ -78,7 +79,7 @@ child.unref();
 
 // ── The pipe, as the person; each call on a connection of its own, so an
 //    ask held open does not hold up the rest ─────────────────────────────────
-const tokenFile = () => [path.join(APP, 'data', 'api-token'), path.join(RUN, 'localappdata', 'ShikishaTerm', 'data', 'api-token')].find((p) => fs.existsSync(p));
+const tokenFile = () => [path.join(stateFolder(APP, path.join(RUN, 'localappdata')), 'api-token')].find((p) => fs.existsSync(p));
 const call = async (method, ...params) => {
   const sock = net.connect(`\\\\.\\pipe\\shikisha-${pid}`);
   await new Promise((r, j) => { sock.once('connect', r); sock.once('error', j); });

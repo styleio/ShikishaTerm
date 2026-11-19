@@ -32,7 +32,7 @@
     "theme": "SHIKISHA"
   },
 
-  "//external_api": "A named pipe for driving the app from outside. children = only processes this app started (default) / user = anything running with your permissions (the passphrase is written to data/api-token) / off = no pipe",
+  "//external_api": "A named pipe for driving the app from outside. children = only processes this app started (default) / user = anything running with your permissions (the passphrase is written to api-token among this PC's records; the settings screen shows where) / off = no pipe",
   "external_api": {
     "access": "children"
   },

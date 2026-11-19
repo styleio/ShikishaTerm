@@ -182,9 +182,9 @@ fn known_hosts_path() -> std::path::PathBuf {
     real_known_hosts_path()
 }
 
-/// Beside everything else this program keeps.
+/// Beside everything else this program keeps on this machine.
 fn real_known_hosts_path() -> std::path::PathBuf {
-    crate::config::root_dir().join("data").join("known-hosts.json")
+    crate::config::state_path("known-hosts.json")
 }
 
 fn known_hosts() -> HashMap<String, String> {
@@ -1719,7 +1719,7 @@ mod tests {
     #[test]
     fn the_servers_we_have_met_are_kept_with_our_other_things() {
         let real = real_known_hosts_path();
-        assert_eq!(real, crate::config::root_dir().join("data").join("known-hosts.json"));
+        assert_eq!(real, crate::config::state_dir().join("known-hosts.json"));
         assert_ne!(real, known_hosts_path(), "a test run writes somewhere of its own");
     }
 

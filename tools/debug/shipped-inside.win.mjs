@@ -30,6 +30,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
+import { stateFolder } from './lib/copy.mjs';
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
 const SHOTS = path.join(ROOT, 'target', 'shots');
@@ -39,7 +40,7 @@ const APP = path.join(RUN, 'app');
 const REPO = path.join(RUN, 'work', 'shop');
 const PLACE = path.join(RUN, 'wt');
 const CONFIG = path.join(APP, 'config', 'config.json');
-const SHOWN = path.join(APP, 'data', 'inside-rules-shown.json');
+const SHOWN = path.join(stateFolder(APP, path.join(RUN, 'localappdata')), 'inside-rules-shown.json');
 const HELPER_BYTES = 3 * 1024 * 1024;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

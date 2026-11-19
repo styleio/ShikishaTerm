@@ -5041,7 +5041,7 @@ fn handle(
         // the pipe by name — a person writing a script against it needs the
         // exact string, and it carries the process id, so it is not guessable
         // from the docs alone. No token is ever handed out here: in `user` mode
-        // it sits in data\api-token, and in `children` mode it exists only in
+        // it sits in the state folder's api-token, and in `children` mode it exists only in
         // the environment of what this app started
         ("GET", "/api/external") => {
             let path = crate::api::listening_on();

@@ -464,7 +464,8 @@ wait until it is typed. Every named server is listed under "Server names" in
 the settings.
 
 **A server whose key is not the one from last time is refused.** If you
-reinstalled the server, delete its line from `data/known-hosts.json`.
+reinstalled the server, delete its line from `known-hosts.json` in this PC's
+records ([section 8](#where-this-pcs-records-are)).
 
 **An AI's settings file on another machine is written into only when you allow it.** The first time an
 AI tab runs on a server or a MicroVM, the screen asks whether one entry may go into that AI's settings file
@@ -622,6 +623,35 @@ settings screen, so it cannot fall behind.
 - **The project's page** — Worktree creation rules, name and checkout, Git authentication, protected branches, what the AI is told, setup
 
 <!-- /guide -->
+
+### Where this PC's records are
+
+The settings (the `config` folder) sit beside the program. Copy the folder to
+another PC and the settings go with it.
+
+This PC's records sit in a folder of this PC's own instead: the record of
+conversations and of tokens, the key for driving the app from outside
+(`api-token`), the phone's key, the keys of the servers you connected to
+(`known-hosts.json`) and the like.
+
+- Windows: `%LOCALAPPDATA%\ShikishaTerm\state\<mark>\`
+- Linux: `~/.local/share/ShikishaTerm/state/<mark>/`
+
+`<mark>` is worked out from the program's folder; `program-folder.txt` inside
+says which one it is for. A program kept in a folder that Google Drive or the
+like synchronises is safe this way: two PCs running at once never write into
+one database.
+
+The first start of this version copies what the `data` folder beside the
+program holds into this PC's folder. The `data` folder is left as it is, so
+another PC that shares it can take its own copy. Once every PC has started
+this version, the records in it can be deleted (`version`, `backup` and
+`update` belong beside the program). Going back to an older version from
+**Update** first copies this PC's records back into the `data` folder, since
+an older version knows only that folder; this version, started again, takes
+them across once more. A copy from the Store, one installed on
+Linux, and the Mac app already live in a folder of the PC's own, so they keep
+their records in their `data` folder as before.
 
 ## 9. When something is wrong
 

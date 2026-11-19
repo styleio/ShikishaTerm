@@ -33,7 +33,7 @@
     root=C:\...\sk-instance\app
     pid=12345
     pipe=\\.\pipe\shikisha-12345
-    token-file=C:\...\sk-instance\app\data\api-token
+    token-file=C:\...\sk-instance\localappdata\ShikishaTerm\state\<mark>\api-token
     board=http://127.0.0.1:9400
     cdp=http://127.0.0.1:9401
     mcp-config=C:\...\sk-instance\mcp.json
@@ -180,7 +180,7 @@ foreach ($d in @($app, $Work, (Join-Path $At 'localappdata'))) {
 & (Join-Path $here 'stage.ps1') -Dest $app -Package -Exe $Exe | Out-Null
 if (-not (Test-Path (Join-Path $app 'SHIKISHA-TERM.exe'))) { throw "staging $app failed" }
 
-# `access: user` is what leaves the key in data\api-token for a script to read.
+# `access: user` is what leaves the key in api-token for a script to read.
 # It is given to this copy only: it is made for this run, thrown away after it,
 # and holds nothing of anybody's.
 $settings = [ordered]@{
@@ -256,14 +256,27 @@ if (-not $proc) { throw 'the copy did not start' }
 
 # The key is written as the door opens, so its arrival is what says the copy is
 # up -- a better answer than a fixed wait, which is either wrong or slow
-$tokenFile = Join-Path $app 'data\api-token'
+#
+# The key is in the copy's state folder, which is this machine's (here, the
+# copy's own LOCALAPPDATA), under a mark of the program folder; the folder
+# says which program folder it is for
+$stateRoot = Join-Path $At 'localappdata\ShikishaTerm\state'
+function Find-TokenFile {
+    foreach ($d in @(Get-ChildItem $stateRoot -Directory -ErrorAction SilentlyContinue)) {
+        $for = Get-Content (Join-Path $d.FullName 'program-folder.txt') -Raw -ErrorAction SilentlyContinue
+        if ($for -and $for.Trim() -ieq $app) { return (Join-Path $d.FullName 'api-token') }
+    }
+    return $null
+}
+$tokenFile = $null
 $waited = 0
-while (-not (Test-Path $tokenFile) -and $waited -lt 30000) {
+while (-not ($tokenFile -and (Test-Path $tokenFile)) -and $waited -lt 30000) {
     if ($proc.HasExited) { throw "the copy stopped before its door opened (exit $($proc.ExitCode))" }
     Start-Sleep -Milliseconds 250
     $waited += 250
+    $tokenFile = Find-TokenFile
 }
-if (-not (Test-Path $tokenFile)) { Stop-Copy; throw "the door never opened -- see $app\logs" }
+if (-not ($tokenFile -and (Test-Path $tokenFile))) { Stop-Copy; throw "the door never opened -- see $app\logs" }
 
 if ($Port -gt 0) { Wait-Port $Port 'the board' }
 if ($Cdp -gt 0) { Wait-Port $Cdp 'the DevTools port' }

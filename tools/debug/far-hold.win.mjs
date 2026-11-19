@@ -42,6 +42,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
+import { stateFolder } from './lib/copy.mjs';
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
 const RUN = path.join(os.tmpdir(), 'sk-far-hold-' + process.pid);
@@ -95,7 +96,7 @@ const { Sandbox } = await import(pathToSdk());
 // The app's own primitives, through its --mcp door
 const appPid = () => ps('-Command', `(Get-Process -Name 'SHIKISHA-TERM' | Where-Object { $_.Path -like '${RUN}*' } | Select-Object -First 1).Id`).stdout.trim();
 const primitive = (name, params) => new Promise((res) => {
-  const door = spawn(exe, ['--mcp', '--pid', appPid(), '--token-file', path.join(APP, 'data', 'api-token')], { stdio: ['pipe', 'pipe', 'ignore'] });
+  const door = spawn(exe, ['--mcp', '--pid', appPid(), '--token-file', path.join(stateFolder(APP, LOCAL), 'api-token')], { stdio: ['pipe', 'pipe', 'ignore'] });
   let out = '';
   const done = (v) => { try { door.kill(); } catch {} res(v); };
   door.stdout.on('data', (d) => {
@@ -160,9 +161,9 @@ try {
     stopApp();
     await sleep(2000);
     const from = log().length;
-    fs.rmSync(path.join(APP, 'data', 'api-token'), { force: true });
+    fs.rmSync(path.join(stateFolder(APP, LOCAL), 'api-token'), { force: true });
     startApp();
-    await until(() => fs.existsSync(path.join(APP, 'data', 'api-token')), 'the app', 60000);
+    await until(() => fs.existsSync(path.join(stateFolder(APP, LOCAL), 'api-token')), 'the app', 60000);
     await sleep(3000);
     await primitive('show', ['held']).catch(() => {});
     return () => log().slice(from);
@@ -180,7 +181,7 @@ try {
   check(left.some((n) => /^\.shikisha-bridge-.*\.lock$/.test(n) && !FAKE.some((b) => n === `.shikisha-bridge-${b}.lock`)), 'the build running now holds its mark: ' + left.filter((n) => n.startsWith('.')).join(' '));
 
   console.log('1. with the bridge connected, the tab opens its terminal in the bridge');
-  await until(() => fs.existsSync(path.join(APP, 'data', 'api-token')), 'the app', 60000);
+  await until(() => fs.existsSync(path.join(stateFolder(APP, LOCAL), 'api-token')), 'the app', 60000);
   // The terminal is opened on the machine when the tab is first shown
   await sleep(3000);
   await primitive('show', ['held']).catch(() => {});

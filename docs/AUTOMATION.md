@@ -64,7 +64,8 @@ The app keeps the time itself; nothing is registered with Task Scheduler or cron
   that it is written in `logs/hooks.log` as missed and not run. `every_` runs once on coming
   back, not once for each time it missed.
 - A time is never run for the past: one seen for the first time counts from then. When each
-  last ran is kept in `data/schedule.json`, so a restart does not run one twice.
+  last ran is kept in `schedule.json` among [this PC's records](MANUAL.md#where-this-pcs-records-are),
+  so a restart does not run one twice.
 - While automation is stopped (the **A** switch at the top), nothing runs.
 - In a tab's automation folder, `tab` is that tab. In the desk's or the program's folder it runs
   once, for no tab: `tab.index` is 0, and the script names the tab it wants.
@@ -795,7 +796,7 @@ effect the moment you save, with no restart. In the file it is one line:
 | Value | Who can call |
 |---|---|
 | `children` | Only what the app started — a tab's CLI, and whatever that starts in turn |
-| `user` | Anything running as you. The token is also written to `data\api-token` |
+| `user` | Anything running as you. The token is also written to `api-token` among [this PC's records](MANUAL.md#where-this-pcs-records-are); the settings screen shows the file's full path |
 | `off` | Nothing. The pipe is not created at all |
 
 Every tab's process is launched knowing three things, so an AI sitting in a tab needs no
@@ -930,7 +931,7 @@ you are working in -- name that copy instead:
 
 ```jsonc
 { "command": "<path>\\SHIKISHA-TERM.exe",
-  "args": ["--mcp", "--pid", "12345", "--token-file", "<its root>\\data\\api-token"] }
+  "args": ["--mcp", "--pid", "12345", "--token-file", "<the key file its settings screen shows>"] }
 ```
 
 `--pid` is that copy's process id (the door carries it in its name), and `--token-file` is
@@ -1341,7 +1342,7 @@ How the rally works: files in and out, plus a judge. You can build your own the 
 | `shikisha.list()` | The commands the caller may run, by name (see automation permissions above). Read off the table itself, so it is never out of date |
 | `shikisha.record(text)` / `shikisha.record_reset()` | Keep a pasteable record of the run |
 | `shikisha.take_replay()` | Drain the replay journal — the durable spelling of every operation since the last drain |
-| `shikisha.set_result(code, "reason")` | The run's verdict. Written to `data/last-result.json` and shown on screen |
+| `shikisha.set_result(code, "reason")` | The run's verdict. Written to `last-result.json` among [this PC's records](MANUAL.md#where-this-pcs-records-are) and shown on screen |
 | `shikisha.skip("reason")` | Stop this run here and say so: one line on the tab's screen and in the log. For when an automation decides there is nothing to do |
 
 ### Working with git

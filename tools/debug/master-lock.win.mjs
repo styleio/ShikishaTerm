@@ -34,6 +34,7 @@ import os from 'node:os';
 import net from 'node:net';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
+import { stateFolder } from './lib/copy.mjs';
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
 const SHOTS = path.join(ROOT, 'target', 'shots');
@@ -142,7 +143,7 @@ async function start({ split = false, boardPassword = '' } = {}) {
 
 // The pipe, as an automation would call it: every copy's process is tried,
 // since which one holds the pipe depends on how the program is split
-const tokenFile = () => [path.join(APP, 'data', 'api-token'), path.join(LOCAL, 'ShikishaTerm', 'data', 'api-token')].find((p) => fs.existsSync(p));
+const tokenFile = () => [path.join(stateFolder(APP, LOCAL), 'api-token')].find((p) => fs.existsSync(p));
 async function pipeCall(method, ...params) {
   for (const pid of pidsOfCopy()) {
     const sock = net.connect(`\\\\.\\pipe\\shikisha-${pid}`);

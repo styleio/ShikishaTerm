@@ -21,7 +21,7 @@
 //! the list an AI is handed.
 //!
 //! **Whose call it is.** The token is passed through, never minted here and
-//! never read out of `data/api-token` by this module. A server started by a
+//! never read out of the `api-token` file by this module. A server started by a
 //! tab's CLI inherits that tab's own key from the environment and arrives
 //! identified as that tab, which is what counts its calls against that tab's
 //! chain and its automation permissions. A server pointed at an instance from
@@ -114,8 +114,15 @@ impl Target {
                 "--token" => token = Some(value()?),
                 "--token-file" => {
                     let at = value()?;
-                    let read = std::fs::read_to_string(&at)
-                        .with_context(|| format!("the key file {at} could not be read"))?;
+                    // A script told to point at `<program folder>/data/api-token`
+                    // before the key moved to this machine's state folder: the
+                    // key is read where it is now. A file still at the old
+                    // place is an old key, or another PC's through the sync
+                    let now = crate::config::moved_state(std::path::Path::new(&at))
+                        .filter(|p| p.is_file())
+                        .unwrap_or_else(|| std::path::PathBuf::from(&at));
+                    let read = std::fs::read_to_string(&now)
+                        .with_context(|| format!("the key file {} could not be read", now.display()))?;
                     token = Some(read.trim().to_string());
                 }
                 other => return Err(anyhow!("{other} is not something --mcp takes")),
@@ -125,7 +132,7 @@ impl Target {
             anyhow!(
                 "no instance to speak to. A server started by a tab's CLI is told which one in \
                  SHIKISHA_PIPE; point this at another copy with --pid <its process id> (or \
-                 --pipe <its door>) and --token-file <its root>/data/api-token"
+                 --pipe <its door>) and --token-file <the key file its settings name>"
             )
         })?;
         // No key is not an error to raise here: the door itself refuses an
@@ -151,7 +158,9 @@ fn door_of(pid: &str) -> Result<String> {
     {
         // A socket lives beside the layout's own state, so this is only right
         // for a copy on this layout. Another root has to be named with --pipe
-        Ok(crate::config::state_path(&format!("api-{pid}.sock"))
+        // Spelled the way the door was opened: a path too long for a socket
+        // is opened somewhere shorter, and the same is asked for here
+        Ok(crate::keepipe::door(&crate::config::state_path(&format!("api-{pid}.sock")))
             .display()
             .to_string())
     }

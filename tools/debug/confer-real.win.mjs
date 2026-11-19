@@ -44,6 +44,7 @@ import net from 'node:net';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
+import { stateFolder } from './lib/copy.mjs';
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
 const arg = (name, dflt) => {
@@ -175,7 +176,7 @@ if (!pid || !port) die('the launcher did not identify its copy');
 console.log('isolated copy: '+RUN);
 
 // ── The door: the pipe, as the person ─────────────────────────────────────
-const dataDir = () => [path.join(APP, 'data'), path.join(RUN, 'localappdata', 'ShikishaTerm', 'data')]
+const dataDir = () => [stateFolder(APP, path.join(INSTANCE, 'localappdata'))]
   .find((d) => fs.existsSync(path.join(d, 'api-token')));
 let door;
 const openDoor = async () => {

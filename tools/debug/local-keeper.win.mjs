@@ -59,6 +59,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
+import { stateFolder } from './lib/copy.mjs';
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
 const collision = process.argv.includes('--restart-collision');
@@ -176,7 +177,7 @@ const logTail = () => { try { return fs.readFileSync(path.join(APP, 'logs', 'hoo
 let lastScreen = '';
 const screenSays = () => call('tab_screen', 'held').then((s) => { lastScreen = String(s || ''); return lastScreen; }).catch((e) => { lastScreen = `(${e.message})`; return ''; });
 /** The app's own door (its API pipe), as the person: the key, then one call */
-const stateFile = (name) => [path.join(APP, 'data', name), path.join(LOCAL, 'ShikishaTerm', 'data', name)].find((p) => fs.existsSync(p));
+const stateFile = (name) => [path.join(stateFolder(APP, LOCAL), name)].find((p) => fs.existsSync(p));
 const call = async (method, ...params) => {
   const sock = net.connect(`\\\\.\\pipe\\shikisha-${appPid()}`);
   await new Promise((r, j) => { sock.once('connect', r); sock.once('error', j); });
@@ -342,7 +343,7 @@ console.log('3b. the app lost its note of the terminal (killed again, the note d
   const app = appPid();
   ps('-Command', `& taskkill.exe /PID ${app} /T /F 2>&1 | Out-Null`);
   await until(() => !alive(app), 'the app to be gone', 15000);
-  for (const f of [path.join(APP, 'data', 'far-terminals'), path.join(LOCAL, 'ShikishaTerm', 'data', 'far-terminals')]) fs.rmSync(f, { force: true });
+  for (const f of [path.join(stateFolder(APP, LOCAL), 'far-terminals')]) fs.rmSync(f, { force: true });
   start();
   await until(() => appPid() !== null, 'the app again');
   await until(async () => (await screenSays()).includes(`PID=${first}`), 'the same program, found without the note');

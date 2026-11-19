@@ -21,6 +21,17 @@ const COLS: u16 = 140;
 
 /// Boot the runtime and keep going until it is stopped.
 pub fn run() -> Result<()> {
+    // One server per layout, as one window per layout: a second one started
+    // over the same folders -- by hand, while systemd's is running -- would
+    // take the state across while the first is still writing it, and fight
+    // it for the port. Held until the server ends. A window's runtime half
+    // (`run_minded`) holds the window's own claim already
+    let _claim = match crate::instance::claim() {
+        crate::instance::Standing::First(c) => c,
+        crate::instance::Standing::Second => {
+            anyhow::bail!("another shikisha-server is already running from {}", crate::config::root_dir().display())
+        }
+    };
     started(Headless::new(ROWS, COLS))
 }
 
@@ -78,5 +89,9 @@ fn started(mut shell: Headless) -> Result<()> {
     // The same carrying-forward the window does before it reads anything: a
     // settings file from an older version is as likely to be on a server
     crate::migrate::prepare();
+    // A server is the one program on its layout (a split window's runtime
+    // took it across already, holding the layout's claim): the state moves to
+    // this machine's own folder here, before anything is opened there
+    crate::config::take_over_state();
     crate::runtime::run(&mut shell)
 }
