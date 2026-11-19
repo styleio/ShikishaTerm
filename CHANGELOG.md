@@ -43,6 +43,13 @@ once it reaches its first tagged release.
   there.
 
 ### Fixed
+- **This PC's terminals move to the new version once the old ones end.**
+  After an update, the background process of the version before went on
+  holding every new terminal too, until the app was started with none
+  running. It still holds the terminals that ran across the update for as
+  long as they run; once every one of them has ended, the next terminal
+  opened replaces it with the new version's. Where what it holds cannot be
+  told, it is kept.
 - **The app no longer searches the whole PATH sixty times a second.** To
   say which assistant AI there is, the work loop looked for its program in
   every folder of the PATH each time it described the screen. With nothing
