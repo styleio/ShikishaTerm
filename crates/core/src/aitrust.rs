@@ -267,22 +267,7 @@ fn far_run(host: &crate::config::HostSpec, script: &str, args: &[&str]) -> Resul
 /// the whole command line is when the server's shell is handed it
 const FAR_ARGS_MOST: usize = 32 * 1024;
 
-/// The paths in runs whose words, quoted, stay under `most` together; a path
-/// longer than that on its own is a run of its own
-fn batches(paths: &[String], most: usize) -> Vec<Vec<&str>> {
-    let mut out: Vec<Vec<&str>> = Vec::new();
-    let mut size = 0;
-    for p in paths {
-        let n = crate::ssh::sh_quote(p).len() + 1;
-        if out.is_empty() || size + n > most {
-            out.push(Vec::new());
-            size = 0;
-        }
-        out.last_mut().expect("one is there").push(p);
-        size += n;
-    }
-    out
-}
+use crate::ssh::batches;
 
 /// Each path the way the server has it: `~` as the home, made whole, and
 /// links followed where the path is there (as the CLI follows them); one

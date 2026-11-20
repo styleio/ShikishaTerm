@@ -187,15 +187,81 @@ for (const side of ['window', 'remote']) {
             G.rows = G.rows.slice(0, 10);
             drawGit();
             const fewer = list.querySelectorAll(".row").length, button = !!list.querySelector(".growsmore");
-            return {made, kept, fifty, more, fewer, button};
+            // The change of a generated file: tens of thousands of lines,
+            // drawn a part at a time and not looked at again while unchanged
+            G.sel = G.rows[0].path; G.staged = false; G.diff = "diff --git a/x b/x";
+            G.hunks = [{patch: "@@ -0,0 +1,50000 @@\\n" + Array.from({length: 50000}, (_, i) => "+line " + i).join("\\n"),
+              start: 1, end: 50000, encoding: "", exact: true}];
+            drawGit();
+            const lines = () => gitUi.diff.querySelectorAll(".dlines > span").length;
+            const diffMade = lines(), diffFirst = gitUi.diff.querySelector(".dlines > span");
+            const d0 = performance.now();
+            for (let i = 0; i < 50; i++) drawGit();
+            const diffFifty = performance.now() - d0;
+            const diffKept = gitUi.diff.querySelector(".dlines > span") === diffFirst;
+            gitUi.diff.querySelector(".growsmore").click();
+            const diffMore = lines();
+            return {made, kept, fifty, more, fewer, button, diffMade, diffFifty, diffKept, diffMore};
           } finally { G = was.G; box.hidden = was.hidden; gitUi = null; box.textContent = ""; }
         })()`);
+        if (git.diffMade !== 2000) fail(what, 'a 50000-line change drew ' + git.diffMade + ' lines at once, not 2000');
+        if (!git.diffKept) fail(what, 'the change was drawn again for a state that changed nothing in it');
+        if (git.diffFifty > 250) fail(what, 'fifty redraws of an unchanged change took ' + Math.round(git.diffFifty) + ' ms');
+        if (git.diffMore !== 4000) fail(what, '"show more" of the change left ' + git.diffMore + ' lines, not 4000');
         if (git.made !== 200) fail(what, 'the git panel made ' + git.made + ' rows of 6000 at once, not 200');
         if (!git.kept) fail(what, 'the git panel made its list again for a state that changed nothing in it');
         if (git.fifty > 250) fail(what, 'fifty redraws of an unchanged git panel took ' + Math.round(git.fifty) + ' ms');
         if (git.more !== 400) fail(what, '"show more" left ' + git.more + ' rows, not 400');
         if (git.fewer !== 10 || git.button) fail(what, 'a short list after a long one is not drawn whole');
       } catch (e) { fail(what, 'the git panel threw: ' + String(e.message).split('\n')[0]); }
+      // The files panel: a name search over a large tree, and a folder of
+      // thousands of entries, each shown a part at a time
+      try {
+        const files = await chrome.run(`(() => {
+          const box = document.getElementById("filepanel");
+          const was = {hidden: box.hidden, hits: FS.hits, q: FS.q, rows: FS.rows, mode: FS.mode};
+          try {
+            box.hidden = false;
+            FS.mode = "name"; FS.q = "f"; FS.hits = Array.from({length: 6000}, (_, i) => ({path: "out/f" + i + ".o"})); FS.hitsUpTo = 0;
+            FS.rev++; drawFiles();
+            const hits = fsUi.list.querySelectorAll(".frow").length;
+            fsUi.list.querySelector(".growsmore").click();
+            const hitsMore = fsUi.list.querySelectorAll(".frow").length;
+            FS.q = ""; FS.hits = null; FS.upTo = {};
+            FS.rows = {"": Array.from({length: 6000}, (_, i) => ({name: "f" + i + ".o", dir: false}))};
+            FS.rev++; drawFiles();
+            const tree = fsUi.list.querySelectorAll(".frow").length;
+            return {hits, hitsMore, tree};
+          } finally { Object.assign(FS, was); FS.upTo = {}; FS.hitsUpTo = 0; box.hidden = was.hidden; fsUi = null; box.textContent = ""; }
+        })()`);
+        if (files.hits !== 200) fail(what, 'a search of 6000 hits made ' + files.hits + ' rows at once, not 200');
+        if (files.hitsMore !== 400) fail(what, '"show more" of the hits left ' + files.hitsMore + ' rows, not 400');
+        if (files.tree !== 200) fail(what, 'a folder of 6000 entries made ' + files.tree + ' rows at once, not 200');
+      } catch (e) { fail(what, 'the files panel threw: ' + String(e.message).split('\n')[0]); }
+      // Removing a worktree that holds thousands of new files: the question
+      // names the first of them, and the rest a press away
+      try {
+        const asked = await chrome.run(`(async () => {
+          const files = Array.from({length: 500}, (_, i) => ({path: "out/f" + i + ".o", untracked: true, work: true}));
+          let rows = null;
+          await reviewFolderRemoval([{key: "k", folder: "wt"}], {
+            request: async () => ({ok: true, files, keeps_branch: true, branch: "b", review: "r"}),
+            question: async spec => { rows = spec.rows; return null; },
+          });
+          const box = el("div", {}, ...rows);
+          document.body.append(box);
+          try {
+            const count = () => box.querySelectorAll(".brow2").length - 1;
+            const first = count();
+            box.querySelector("button").click();
+            const more = count();
+            box.querySelector("button").click();
+            return {first, more, last: count(), button: !!box.querySelector("button")};
+          } finally { box.remove(); }
+        })()`);
+        if (asked.first !== 200) fail(what, 'the removal question named ' + asked.first + ' files of 500 at once, not 200');
+        if (asked.more !== 400 || asked.last !== 500 || asked.button) fail(what, 'the removal question did not show the rest: ' + JSON.stringify(asked));
+      } catch (e) { fail(what, 'the removal question threw: ' + String(e.message).split('\n')[0]); }
     }
     // And the terminal's own contents, which arrive by their own call
     chrome.thrown.length = 0;

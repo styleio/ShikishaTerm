@@ -12,6 +12,8 @@
  *   2. states arriving from the app leave the list as it is (the same rows,
  *      not made again), and the window keeps up with them
  *   3. the button under the list shows the next 200
+ *   4. "Stage all" stages every one of them -- more paths than one command
+ *      line holds -- and its button says how far it has got while it goes
  *
  *     cargo build
  *     node tools/debug/git-many-files.win.mjs
@@ -138,6 +140,27 @@ try {
     return gitUi.work.querySelectorAll(".row").length;
   })()`);
   check(more === 400, 'the button shows the next 200 (' + more + ')');
+
+  // 4. "Stage all": more paths than one command line holds. The main button
+  //    says how far it has got while it goes, and every file is staged
+  const staged = await run(`(async () => {
+    const labels = new Set();
+    const watch = new MutationObserver(() => labels.add(gitUi.main.textContent));
+    watch.observe(gitUi.main, {childList: true, subtree: true, characterData: true});
+    gitAsk("stage", {paths: gitAllPaths(false)});
+    const t0 = performance.now();
+    while (performance.now() - t0 < 60000) {
+      await new Promise(r => setTimeout(r, 100));
+      if (!G.busy && (G.rows || []).length && G.rows.every(r => r.staged)) break;
+    }
+    watch.disconnect();
+    return {staged: (G.rows || []).filter(r => r.staged).length, said: G.said, bad: !!G.bad,
+      labels: [...labels], took: Math.round(performance.now() - t0)};
+  })()`);
+  console.log('  ' + JSON.stringify({...staged, labels: staged.labels.slice(0, 6)}));
+  check(staged.staged === MANY, `"Stage all" stages all ${MANY} files (${staged.staged})`);
+  check(!staged.bad, 'and says nothing went wrong' + (staged.bad ? ': ' + staged.said : ''));
+  check(staged.labels.some(l => /\d[\d,.]* \/ 6[,.]?000/.test(l)), 'the button says how many of the files are done while it goes');
 } catch (e) {
   console.error(e.message || e);
   failures += 1;

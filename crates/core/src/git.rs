@@ -1910,23 +1910,84 @@ pub fn push(dir: &Path, who: &As) -> Result<String> {
     }
 }
 
+/// How long the paths given one git may be, together. A command line on
+/// Windows holds 32,767 characters, git's own path and the folder included,
+/// and a folder on another machine is handed to its shell as one argument,
+/// which Linux holds to 128 KiB. A replace across a project changes thousands
+/// of files, and "stage all" with all of them on one line is a git that never
+/// starts ("The filename or extension is too long")
+pub const PATHS_MOST: usize = 24 * 1024;
+
+/// One git for each run of `paths` that fits on a command line, the paths
+/// after `head`. Stops at the first that fails: what ran before it stays done,
+/// as it would have with the paths given one at a time
+fn in_runs(dir: &Path, head: &[&str], paths: &[String]) -> Result<()> {
+    let mut done = 0;
+    for batch in crate::ssh::batches(paths, PATHS_MOST) {
+        done += batch.len();
+        let mut args: Vec<&str> = head.to_vec();
+        args.extend(batch);
+        run(dir, &args)?;
+        progress(done, paths.len());
+    }
+    Ok(())
+}
+
+thread_local! {
+    /// Who is told how far a job over many files has got, on this thread
+    static PROGRESS: std::cell::RefCell<Option<Box<dyn Fn(usize, usize)>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Be told, on this thread and for as long as `f` runs, how many of the files
+/// a job names are done: after each git it takes, when it takes more than one.
+/// The panel says it on its button, so that a stage of thousands of files is
+/// not a button that seems to have stopped
+pub fn with_progress<R>(tell: impl Fn(usize, usize) + 'static, f: impl FnOnce() -> R) -> R {
+    struct Off;
+    impl Drop for Off {
+        fn drop(&mut self) {
+            PROGRESS.with(|p| *p.borrow_mut() = None);
+        }
+    }
+    PROGRESS.with(|p| *p.borrow_mut() = Some(Box::new(tell)));
+    let _off = Off;
+    f()
+}
+
+/// Said between the gits of a job, never after the last: the answer itself
+/// says that one, and a job of one git is over before anybody could read it
+fn progress(done: usize, of: usize) {
+    if done >= of {
+        return;
+    }
+    PROGRESS.with(|p| {
+        if let Some(tell) = p.borrow().as_ref() {
+            tell(done, of);
+        }
+    });
+}
+
 pub fn stage(dir: &Path, paths: &[String]) -> Result<()> {
-    let mut args: Vec<&str> = vec!["add", "--"];
-    args.extend(paths.iter().map(String::as_str));
-    run(dir, &args).map(|_| ())
+    in_runs(dir, &["add", "--"], paths)
 }
 
 pub fn unstage(dir: &Path, paths: &[String]) -> Result<()> {
-    let mut args: Vec<&str> = vec!["restore", "--staged", "--"];
-    args.extend(paths.iter().map(String::as_str));
     // `restore` arrived in git 2.23, and it is the spelling git itself
     // suggests. Older ones still answer to the older spelling
-    if run(dir, &args).is_ok() {
-        return Ok(());
+    let mut done = 0;
+    for batch in crate::ssh::batches(paths, PATHS_MOST) {
+        done += batch.len();
+        let with = |head: &[&'static str]| {
+            let mut args: Vec<&str> = head.to_vec();
+            args.extend(batch.iter().copied());
+            run(dir, &args)
+        };
+        if with(&["restore", "--staged", "--"]).is_err() {
+            with(&["reset", "-q", "HEAD", "--"])?;
+        }
+        progress(done, paths.len());
     }
-    let mut older: Vec<&str> = vec!["reset", "-q", "HEAD", "--"];
-    older.extend(paths.iter().map(String::as_str));
-    run(dir, &older).map(|_| ())
+    Ok(())
 }
 
 /// Whether this git knows `restore`, which arrived in 2.23 (2019).
@@ -1986,11 +2047,12 @@ fn literal(paths: &[String]) -> Vec<String> {
 /// diff is where it is answered -- not a menu with one entry
 pub fn discard_steps(dir: &Path, paths: &[String], staged: bool) -> Vec<Vec<String>> {
     let rows = status(dir).unwrap_or_default();
+    let by_path: std::collections::HashMap<&str, &Change> = rows.iter().map(|r| (r.path.as_str(), r)).collect();
     // What git has a copy of to put back, and what it has no copy of -- which
     // is the whole difference between undoing a change and deleting a file
     let (mut put_back, mut take_away): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
     for p in paths {
-        let Some(r) = rows.iter().find(|r| &r.path == p) else { continue };
+        let Some(r) = by_path.get(p.as_str()) else { continue };
         if r.conflicted() {
             continue;
         }
@@ -2017,7 +2079,7 @@ pub fn discard_steps(dir: &Path, paths: &[String], staged: bool) -> Vec<Vec<Stri
     let new_spelling = has_restore(dir);
     let mut steps: Vec<Vec<String>> = Vec::new();
     if !put_back.is_empty() {
-        let mut cmd: Vec<String> = match (new_spelling, staged) {
+        let cmd: Vec<String> = match (new_spelling, staged) {
             (true, false) => vec!["restore".into(), "--".into()],
             (true, true) => vec![
                 "restore".into(),
@@ -2031,11 +2093,12 @@ pub fn discard_steps(dir: &Path, paths: &[String], staged: bool) -> Vec<Vec<Stri
             (false, false) => vec!["checkout".into(), "--".into()],
             (false, true) => vec!["checkout".into(), "HEAD".into(), "--".into()],
         };
-        cmd.extend(literal(&put_back));
-        steps.push(cmd);
+        for batch in crate::ssh::batches(&literal(&put_back), PATHS_MOST) {
+            steps.push(cmd.iter().cloned().chain(batch.into_iter().map(str::to_string)).collect());
+        }
     }
     if !take_away.is_empty() {
-        let mut cmd: Vec<String> = match staged {
+        let cmd: Vec<String> = match staged {
             // Out of the next commit and off the disk in one. There is nothing
             // in the last commit to put in its place
             true => vec!["rm".into(), "--force".into(), "--quiet".into(), "--".into()],
@@ -2051,8 +2114,9 @@ pub fn discard_steps(dir: &Path, paths: &[String], staged: bool) -> Vec<Vec<Stri
                 "--".into(),
             ],
         };
-        cmd.extend(literal(&take_away));
-        steps.push(cmd);
+        for batch in crate::ssh::batches(&literal(&take_away), PATHS_MOST) {
+            steps.push(cmd.iter().cloned().chain(batch.into_iter().map(str::to_string)).collect());
+        }
     }
     steps
 }
@@ -2071,9 +2135,15 @@ pub fn discard(dir: &Path, paths: &[String], staged: bool) -> Result<Vec<String>
     if steps.is_empty() {
         bail!(crate::i18n::t("err.git.nothing_to_discard"));
     }
+    // Counted by the files each command names, after its `--`
+    let named = |s: &Vec<String>| s.iter().skip_while(|w| *w != "--").count().saturating_sub(1);
+    let of: usize = steps.iter().map(named).sum();
+    let mut done = 0;
     for step in &steps {
         let args: Vec<&str> = step.iter().map(String::as_str).collect();
         run(dir, &args)?;
+        done += named(step);
+        progress(done, of);
     }
     Ok(said(&steps))
 }
@@ -2611,6 +2681,35 @@ mod tests {
         assert!(lines[1].starts_with("git clean --force -d --quiet -- :(literal)new.txt"), "{lines:?}");
         assert!(!lines.iter().any(|l| l.contains(" -x")), "what the project ignores is in reach: {lines:?}");
         assert_eq!(discard(&dir, &["kept.txt".into(), "new.txt".into()], false).unwrap(), lines);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A replace across a project changes thousands of files, and "stage all"
+    /// names every one of them. More than a command line holds is git asked
+    /// several times, each time with what fits -- not one git that never
+    /// starts because its command line is too long
+    #[test]
+    fn thousands_of_files_are_staged_unstaged_and_thrown_away() {
+        let Some(dir) = discard_repo("many") else { return };
+        let deep = "a-folder-name-long-enough-to-matter/and-another-one-under-it";
+        std::fs::create_dir_all(dir.join(deep)).unwrap();
+        let paths: Vec<String> = (0..3000).map(|i| format!("{deep}/generated-file-number-{i:05}.txt")).collect();
+        let line: usize = paths.iter().map(|p| p.len() + 1).sum();
+        assert!(line > 32_767, "the names fit on one command line ({line}), which checks nothing");
+        for p in &paths {
+            std::fs::write(dir.join(p), "new\n").unwrap();
+        }
+        stage(&dir, &paths).unwrap();
+        let rows = status(&dir).unwrap();
+        assert_eq!(rows.iter().filter(|r| r.index == 'A').count(), paths.len(), "not every file was staged");
+        unstage(&dir, &paths).unwrap();
+        assert!(status(&dir).unwrap().iter().all(|r| r.index == '?'), "a file is still staged");
+        let steps = discard_steps(&dir, &paths, false);
+        assert!(steps.len() > 1, "one command for all of them: {}", steps.len());
+        assert!(steps.iter().all(|s| s.iter().map(|w| w.len() + 1).sum::<usize>() < 30_000), "a command too long to start");
+        discard(&dir, &paths, false).unwrap();
+        assert!(status(&dir).unwrap().is_empty(), "a file was left");
+        assert!(dir.join("kept.txt").exists(), "a file nobody named was thrown away");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

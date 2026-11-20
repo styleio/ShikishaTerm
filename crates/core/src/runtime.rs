@@ -20889,6 +20889,22 @@ struct GitDone {
 /// lands -- so what the line says late is handed over when it comes
 const GIT_PANEL_WAIT: Duration = Duration::from_secs(60);
 
+/// How long a change to a folder runs before the panel is told it is under way
+const GIT_BUSY_AFTER: Duration = Duration::from_millis(400);
+
+/// A question asked of a folder's line and not answered yet
+struct GitWaiting {
+    seq: u64,
+    panel: String,
+    act: String,
+    asked: Instant,
+    /// When the line last said anything of it: asked, or how far it has got
+    heard: Instant,
+    /// Whether the panel was told it is slow, and told it is under way
+    slow: bool,
+    busy: bool,
+}
+
 /// The acts whose answer is a reading of the folder as it is. Only the newest
 /// one asked is worth drawing: a status asked twice answers twice, and the
 /// first answer is already out of date when the second is asked
@@ -20910,9 +20926,8 @@ struct GitLines {
     /// The newest question of each kind, per panel: an older one's answer is
     /// not drawn
     newest: std::collections::HashMap<(String, String), u64>,
-    /// Questions asked and not answered yet: (seq, panel, act, since, and
-    /// whether the panel was already told this one is slow)
-    waiting: Vec<(u64, String, String, Instant, bool)>,
+    /// Questions asked and not answered yet
+    waiting: Vec<GitWaiting>,
 }
 
 impl GitLines {
@@ -20932,7 +20947,8 @@ impl GitLines {
         job.seq = self.seq;
         self.newest.insert((job.panel.clone(), job.act.clone()), job.seq);
         let key = Self::key(&job);
-        self.waiting.push((job.seq, job.panel.clone(), job.act.clone(), Instant::now(), false));
+        let now = Instant::now();
+        self.waiting.push(GitWaiting { seq: job.seq, panel: job.panel.clone(), act: job.act.clone(), asked: now, heard: now, slow: false, busy: false });
         let job = match self.lines.get(&key) {
             Some(line) => match line.send(job) {
                 Ok(()) => return,
@@ -20953,7 +20969,20 @@ impl GitLines {
             // could go in the instant a question was handed to it, and take
             // the question with it; a waiting thread costs nothing
             while let Ok(job) = line_rx.recv() {
-                let answer = git_answer(&job);
+                // How far a job over thousands of files has got, said on the
+                // way: the panel shows it rather than a button that seems stuck
+                let (tell, seq, panel, act) = (done.clone(), job.seq, job.panel.clone(), job.act.clone());
+                let answer = crate::git::with_progress(
+                    move |n, of| {
+                        let _ = tell.send(GitDone {
+                            seq,
+                            panel: panel.clone(),
+                            act: act.clone(),
+                            payload: serde_json::json!({"act": act, "busy": true, "done": n, "of": of}),
+                        });
+                    },
+                    || git_answer(&job),
+                );
                 if done.send(GitDone { seq: job.seq, panel: job.panel, act: job.act, payload: answer }).is_err() {
                     return;
                 }
@@ -20978,8 +21007,18 @@ impl GitLines {
     fn answers(&mut self) -> Vec<String> {
         let mut out = Vec::new();
         while let Ok(d) = self.rx.try_recv() {
-            if let Some(at) = self.waiting.iter().position(|w| w.0 == d.seq) {
-                self.waiting.remove(at);
+            let on_the_way = d.payload.get("busy").and_then(|b| b.as_bool()).unwrap_or(false);
+            if let Some(at) = self.waiting.iter().position(|w| w.seq == d.seq) {
+                match on_the_way {
+                    // Still going, and saying so: not a line that stopped answering
+                    true => {
+                        self.waiting[at].heard = Instant::now();
+                        self.waiting[at].busy = true;
+                    }
+                    false => {
+                        self.waiting.remove(at);
+                    }
+                }
             }
             let stale = GIT_READS.contains(&d.act.as_str())
                 && self.newest.get(&(d.panel.clone(), d.act.clone())).is_some_and(|n| *n > d.seq);
@@ -20991,10 +21030,17 @@ impl GitLines {
             out.push(payload.to_string());
         }
         // Slow: said once, and the answer still handed over when it comes
-        for w in self.waiting.iter_mut().filter(|w| !w.4 && w.3.elapsed() >= GIT_PANEL_WAIT) {
-            w.4 = true;
+        // A change to the folder still going after a moment: the panel shows it
+        // working, rather than a button that was pressed and did nothing.
+        // Readings are not -- the lists are drawn when they come
+        for w in self.waiting.iter_mut().filter(|w| !w.busy && !GIT_READS.contains(&w.act.as_str()) && w.asked.elapsed() >= GIT_BUSY_AFTER) {
+            w.busy = true;
+            out.push(serde_json::json!({"act": w.act, "busy": true, "panel": w.panel}).to_string());
+        }
+        for w in self.waiting.iter_mut().filter(|w| !w.slow && w.heard.elapsed() >= GIT_PANEL_WAIT) {
+            w.slow = true;
             out.push(
-                serde_json::json!({"act": w.2, "ok": false, "slow": true, "error": i18n::t("err.git.not_answering"), "panel": w.1})
+                serde_json::json!({"act": w.act, "ok": false, "slow": true, "error": i18n::t("err.git.not_answering"), "panel": w.panel})
                     .to_string(),
             );
         }
@@ -26639,7 +26685,11 @@ mod git_line_tests {
     fn a_slow_answer_is_said_to_be_slow_and_still_handed_over() {
         let mut lines = GitLines::new();
         let long_ago = Instant::now().checked_sub(GIT_PANEL_WAIT + Duration::from_secs(1)).unwrap();
-        lines.waiting.push((99, "p1".into(), "commit".into(), long_ago, false));
+        // Already said to be under way: what is checked here is the slowness
+        let waited = |seq: u64, act: &str, at: Instant, busy: bool| GitWaiting {
+            seq, panel: "p1".into(), act: act.into(), asked: at, heard: at, slow: false, busy,
+        };
+        lines.waiting.push(waited(99, "commit", long_ago, true));
         let said: Vec<serde_json::Value> = lines.answers().iter().map(|j| serde_json::from_str(j).unwrap()).collect();
         assert_eq!(said.len(), 1);
         assert_eq!(said[0]["slow"], true);
@@ -26651,6 +26701,35 @@ mod git_line_tests {
         let late: Vec<serde_json::Value> = lines.answers().iter().map(|j| serde_json::from_str(j).unwrap()).collect();
         assert_eq!(late.len(), 1, "the late answer was dropped");
         assert_eq!(late[0]["ok"], true);
+    }
+
+    /// A change to a folder still going after a moment is said to be under
+    /// way, once; a reading is not. How far it has got is handed over as it
+    /// comes, and a line saying so is not a line that stopped answering
+    #[test]
+    fn a_change_under_way_is_said_and_its_progress_keeps_it_from_being_slow() {
+        let mut lines = GitLines::new();
+        let now = Instant::now();
+        let a_moment = now.checked_sub(GIT_BUSY_AFTER + Duration::from_millis(50)).unwrap();
+        let waited = |seq: u64, act: &str, at: Instant| GitWaiting {
+            seq, panel: "p1".into(), act: act.into(), asked: at, heard: at, slow: false, busy: false,
+        };
+        lines.waiting.push(waited(1, "stage", a_moment));
+        lines.waiting.push(waited(2, "status", a_moment));
+        lines.waiting.push(waited(3, "unstage", now));
+        let said: Vec<serde_json::Value> = lines.answers().iter().map(|j| serde_json::from_str(j).unwrap()).collect();
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert_eq!((said[0]["act"].as_str(), said[0]["busy"].as_bool()), (Some("stage"), Some(true)));
+        assert!(lines.answers().is_empty(), "said to be under way twice");
+        // Nearly a minute on, and how far it has got arrives
+        let nearly = Instant::now().checked_sub(GIT_PANEL_WAIT - Duration::from_secs(1)).unwrap();
+        lines.waiting[0].heard = nearly;
+        let progress = serde_json::json!({"act": "stage", "busy": true, "done": 800, "of": 5000});
+        lines.tx.send(GitDone { seq: 1, panel: "p1".into(), act: "stage".into(), payload: progress }).unwrap();
+        let got: Vec<serde_json::Value> = lines.answers().iter().map(|j| serde_json::from_str(j).unwrap()).collect();
+        assert!(got.iter().any(|g| g["done"] == 800 && g["panel"] == "p1"), "{got:?}");
+        assert!(lines.waiting.iter().any(|w| w.seq == 1), "progress was taken for the answer");
+        assert!(lines.waiting[0].heard.elapsed() < Duration::from_secs(5), "progress did not count as hearing from it");
     }
 
     /// A question about a folder that is not a repository answers, and says why

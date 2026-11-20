@@ -2895,7 +2895,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     text-align:left; cursor:pointer; }
   #gitpanel button.link:hover { color:var(--text); }
   /* Under a long list, lined up with its rows' names */
-  #gitpanel button.growsmore { display:block; padding:6px 10px; }
+  button.growsmore { display:block; padding:6px 10px; }
   #gitpanel .gprs { display:flex; flex-direction:column; gap:var(--s1); }
   #gitpanel .gprs:empty { display:none; }
   #gitpanel .gprs .why { font-size:11.5px; color:var(--dim); overflow-wrap:anywhere; }
@@ -10033,7 +10033,8 @@ function drawPrCreate(box) {
         if (got === null) change.append(el("div", {class:"empty"}, "\u2026"));
         else if (got.binary) change.append(el("div", {class:"empty"}, T["git.binary"] || ""));
         else if (!(got.hunks || []).length) change.append(el("div", {class:"empty"}, T["git.same"] || ""));
-        else hunksInto(change, got.hunks, "view");
+        else hunksInto(change, got.hunks, "view", (p.lines || {})[f.path],
+          n => { p.lines = Object.assign({}, p.lines, {[f.path]: n}); redraw(); });
         list.append(change);
       }
     }
@@ -20789,6 +20790,8 @@ const FS = {
   asked: {},        // folder path -> already asked for, so it is asked once
   q: "", mode: "name",
   hits: null,       // search results, or null while the tree is what is shown
+  upTo: {},         // folder path -> how many rows it shows, past the first part
+  hitsUpTo: 0,      // the same, of the search results
   capped: false, said: "", bad: false,
   // Searching inside: how the words are read and which files are looked in,
   // what came back (every place, by file), the number of the newest search
@@ -20843,6 +20846,7 @@ window.__files = function (d) {
     // An answer to a search nobody is waiting for any more (the box moved on)
     if ((d.q || "") !== FS.q) return;
     FS.hits = d.hits || [];
+    FS.hitsUpTo = 0;
     FS.capped = !!d.capped;
   }
   drawFiles();
@@ -21022,7 +21026,7 @@ function filesOpen(path, panel) {
 // Start over on a folder: everything held was about the last one
 function filesReset(key) {
   FS.panel = key;
-  FS.rows = {}; FS.open = {}; FS.asked = {};
+  FS.rows = {}; FS.open = {}; FS.asked = {}; FS.upTo = {}; FS.hitsUpTo = 0;
   FS.q = ""; FS.hits = null; FS.capped = false; FS.said = ""; FS.bad = false;
   FS.rev++;
   if (fsUi && fsUi.q) fsUi.q.value = "";
@@ -21192,14 +21196,16 @@ function filesRow(name, path, dir, depth, hit) {
   if (hit && hit.line != null) row.append(el("span", {class: "ln"}, String(hit.line)));
   return row;
 }
+// A folder of thousands of entries (a build's output) shows them a part at a
+// time, each folder its own part
 function filesTree(into, at, depth) {
   const rows = FS.rows[at];
   if (!rows) return;
-  for (const r of rows) {
+  rowsUpTo(into, rows, FS.upTo[at], n => { FS.upTo[at] = n; FS.rev++; drawFiles(); }, r => {
     const path = at ? at + "/" + r.name : r.name;
     into.append(filesRow(r.name, path, r.dir, depth, null));
     if (r.dir && FS.open[path]) filesTree(into, path, depth + 1);
-  }
+  });
 }
 function drawFiles() {
   const box = document.getElementById("filepanel");
@@ -21218,11 +21224,12 @@ function drawFiles() {
     if (FS.mode === "text" && FS.q) {
       filesSpots(u.list);
     } else if (FS.hits) {
-      for (const h of FS.hits) {
+      // A name search over a large tree finds thousands: a part at a time
+      rowsUpTo(u.list, FS.hits, FS.hitsUpTo, n => { FS.hitsUpTo = n; FS.rev++; drawFiles(); }, h => {
         const cut = h.path.lastIndexOf("/");
         u.list.append(filesRow(cut < 0 ? h.path : h.path.slice(cut + 1), h.path, false, 0, h));
         if (h.text) u.list.append(el("div", {class: "fhit", title: h.text}, h.text));
-      }
+      });
     } else {
       filesTree(u.list, "", 0);
     }
@@ -21396,7 +21403,14 @@ window.__convo = function (d) {
     drawConvo();
     return;
   }
+  const wasBad = CV.bad;
   CV.said = ""; CV.bad = false;
+  // The newest page is asked again every few seconds while the AI works, and
+  // most of the time it is the page that is already drawn: the list, which
+  // grows with every page read further back, is not made again for it
+  const page = d.act === "page" && slot !== "older" ? JSON.stringify([d.rows || [], d.older]) : "";
+  if (page && page === CV.lastPage && CV.rows.length && !CV.loading && !wasBad) return;
+  CV.lastPage = page;
   if (d.act === "page" && slot === "older") {
     CV.rows = CV.rows.concat(d.rows || []);
     CV.older = d.older;
@@ -27498,7 +27512,7 @@ function gitFresh(name) {
   return { panel:name, branch:null, branches:[], rows:null, sel:null, staged:false,
            diff:"", hunks:[], said:"", bad:false, busy:"", offer:false, pick:{}, pickBranch:null,
            // How many rows each long list shows, once more were asked for
-           // (GIT_ROWS_AT_ONCE until then)
+           // (ROWS_AT_ONCE until then)
            upTo:{},
            // The folder whose project chooses the account, when what was said
            // is a refusal to sign in (empty otherwise)
@@ -27607,9 +27621,11 @@ window.__git = function (d) {
   // A fetch the column makes by itself, after a merge, says nothing over what the
   // merge said
   const quiet = d.act === "fetch" && G.quietFetch;
-  if (d.busy) { G.busy = d.act; if (!quiet) { G.said = ""; G.fix = ""; } G.need = false; drawGit(); return; }
+  // How far a change over many files has got, when it says ("done" of "of")
+  if (d.busy) { G.busy = d.act; G.far = d.of ? [d.done || 0, d.of] : null; if (!quiet) { G.said = ""; G.fix = ""; } G.need = false; drawGit(); return; }
   if (quiet) G.quietFetch = false;
   G.busy = "";
+  G.far = null;
   G.need = false;
   // A refusal to sign in names the folder whose project chooses the account;
   // any other answer, good or bad, is not about the account
@@ -28176,10 +28192,18 @@ function encPickerFill(box, options, value) {
 }
 // Everything a drawn change depends on. A pane draws it again only when this
 // differs: several states a second would otherwise take a button, or an open
-// menu, out from under the pointer
+// menu, out from under the pointer. Said as a short mark that moves when one
+// of them is another value, never as the change written out: the change of a
+// generated file is megabytes, and the state comes several times a second
+const gitChangeSigs = {};
+let gitChangeSigN = 0;
 function gitChangeSig(how) {
-  return JSON.stringify([how, G.sel, G.diff, !!G.waiting, gitEnc(),
-    (G.hunks || []).map(h => [h.patch, h.encoding, h.exact])]);
+  const parts = [G.sel, G.diff, !!G.waiting, gitEnc(), G.hunks, (G.upTo || {}).diff];
+  const was = gitChangeSigs[how];
+  if (was && was.parts.every((p, i) => p === parts[i])) return was.sig;
+  const sig = how + "\u0000" + (++gitChangeSigN);
+  gitChangeSigs[how] = {parts, sig};
+  return sig;
 }
 // A change is read in an editor tab where the terminals are, not in the column:
 // the column is narrow, and a change read inside it took the place of the very
@@ -28234,13 +28258,22 @@ function gitChangeInto(box, how, head) {
   // handed back would write them into the file: said, and the buttons left out
   const lossy = how !== "view" && hunks.find(h => h.exact === false);
   if (lossy) box.append(el("div", {class:"gencnote"}, (T["git.enc.inexact"] || "").replaceAll("{enc}", lossy.encoding || "")));
-  hunksInto(box, hunks, how);
+  const more = (G.upTo || {}).diff;
+  hunksInto(box, hunks, how, more && more.sel === G.sel ? more.n : 0,
+    n => { G.upTo.diff = {sel: G.sel, n}; drawGit(); drawEdit(); });
 }
 // The pieces themselves. `how` "view" draws them to be read and nothing more:
 // what a pull request carries is already committed, and it is not changed from
 // the page that asks for it to be taken in
-function hunksInto(box, hunks, how) {
+//
+// A change of tens of thousands of lines is drawn a part at a time, as a long
+// list is: `upTo` lines (a first part when 0), and the lines past them a button
+// away, which hands `grow` how many to draw instead
+function hunksInto(box, hunks, how, upTo, grow) {
+  upTo = upTo || DIFF_LINES_AT_ONCE;
+  let room = upTo, left = 0;
   hunks.forEach((h, i) => {
+    if (room <= 0) { left += patchLines(h.patch); return; }
     const bar = el("div", {class:"hunkhead"});
     bar.append(el("span", {class:"grow"},
       (T["git.hunk"] || "Hunk") + (i + 1) + "  " +
@@ -28252,9 +28285,24 @@ function hunksInto(box, hunks, how) {
       act(T["git.hunk.stage"] || "", {cached:true});
       act(T["git.hunk.drop"] || "", {reverse:true});
     } else act(T["git.hunk.drop"] || "", {reverse:true});
-    box.append(el("div", {class:"hunk"}, bar, diffLines(h.patch)));
+    const lines = diffLines(h.patch, room);
+    room -= lines.drawn;
+    left += lines.left;
+    box.append(el("div", {class:"hunk"}, bar, lines));
   });
+  if (left <= 0) return;
+  box.append(el("button", {type:"button", class:"link growsmore",
+    onclick:() => grow(upTo + DIFF_LINES_AT_ONCE)},
+    (T["git.lines.more"] || "").replaceAll("{n}", Math.min(left, DIFF_LINES_AT_ONCE).toLocaleString())
+      .replaceAll("{left}", left.toLocaleString())));
 }
+// How many lines a piece shows: what diffLines would draw of it
+function patchLines(patch) {
+  let n = 0;
+  for (const line of String(patch || "").split(/\r?\n/)) if (!diffHeadLine(line)) n++;
+  return n;
+}
+const DIFF_LINES_AT_ONCE = 2000;
 
 // One row of a file list. A click picks it and shows what changed in it;
 // ctrl-click adds to what is picked, which is what the "picked" buttons act on
@@ -29025,7 +29073,9 @@ function drawGitCommit() {
   u.ai.disabled = !!G.busy;
 
   const next = gitNext();
-  const label = G.busy ? (T["git.busy." + G.busy] || T["git.busy"] || "") : next.label;
+  const label = !G.busy ? next.label
+    : G.far ? (T["git.busy.files"] || "").replaceAll("{done}", G.far[0].toLocaleString()).replaceAll("{of}", G.far[1].toLocaleString())
+    : (T["git.busy." + G.busy] || T["git.busy"] || "");
   const key = (G.busy ? "busy" : next.icon) + "\u0000" + label;
   if (u.main.dataset.key !== key) {
     u.main.dataset.key = key;
@@ -30144,8 +30194,16 @@ function drawSftp() {
 
 // A diff's lines, drawn. The header a patch carries is for whoever applies it,
 // not for whoever reads it, so what is left on screen is what changed
-function diffLines(patch) {
+function diffHeadLine(line) {
+  return line.startsWith("diff --git ") || line.startsWith("index ")
+    || line.startsWith("--- ") || line.startsWith("+++ ") || line.startsWith("@@");
+}
+// At most `most` lines are drawn; the box says how many it drew (`drawn`) and
+// how many it left out (`left`)
+function diffLines(patch, most) {
   const box = el("pre", {class:"lines dlines"});
+  box.drawn = 0; box.left = 0;
+  if (most == null) most = Infinity;
   // Which line of the file as it is now each line shown is: a note or a
   // place handed to an AI names that one. Counted from each piece's header;
   // a removed line is where the line after it now stands
@@ -30154,8 +30212,9 @@ function diffLines(patch) {
   for (const line of String(patch || "").split(/\r?\n/)) {
     const head = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
     if (head) { at = Number(head[1]); continue; }
-    if (line.startsWith("diff --git ") || line.startsWith("index ")
-      || line.startsWith("--- ") || line.startsWith("+++ ") || line.startsWith("@@")) continue;
+    if (diffHeadLine(line)) continue;
+    if (box.drawn >= most) { box.left++; continue; }
+    box.drawn++;
     const gone = line.startsWith("-");
     const span = el("span", {class: line.startsWith("+") ? "a" : gone ? "d" : ""}, line + "\n");
     if (at && !line.startsWith("\\")) {
@@ -30206,10 +30265,11 @@ function drawGitBranches(u) {
   }
   if (!(G.branches || []).length) u.branches.append(el("div", {class:"empty"}, "\u2026"));
 }
-// How many rows a list in the git panel makes at a time. A folder whose build
-// output git does not ignore lists every file of it as new -- thousands -- and
-// a row made for each of them held the window up; the rest is a press away
-const GIT_ROWS_AT_ONCE = 200;
+// How many rows a long list makes at a time: the git panel's, the files
+// panel's. A folder whose build output git does not ignore lists every file of
+// it as new -- thousands -- and a row made for each of them held the window up;
+// the rest is a press away
+const ROWS_AT_ONCE = 200;
 // Whether `box` already shows what `parts` say, and if not, a note that it is
 // about to. drawGit runs on every state the app sends, several a second while
 // a tab is at work: a list made again each time costs as much as it is long,
@@ -30220,17 +30280,22 @@ function drawnFrom(box, parts) {
   box.drawnFrom = parts;
   return false;
 }
-// The first rows of `list` in `box`, and under them a button for the next ones
-function gitRowsUpTo(box, list, key, make) {
-  const upTo = G.upTo[key] || GIT_ROWS_AT_ONCE;
-  for (const r of list.slice(0, upTo)) box.append(make(r));
+// The first `upTo` rows of `list` in `box` (a first part when 0), and under
+// them a button that hands `grow` how many to make instead. `make` gives a row,
+// or puts what it makes into `box` itself (a folder with its open folders)
+function rowsUpTo(box, list, upTo, grow, make) {
+  upTo = upTo || ROWS_AT_ONCE;
+  for (const r of list.slice(0, upTo)) { const made = make(r); if (made) box.append(made); }
   const left = list.length - upTo;
   if (left <= 0) return;
   box.append(el("button", {type:"button", class:"link growsmore",
-    onclick:() => { G.upTo[key] = upTo + GIT_ROWS_AT_ONCE; drawGit(); }},
-    (T["git.rows.more"] || "")
-      .replaceAll("{n}", Math.min(left, GIT_ROWS_AT_ONCE).toLocaleString())
+    onclick:() => grow(upTo + ROWS_AT_ONCE)},
+    (T["list.rows.more"] || "")
+      .replaceAll("{n}", Math.min(left, ROWS_AT_ONCE).toLocaleString())
       .replaceAll("{left}", left.toLocaleString())));
+}
+function gitRowsUpTo(box, list, key, make) {
+  rowsUpTo(box, list, G.upTo[key], n => { G.upTo[key] = n; drawGit(); }, make);
 }
 function drawGit() {
   const box = document.getElementById("gitpanel");

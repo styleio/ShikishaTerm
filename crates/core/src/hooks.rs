@@ -2055,11 +2055,26 @@ local tab    = shikisha.get_var("git_tab")
 local prompt = shikisha.get_var("git_prompt") or ""
 -- What is staged is what is about to be committed. With nothing staged there
 -- is still a change to talk about: the one in front of them
+local staged = true
 local diff = shikisha.git_diff(tab, { staged = true })
-if diff == "" then diff = shikisha.git_diff(tab, { staged = false }) end
+if diff == "" then staged = false; diff = shikisha.git_diff(tab, { staged = false }) end
 if diff == "" then error(shikisha.t("err.git.nothing_to_describe")) end
--- A diff can be a megabyte. The shape of the change is in the first pages
-if #diff > 12000 then diff = diff:sub(1, 12000) .. "\n...\n" end
+-- A diff can be a megabyte. The shape of the change is in the first pages,
+-- cut at the end of a line (never inside a character). A replace across a
+-- project touches thousands of files, and its first pages are a few of them:
+-- which files it touches comes first, so the message is about all of them
+if #diff > 12000 then
+  diff = (diff:sub(1, 12000):match("^(.*\n)") or "") .. "...\n"
+  local files, n = {}, 0
+  for _, r in ipairs(shikisha.git_status(tab) or {}) do
+    if (staged and r.staged) or (not staged and r.unstaged) then
+      n = n + 1
+      if n <= 100 then files[#files + 1] = r.path end
+    end
+  end
+  if n > #files then files[#files + 1] = "... and " .. (n - #files) .. " more" end
+  diff = n .. " files changed:\n" .. table.concat(files, "\n") .. "\n\nThe first part of the diff:\n" .. diff
+end
 -- The change goes where the prompt says {diff}, or after it
 local at = prompt:find("{diff}", 1, true)
 if at then

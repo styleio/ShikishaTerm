@@ -1579,6 +1579,25 @@ pub fn sh_quote(word: &str) -> String {
     format!("'{}'", word.replace('\'', "'\\''"))
 }
 
+/// The paths in runs whose words, quoted, stay under `most` together; a path
+/// longer than that on its own is a run of its own. Quoted for a POSIX shell
+/// is the longest any of them is written anywhere -- on this PC's own command
+/// line each is as long or shorter -- so a run that fits here fits there too
+pub fn batches(paths: &[String], most: usize) -> Vec<Vec<&str>> {
+    let mut out: Vec<Vec<&str>> = Vec::new();
+    let mut size = 0;
+    for p in paths {
+        let n = sh_quote(p).len() + 1;
+        if out.is_empty() || size + n > most {
+            out.push(Vec::new());
+            size = 0;
+        }
+        out.last_mut().expect("one is there").push(p);
+        size += n;
+    }
+    out
+}
+
 /// Do something with files on another machine.
 ///
 /// Blocks until the far end answers, like every other file call in the program.

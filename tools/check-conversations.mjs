@@ -118,6 +118,17 @@ check('a reply delivered twice does not duplicate an older page',()=>{
   v.reply(request,{rows:[row('once')]}); v.reply(request,{rows:[row('once')]});
   assert.equal(v.run('CV.rows.length'),1);
 });
+check('the newest page asked again with nothing new does not draw the list again',()=>{
+  const v=viewer(); v.run('convoReset("a"); convoAsk("page",{})');
+  const first=v.sent.at(-1);
+  v.reply(first,{rows:[row('two',2),row('one',1)]});
+  const rev=v.run('CV.rev');
+  v.run('convoAsk("page",{})'); v.reply(v.sent.at(-1),{rows:[row('two',2),row('one',1)]});
+  assert.equal(v.run('CV.rev'),rev,'the same page drew the list again');
+  v.run('convoAsk("page",{})'); v.reply(v.sent.at(-1),{rows:[row('three',3),row('two',2)]});
+  assert.ok(v.run('CV.rev')>rev,'a page with a new row was not drawn');
+  assert.deepEqual(v.run('CV.rows.map(r=>r.text)'),['three','two','one']);
+});
 check('reading on replaces an unfinished answer that became tool work',()=>{
   const v=viewer();
   v.context.rows=[{...row('thinking',20),who:'ai'},row('request',0)];

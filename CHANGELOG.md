@@ -52,6 +52,30 @@ once it reaches its first tagged release.
   them for the next ones. The counts at the head of each list are still the
   whole number, and the buttons that act on every file still act on every
   file.
+- **"Stage all" works with thousands of files.** A replace across a project
+  changes thousands of files, and "Stage all", "Unstage all" and throwing
+  changes away named all of them on one command line -- more than Windows
+  lets one hold, so git never started. They now run git as many times as
+  the files need, and while they go the button says how many of the files
+  are done ("1,769 / 6,000 files"). Any change in the Git panel that takes
+  longer than a moment now says it is working rather than looking stuck. Taking
+  files git should no longer follow out of a repository has the same fix.
+- **A huge change opens without slowing the window.** The change of a
+  generated file -- tens of thousands of lines -- shows its first 2000
+  lines with a button for the next ones, in the Git panel and in a pull
+  request, and is no longer compared line by line every time the board is
+  drawn.
+- **Long lists elsewhere stay light too.** A name search in the Files panel
+  that finds thousands of files, a folder of thousands of entries, and the
+  list of files a worktree would lose when it is removed show their first
+  200 with a button for the rest. The conversation panel no longer draws
+  its whole list again every few seconds while an AI works when nothing new
+  has been said. A worktree nobody works in that holds thousands of new
+  files is looked at less often, in step with how long one look takes.
+- **The AI-written commit message covers a change of thousands of files.**
+  The diff it is given is cut after its first pages; it is now told first
+  how many files the change touches and which, and the cut ends on a whole
+  line.
 - **This PC's terminals move to the new version once the old ones end.**
   After an update, the background process of the version before went on
   holding every new terminal too, until the app was started with none

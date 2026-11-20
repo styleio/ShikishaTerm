@@ -2000,12 +2000,14 @@ pub fn tracked_but_ignored(main: &Path) -> Vec<String> {
 /// Stop git following these files. The files themselves stay where they are;
 /// the change shows in the git column like any other, to be committed
 pub fn untrack(main: &Path, paths: &[String]) -> Result<()> {
-    if paths.is_empty() {
-        return Ok(());
+    // In runs a command line holds: an ignore line added for a build folder
+    // that was committed matches every file in it
+    for batch in crate::ssh::batches(paths, crate::git::PATHS_MOST) {
+        let mut args: Vec<&str> = vec!["rm", "-r", "-q", "--cached", "--"];
+        args.extend(batch);
+        crate::git::run(main, &args)?;
     }
-    let mut args: Vec<&str> = vec!["rm", "-r", "-q", "--cached", "--"];
-    args.extend(paths.iter().map(String::as_str));
-    crate::git::run(main, &args).map(|_| ())
+    Ok(())
 }
 
 /// A second name for one folder, made the way this system lets anyone make one.

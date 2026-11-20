@@ -902,11 +902,19 @@ pub struct Left {
 /// commit in one from somewhere else
 const LEFT_FRESH: Duration = Duration::from_secs(20);
 
+/// How many times as long as the last look took passes before the next one.
+/// A worktree with a build output git does not ignore holds thousands of new
+/// files, and each look reads all of them: one that takes two seconds is asked
+/// a minute later, never all the time
+const LEFT_REST: u32 = 30;
+
 /// One folder's last answer about what is left, and whether one is out
 #[derive(Default)]
 struct Leaving {
     left: Option<Left>,
     settled: Option<Instant>,
+    /// How long the last look took
+    took: Duration,
     out: bool,
 }
 
@@ -938,7 +946,7 @@ impl Leftovers {
                 if let Some(left) = &e.left {
                     out.insert(p.clone(), left.clone());
                 }
-                if !e.out && e.settled.is_none_or(|at| now.duration_since(at) >= LEFT_FRESH) {
+                if !e.out && e.settled.is_none_or(|at| now.duration_since(at) >= LEFT_FRESH.max(e.took * LEFT_REST)) {
                     e.out = true;
                     send.push(p.clone());
                 }
@@ -947,11 +955,13 @@ impl Leftovers {
         for p in send {
             let known = Arc::clone(&self.known);
             std::thread::spawn(move || {
+                let began = Instant::now();
                 let left = crate::worktree::left_in(&p);
                 if let Ok(mut map) = known.lock()
                     && let Some(e) = map.get_mut(&p)
                 {
                     e.left = left;
+                    e.took = began.elapsed();
                     e.settled = Some(Instant::now());
                     e.out = false;
                 }

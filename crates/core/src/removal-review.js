@@ -1,5 +1,10 @@
 // Both pages ask about the same files and carry the same explicit answer.
 // Skipping a clean-folder question never approves discarding file changes.
+const REVIEW_ROWS_AT_ONCE = 200;
+function reviewMoreSaid(left) {
+  return (T["list.rows.more"] || "").replaceAll("{n}", Math.min(left, REVIEW_ROWS_AT_ONCE).toLocaleString())
+    .replaceAll("{left}", left.toLocaleString());
+}
 async function reviewFolderRemoval(groups, {request, question, skip = false, openFile}) {
   const checks = [];
   for (const group of groups) {
@@ -17,16 +22,30 @@ async function reviewFolderRemoval(groups, {request, question, skip = false, ope
     rows.push(el("div", {class:"brow2 stacked"}, el("span", {class:"nm asis"}, c.group.folder),
       el("span", {class:"tag"}, c.keeps_branch
         ? T["tui.discard.branch"].replaceAll("{branch}", c.branch) : T["tui.discard.history_lost"])));
-    for (const file of c.files) {
+    const fileRow = file => {
       const controls = [];
       if (openFile && c.board !== false) {
         const view = (label, diff) => el("button", {type:"button", class:"quiet", onclick:() => openFile(c.group, file, diff)}, label);
         if (file.staged) controls.push(view(T["tui.discard.view_staged"], "staged"));
         if (file.work) controls.push(view(T["tui.discard.view"], file.untracked ? "" : "work"));
       }
-      rows.push(el("div", {class:"brow2 stacked"},
+      return el("div", {class:"brow2 stacked"},
         el("span", {class:"nm asis"}, file.path),
-        el("span", {class:"tag"}, T[file.untracked ? "tui.discard.untracked" : "tui.discard.modified"]), ...controls));
+        el("span", {class:"tag"}, T[file.untracked ? "tui.discard.untracked" : "tui.discard.modified"]), ...controls);
+    };
+    // A worktree with a build output git does not ignore holds thousands of
+    // new files: the first of them, and the rest a press away. The count over
+    // the list is all of them
+    rows.push(...c.files.slice(0, REVIEW_ROWS_AT_ONCE).map(fileRow));
+    let shown = REVIEW_ROWS_AT_ONCE;
+    if (c.files.length > shown) {
+      const more = el("button", {type:"button", class:"quiet", onclick:() => {
+        more.before(...c.files.slice(shown, shown + REVIEW_ROWS_AT_ONCE).map(fileRow));
+        shown += REVIEW_ROWS_AT_ONCE;
+        const left = c.files.length - shown;
+        if (left <= 0) more.remove(); else more.textContent = reviewMoreSaid(left);
+      }}, reviewMoreSaid(c.files.length - shown));
+      rows.push(more);
     }
   }
   const answer = await question({rows, dirty:count > 0,
