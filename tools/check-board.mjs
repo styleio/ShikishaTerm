@@ -210,9 +210,14 @@ for (const side of ['window', 'remote']) {
             const tabWas = gitTab;
             try {
               gitTab = () => tabWas() || {id: "many", name: "many"};
+              // The panel is about that tab's folder, so reading it again keeps it
+              G.where = gitWhere(gitTab());
               window.__git({act: "stage", busy: true, done: 800, of: 6000});
               window.__git({act: "branch", ok: true, read: true, data: null});
               busyKept = G.busy === "stage" && /800/.test(gitUi.main.textContent);
+              // The stage done while an unstage still runs: still working
+              window.__git({act: "stage", ok: true, data: null, still: "unstage"});
+              busyKept = busyKept && G.busy === "unstage" && gitUi.main.disabled;
               asked.length = 0;
               window.__git({act: "stage", ok: false, error: "failed part of the way"});
               refreshed = asked.some(a => a.kind === "gitpanel" ? a.act === "status" : JSON.stringify(a).includes('"status"'));

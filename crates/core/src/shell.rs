@@ -27624,9 +27624,11 @@ window.__git = function (d) {
   // How far a change over many files has got, when it says ("done" of "of")
   if (d.busy) { G.busy = d.act; G.far = d.of ? [d.done || 0, d.of] : null; if (!quiet) { G.said = ""; G.fix = ""; } G.need = false; drawGit(); return; }
   if (quiet) G.quietFetch = false;
-  // A reading of the folder that answers while a change to it is still going
-  // (asked before it, on the same line) does not end what the button says
-  if (!(d.read && G.busy && G.busy !== d.act)) { G.busy = ""; G.far = null; }
+  // Another change to the folder still going: what the button says is about
+  // that one now (the app says which), not ended by this answer. A reading
+  // never ends what it says about something else
+  if (d.still) { if (G.busy !== d.still) G.far = null; G.busy = d.still; }
+  else if (!(d.read && G.busy && G.busy !== d.act)) { G.busy = ""; G.far = null; }
   G.need = false;
   // A refusal to sign in names the folder whose project chooses the account;
   // any other answer, good or bad, is not about the account

@@ -21005,7 +21005,8 @@ impl GitLines {
     /// The answers ready now, as the panel reads them, and a "not answering"
     /// for each question waited on too long
     fn answers(&mut self) -> Vec<String> {
-        let mut out = Vec::new();
+        // Each with the question it is about, when it is about one still waited on
+        let mut out: Vec<(serde_json::Value, Option<u64>)> = Vec::new();
         while let Ok(d) = self.rx.try_recv() {
             let on_the_way = d.payload.get("busy").and_then(|b| b.as_bool()).unwrap_or(false);
             if let Some(at) = self.waiting.iter().position(|w| w.seq == d.seq) {
@@ -21027,12 +21028,12 @@ impl GitLines {
             }
             let mut payload = d.payload;
             payload["panel"] = serde_json::json!(d.panel);
-            // Said, so that a reading answering while a change on the same
-            // line is still going does not end the panel's "working"
+            // A reading says it is one: it never ends what the button says
+            // about a change -- the AI writing a message, say
             if GIT_READS.contains(&d.act.as_str()) {
                 payload["read"] = serde_json::json!(true);
             }
-            out.push(payload.to_string());
+            out.push((payload, None));
         }
         // Slow: said once, and the answer still handed over when it comes
         // A change to the folder still going after a moment: the panel shows it
@@ -21040,16 +21041,36 @@ impl GitLines {
         // Readings are not -- the lists are drawn when they come
         for w in self.waiting.iter_mut().filter(|w| !w.busy && !GIT_READS.contains(&w.act.as_str()) && w.asked.elapsed() >= GIT_BUSY_AFTER) {
             w.busy = true;
-            out.push(serde_json::json!({"act": w.act, "busy": true, "panel": w.panel}).to_string());
+            out.push((serde_json::json!({"act": w.act, "busy": true, "panel": w.panel}), None));
         }
         for w in self.waiting.iter_mut().filter(|w| !w.slow && w.heard.elapsed() >= GIT_PANEL_WAIT) {
             w.slow = true;
-            out.push(
-                serde_json::json!({"act": w.act, "ok": false, "slow": true, "error": i18n::t("err.git.not_answering"), "panel": w.panel})
-                    .to_string(),
-            );
+            let mut slow = serde_json::json!({"act": w.act, "ok": false, "slow": true, "error": i18n::t("err.git.not_answering"), "panel": w.panel});
+            if GIT_READS.contains(&w.act.as_str()) {
+                slow["read"] = serde_json::json!(true);
+            }
+            out.push((slow, Some(w.seq)));
         }
-        out
+        // An answer that ends something says which change to the same folder
+        // is still going, if one is: the panel's "working" is about that one
+        // now, rather than ended by the first answer to anything else -- a
+        // reading asked before it, another change, one said to be slow
+        out.into_iter()
+            .map(|(mut payload, about)| {
+                let ends = !payload.get("busy").and_then(|b| b.as_bool()).unwrap_or(false);
+                if ends {
+                    let panel = payload["panel"].as_str().unwrap_or_default().to_string();
+                    let still = self
+                        .waiting
+                        .iter()
+                        .find(|w| w.busy && w.panel == panel && Some(w.seq) != about && !GIT_READS.contains(&w.act.as_str()));
+                    if let Some(w) = still {
+                        payload["still"] = serde_json::json!(w.act);
+                    }
+                }
+                payload.to_string()
+            })
+            .collect()
     }
 }
 
@@ -26738,6 +26759,32 @@ mod git_line_tests {
         assert!(got.iter().any(|g| g["done"] == 800 && g["panel"] == "p1"), "{got:?}");
         assert!(lines.waiting.iter().any(|w| w.seq == 1), "progress was taken for the answer");
         assert!(lines.waiting[0].heard.elapsed() < Duration::from_secs(5), "progress did not count as hearing from it");
+    }
+
+    /// What ends one thing on a folder's line says which change to the same
+    /// folder is still going: a reading said to be slow, or another change
+    /// answering, does not end the panel's "working" for the one still running
+    #[test]
+    fn an_answer_says_which_change_is_still_going() {
+        let mut lines = GitLines::new();
+        let long_ago = Instant::now().checked_sub(GIT_PANEL_WAIT + Duration::from_secs(1)).unwrap();
+        let waited = |seq: u64, act: &str, at: Instant, busy: bool| GitWaiting {
+            seq, panel: "p1".into(), act: act.into(), asked: at, heard: at, slow: false, busy,
+        };
+        let recent = Instant::now();
+        lines.waiting.push(waited(1, "stage", recent, true));
+        lines.waiting.push(waited(2, "unstage", recent, true));
+        lines.waiting.push(waited(3, "hunks", long_ago, false));
+        lines.tx.send(GitDone { seq: 1, panel: "p1".into(), act: "stage".into(), payload: serde_json::json!({"act": "stage", "ok": true}) }).unwrap();
+        let got: Vec<serde_json::Value> = lines.answers().iter().map(|j| serde_json::from_str(j).unwrap()).collect();
+        let stage = got.iter().find(|g| g["act"] == "stage").expect("the stage's answer");
+        assert_eq!(stage["still"], "unstage", "{got:?}");
+        let slow = got.iter().find(|g| g["slow"] == true).expect("the reading said to be slow");
+        assert_eq!((slow["act"].as_str(), slow["read"].as_bool(), slow["still"].as_str()), (Some("hunks"), Some(true), Some("unstage")), "{got:?}");
+        // The last change answering leaves nothing still going
+        lines.tx.send(GitDone { seq: 2, panel: "p1".into(), act: "unstage".into(), payload: serde_json::json!({"act": "unstage", "ok": true}) }).unwrap();
+        let last: Vec<serde_json::Value> = lines.answers().iter().map(|j| serde_json::from_str(j).unwrap()).collect();
+        assert!(last.iter().all(|g| g.get("still").is_none()), "{last:?}");
     }
 
     /// A question about a folder that is not a repository answers, and says why
