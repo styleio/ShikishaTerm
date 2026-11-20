@@ -20972,6 +20972,14 @@ impl GitLines {
                 // How far a job over thousands of files has got, said on the
                 // way: the panel shows it rather than a button that seems stuck
                 let (tell, seq, panel, act) = (done.clone(), job.seq, job.panel.clone(), job.act.clone());
+                // Begun now: a question that waited behind another is timed
+                // from here, as one asked just now
+                let _ = done.send(GitDone {
+                    seq,
+                    panel: panel.clone(),
+                    act: act.clone(),
+                    payload: serde_json::json!({"act": act, "started": true}),
+                });
                 let answer = crate::git::with_progress(
                     move |n, of| {
                         let _ = tell.send(GitDone {
@@ -21008,6 +21016,17 @@ impl GitLines {
         // Each with the question it is about, when it is about one still waited on
         let mut out: Vec<(serde_json::Value, Option<u64>)> = Vec::new();
         while let Ok(d) = self.rx.try_recv() {
+            // Its line has begun on it. What was said of it while it waited --
+            // under way, or slow -- was about the wait; from here it is timed
+            // as one just asked, and said to be at work or slow again if it is.
+            // Nothing for the panel
+            if d.payload.get("started").and_then(|b| b.as_bool()).unwrap_or(false) {
+                if let Some(w) = self.waiting.iter_mut().find(|w| w.seq == d.seq) {
+                    let now = Instant::now();
+                    (w.asked, w.heard, w.busy, w.slow) = (now, now, false, false);
+                }
+                continue;
+            }
             let on_the_way = d.payload.get("busy").and_then(|b| b.as_bool()).unwrap_or(false);
             if let Some(at) = self.waiting.iter().position(|w| w.seq == d.seq) {
                 match on_the_way {
@@ -26789,6 +26808,15 @@ mod git_line_tests {
         let after_slow: Vec<serde_json::Value> = lines.answers().iter().map(|j| serde_json::from_str(j).unwrap()).collect();
         assert!(after_slow.iter().all(|g| g.get("still").is_none()), "{after_slow:?}");
         lines.waiting[0].slow = false;
+        // Begun after waiting so long it was said to be slow: timed afresh,
+        // so it is said to be at work again once it runs for a moment
+        lines.waiting[0].slow = true;
+        lines.tx.send(GitDone { seq: 2, panel: "p1".into(), act: "unstage".into(), payload: serde_json::json!({"act": "unstage", "started": true}) }).unwrap();
+        assert!(lines.answers().is_empty(), "the start was handed to the panel");
+        assert!(!lines.waiting[0].slow && !lines.waiting[0].busy, "the start did not time it afresh");
+        lines.waiting[0].asked = Instant::now().checked_sub(GIT_BUSY_AFTER + Duration::from_millis(50)).unwrap();
+        let again: Vec<serde_json::Value> = lines.answers().iter().map(|j| serde_json::from_str(j).unwrap()).collect();
+        assert!(again.iter().any(|g| g["act"] == "unstage" && g["busy"] == true), "{again:?}");
         // The last change answering leaves nothing still going
         lines.tx.send(GitDone { seq: 2, panel: "p1".into(), act: "unstage".into(), payload: serde_json::json!({"act": "unstage", "ok": true}) }).unwrap();
         let last: Vec<serde_json::Value> = lines.answers().iter().map(|j| serde_json::from_str(j).unwrap()).collect();
