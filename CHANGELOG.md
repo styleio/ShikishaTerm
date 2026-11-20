@@ -43,6 +43,15 @@ once it reaches its first tagged release.
   there.
 
 ### Fixed
+- **The window no longer stutters over a folder with thousands of changed
+  files.** A folder whose build output git does not ignore lists every one
+  of those files as new, and the Git panel made a row for each of them again
+  every time the board was drawn -- several times a second while a tab was
+  at work. The panel now makes its lists again only when what they show has
+  changed, and shows the first 200 files of a long list with a button under
+  them for the next ones. The counts at the head of each list are still the
+  whole number, and the buttons that act on every file still act on every
+  file.
 - **This PC's terminals move to the new version once the old ones end.**
   After an update, the background process of the version before went on
   holding every new terminal too, until the app was started with none

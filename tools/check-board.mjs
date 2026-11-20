@@ -159,6 +159,44 @@ for (const side of ['window', 'remote']) {
         if (!worked) fail(what, 'clipboard fallback lost the copy or the paste field');
       } catch (e) { fail(what, 'clipboard fallback threw: ' + String(e.message).split('\n')[0]); }
     }
+    // A folder whose build output git does not ignore: thousands of new files.
+    // The git panel is drawn again on every state the app sends, and once made
+    // a row for each of them every time -- the window stuttered for as long as
+    // the panel was open. It makes the first ones, and makes them once
+    if (side === 'window') {
+      try {
+        const git = await chrome.run(`(() => {
+          const box = document.getElementById("gitpanel");
+          const was = {G, hidden: box.hidden};
+          try {
+            box.hidden = false;
+            G = gitFresh("many");
+            G.rows = Array.from({length: 6000}, (_, i) => ({path: "out/f" + i + ".o", index: "?", work: "?",
+              staged: false, unstaged: true, conflict: false, tangled: false}));
+            G.branches = Array.from({length: 3}, (_, i) => ({name: "b" + i, current: i === 0}));
+            drawGit();
+            const list = gitUi.work, made = list.querySelectorAll(".row").length;
+            const first = list.querySelector(".row");
+            const t0 = performance.now();
+            for (let i = 0; i < 50; i++) drawGit();
+            const fifty = performance.now() - t0;
+            const kept = list.querySelector(".row") === first;
+            const offer = list.querySelector(".growsmore");
+            if (offer) offer.click();
+            const more = list.querySelectorAll(".row").length;
+            G.rows = G.rows.slice(0, 10);
+            drawGit();
+            const fewer = list.querySelectorAll(".row").length, button = !!list.querySelector(".gmore");
+            return {made, kept, fifty, more, fewer, button};
+          } finally { G = was.G; box.hidden = was.hidden; gitUi = null; box.textContent = ""; }
+        })()`);
+        if (git.made !== 200) fail(what, 'the git panel made ' + git.made + ' rows of 6000 at once, not 200');
+        if (!git.kept) fail(what, 'the git panel made its list again for a state that changed nothing in it');
+        if (git.fifty > 250) fail(what, 'fifty redraws of an unchanged git panel took ' + Math.round(git.fifty) + ' ms');
+        if (git.more !== 400) fail(what, '"show more" left ' + git.more + ' rows, not 400');
+        if (git.fewer !== 10 || git.button) fail(what, 'a short list after a long one is not drawn whole');
+      } catch (e) { fail(what, 'the git panel threw: ' + String(e.message).split('\n')[0]); }
+    }
     // And the terminal's own contents, which arrive by their own call
     chrome.thrown.length = 0;
     try {

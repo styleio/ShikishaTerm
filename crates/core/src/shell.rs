@@ -2894,6 +2894,8 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #gitpanel button.link { border:none; background:none; padding:0; min-height:0; color:var(--dim); font-size:12px;
     text-align:left; cursor:pointer; }
   #gitpanel button.link:hover { color:var(--text); }
+  /* Under a long list, lined up with its rows' names */
+  #gitpanel button.growsmore { display:block; padding:6px 10px; }
   #gitpanel .gprs { display:flex; flex-direction:column; gap:var(--s1); }
   #gitpanel .gprs:empty { display:none; }
   #gitpanel .gprs .why { font-size:11.5px; color:var(--dim); overflow-wrap:anywhere; }
@@ -27495,6 +27497,9 @@ window.__recorded = function (line) {
 function gitFresh(name) {
   return { panel:name, branch:null, branches:[], rows:null, sel:null, staged:false,
            diff:"", hunks:[], said:"", bad:false, busy:"", offer:false, pick:{}, pickBranch:null,
+           // How many rows each long list shows, once more were asked for
+           // (GIT_ROWS_AT_ONCE until then)
+           upTo:{},
            // The folder whose project chooses the account, when what was said
            // is a refusal to sign in (empty otherwise)
            fix:"",
@@ -27653,7 +27658,11 @@ window.__git = function (d) {
   }
   G.bad = false;
   if (d.act === "status") {
-    G.rows = d.data || [];
+    // The folder is read again after every turn of work done in it, and most
+    // times nothing in it changed: the same list stays the same list, so what
+    // is drawn from it is not made again (drawnFrom)
+    const rows = d.data || [];
+    if (!G.rows || JSON.stringify(rows) !== JSON.stringify(G.rows)) G.rows = rows;
     // A stopped merge is handed over until nothing is left in conflict
     if (G.conflict && !G.rows.some(r => r.conflict)) G.conflict = null;
     gitConflictFromState();
@@ -27701,7 +27710,7 @@ window.__git = function (d) {
     G.said = (T[got.already ? "git.catch_up.resolving_already" : "git.catch_up.resolving"] || "")
       .replaceAll("{title}", got.title || "");
   }
-  else if (d.act === "detail") { G.about = d.data || null; G.sel = null; G.hunks = []; }
+  else if (d.act === "detail") { G.about = d.data || null; G.sel = null; G.hunks = []; delete G.upTo.about; }
   else if (d.act === "hunk") {
     // A piece moved. What is staged changed, and so did the piece list
     gitAsk("status");
@@ -28331,6 +28340,11 @@ function gitMark(r) {
 function drawHistory(u) {
   u.remotes.checked = !!G.remotes;
   u.which.textContent = G.pickBranch || "";
+  if (!drawnFrom(u.log, [G.log, G.commit, T])) drawGitLog(u);
+  if (!drawnFrom(u.about, [G.about, G.sel, G.upTo.about, T])) drawGitAbout(u);
+  drawGitCommitDiff(u);
+}
+function drawGitLog(u) {
   u.log.textContent = "";
   for (const r of G.log || []) {
     const row = el("div", {class:"logrow" + (G.commit === r.hash && r.hash ? " on" : ""),
@@ -28349,7 +28363,9 @@ function drawHistory(u) {
     u.log.append(row);
   }
   if (!(G.log || []).length) u.log.append(el("div", {class:"empty"}, "\u2026"));
-
+}
+// The commit picked in the history: what git says about it, and its files
+function drawGitAbout(u) {
   u.about.textContent = "";
   const d = G.about;
   if (!d) {
@@ -28369,7 +28385,7 @@ function drawHistory(u) {
     u.about.append(dl);
     u.about.append(el("div", {class:"body"}, (d.subject || "") + (d.body ? "\n\n" + d.body : "")));
     u.about.append(el("dt", {}, T["git.detail.files"] || ""));
-    for (const f of d.files || []) {
+    gitRowsUpTo(u.about, d.files || [], "about", f => {
       const row = el("div", {class:"row" + (G.sel === f ? " pick" : ""), style:"padding:2px 0",
         onclick:() => {
           G.sel = f; G.hunks = [];
@@ -28379,10 +28395,11 @@ function drawHistory(u) {
           gitAskChange();
         }});
       row.append(el("span", {class:"p", style:"direction:ltr"}, f));
-      u.about.append(row);
-    }
+      return row;
+    });
   }
-
+}
+function drawGitCommitDiff(u) {
   const commitSig = G.sel ? gitChangeSig("commit") : "";
   if (u.commitDiff.dataset.sig === commitSig && u.commitDiff.firstChild) return;
   u.commitDiff.dataset.sig = commitSig;
@@ -30150,13 +30167,9 @@ function diffLines(patch) {
   return box;
 }
 
-function drawGit() {
-  const box = document.getElementById("gitpanel");
-  if (!box || box.hidden) return;
-  if (!gitUi || !box.firstChild) gitBuild(box);
-  const u = gitUi;
-  drawGitCommit();
-
+// The branch list down the left. Made again only when what it shows changed
+// (drawnFrom): drawGit runs on every state the app sends
+function drawGitBranches(u) {
   u.branches.textContent = "";
   // The first row is every branch at once -- the same question the rows below
   // ask about one of them
@@ -30192,6 +30205,41 @@ function drawGit() {
     u.branches.append(row);
   }
   if (!(G.branches || []).length) u.branches.append(el("div", {class:"empty"}, "\u2026"));
+}
+// How many rows a list in the git panel makes at a time. A folder whose build
+// output git does not ignore lists every file of it as new -- thousands -- and
+// a row made for each of them held the window up; the rest is a press away
+const GIT_ROWS_AT_ONCE = 200;
+// Whether `box` already shows what `parts` say, and if not, a note that it is
+// about to. drawGit runs on every state the app sends, several a second while
+// a tab is at work: a list made again each time costs as much as it is long,
+// and loses the row under the pointer and how far the list was scrolled
+function drawnFrom(box, parts) {
+  const was = box.drawnFrom;
+  if (was && was.length === parts.length && was.every((p, i) => p === parts[i])) return true;
+  box.drawnFrom = parts;
+  return false;
+}
+// The first rows of `list` in `box`, and under them a button for the next ones
+function gitRowsUpTo(box, list, key, make) {
+  const upTo = G.upTo[key] || GIT_ROWS_AT_ONCE;
+  for (const r of list.slice(0, upTo)) box.append(make(r));
+  const left = list.length - upTo;
+  if (left <= 0) return;
+  box.append(el("button", {type:"button", class:"link growsmore",
+    onclick:() => { G.upTo[key] = upTo + GIT_ROWS_AT_ONCE; drawGit(); }},
+    (T["git.rows.more"] || "")
+      .replaceAll("{n}", Math.min(left, GIT_ROWS_AT_ONCE).toLocaleString())
+      .replaceAll("{left}", left.toLocaleString())));
+}
+function drawGit() {
+  const box = document.getElementById("gitpanel");
+  if (!box || box.hidden) return;
+  if (!gitUi || !box.firstChild) gitBuild(box);
+  const u = gitUi;
+  drawGitCommit();
+
+  if (!drawnFrom(u.branches, [G.branches, G.view === "history", G.pickBranch, T])) drawGitBranches(u);
 
   const history = G.view === "history";
   const narrow = box.clientWidth > 0 && box.clientWidth < GIT_NARROW;
@@ -30234,14 +30282,18 @@ function drawGit() {
   u.workSec.style.display = work.length || conflicts.length || !staged.length ? "flex" : "none";
   u.stagedN.textContent = staged.length ? String(staged.length) : "";
   u.workN.textContent = work.length + conflicts.length ? String(work.length + conflicts.length) : "";
-  u.staged.textContent = "";
-  staged.forEach(r => u.staged.append(gitFileRow(r, "staged")));
-  u.work.textContent = "";
-  conflicts.forEach(r => u.work.append(gitFileRow(r, "work")));
-  work.forEach(r => u.work.append(gitFileRow(r, "work")));
-  if (!work.length && !conflicts.length) u.work.append(el("div", {class:"empty"}, T["git.clean"] || ""));
-  else if (conflicts.length && !conflicts.some(r => r.tangled)) {
-    u.work.append(el("div", {class:"empty"}, T["git.settled"] || ""));
+  const picks = JSON.stringify(G.pick);
+  if (!drawnFrom(u.staged, [G.rows, picks, G.sel, G.upTo.staged, T])) {
+    u.staged.textContent = "";
+    gitRowsUpTo(u.staged, staged, "staged", r => gitFileRow(r, "staged"));
+  }
+  if (!drawnFrom(u.work, [G.rows, picks, G.sel, G.upTo.work, T])) {
+    u.work.textContent = "";
+    gitRowsUpTo(u.work, conflicts.concat(work), "work", r => gitFileRow(r, "work"));
+    if (!work.length && !conflicts.length) u.work.append(el("div", {class:"empty"}, T["git.clean"] || ""));
+    else if (conflicts.length && !conflicts.some(r => r.tangled)) {
+      u.work.append(el("div", {class:"empty"}, T["git.settled"] || ""));
+    }
   }
   gitFitLists(u);
 

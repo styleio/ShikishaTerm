@@ -4806,6 +4806,7 @@
   "git.group.staged": "コミットに入れたもの",
   "git.group.unstaged": "まだ入れていないもの",
   "git.clean": "変わったものはありません",
+  "git.rows.more": "さらに {n} 件を表示（残り {left} 件）",
   "git.settled": "衝突は解けています。読んでから追加すると、マージが終わります。",
   "git.stage": "入れる",
   "git.unstage": "外す",

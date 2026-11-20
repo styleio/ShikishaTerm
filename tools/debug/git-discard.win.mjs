@@ -101,7 +101,7 @@ try {
 
   // The column, open on the changes and asked to read the folder again
   const open = `(async () => {
-    sidePanel = "git"; setSideWidth(440);
+    setSideWidth(440); sideReveal("git");
     await new Promise(r => setTimeout(r, 400));
     gitRefresh(true);
     await new Promise(r => setTimeout(r, 1200));
