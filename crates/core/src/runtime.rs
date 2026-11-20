@@ -21027,6 +21027,11 @@ impl GitLines {
             }
             let mut payload = d.payload;
             payload["panel"] = serde_json::json!(d.panel);
+            // Said, so that a reading answering while a change on the same
+            // line is still going does not end the panel's "working"
+            if GIT_READS.contains(&d.act.as_str()) {
+                payload["read"] = serde_json::json!(true);
+            }
             out.push(payload.to_string());
         }
         // Slow: said once, and the answer still handed over when it comes
@@ -26676,6 +26681,9 @@ mod git_line_tests {
         assert_eq!(statuses[0]["data"][0]["staged"], true, "{got:?}");
         assert_eq!(statuses[0]["panel"], "p1", "the answer does not say which panel it is for");
         assert!(got.iter().any(|g| g["act"] == "stage" && g["ok"] == true), "{got:?}");
+        // A reading says it is one; a change does not
+        assert_eq!(statuses[0]["read"], true, "{got:?}");
+        assert!(got.iter().all(|g| g["act"] != "stage" || g.get("read").is_none()), "{got:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

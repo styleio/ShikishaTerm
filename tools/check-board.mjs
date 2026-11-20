@@ -201,12 +201,30 @@ for (const side of ['window', 'remote']) {
             const diffKept = gitUi.diff.querySelector(".dlines > span") === diffFirst;
             gitUi.diff.querySelector(".growsmore").click();
             const diffMore = lines();
-            return {made, kept, fifty, more, fewer, button, diffMade, diffFifty, diffKept, diffMore};
+            // A stage still going, and a reading asked before it answering
+            // meanwhile: the button still says it is working. Then the stage
+            // fails part of the way through, and the lists are read again
+            const asked = [], ipc = window.ipc;
+            window.ipc = {postMessage: text => asked.push(JSON.parse(text))};
+            let busyKept, refreshed;
+            const tabWas = gitTab;
+            try {
+              gitTab = () => tabWas() || {id: "many", name: "many"};
+              window.__git({act: "stage", busy: true, done: 800, of: 6000});
+              window.__git({act: "branch", ok: true, read: true, data: null});
+              busyKept = G.busy === "stage" && /800/.test(gitUi.main.textContent);
+              asked.length = 0;
+              window.__git({act: "stage", ok: false, error: "failed part of the way"});
+              refreshed = asked.some(a => a.kind === "gitpanel" ? a.act === "status" : JSON.stringify(a).includes('"status"'));
+            } finally { window.ipc = ipc; gitTab = tabWas; }
+            return {made, kept, fifty, more, fewer, button, diffMade, diffFifty, diffKept, diffMore, busyKept, refreshed};
           } finally { G = was.G; box.hidden = was.hidden; gitUi = null; box.textContent = ""; }
         })()`);
         if (git.diffMade !== 2000) fail(what, 'a 50000-line change drew ' + git.diffMade + ' lines at once, not 2000');
         if (!git.diffKept) fail(what, 'the change was drawn again for a state that changed nothing in it');
         if (git.diffFifty > 250) fail(what, 'fifty redraws of an unchanged change took ' + Math.round(git.diffFifty) + ' ms');
+        if (!git.busyKept) fail(what, 'a reading answering during a stage ended the button\'s "working"');
+        if (!git.refreshed) fail(what, 'a stage that failed part of the way through did not read the folder again');
         if (git.diffMore !== 4000) fail(what, '"show more" of the change left ' + git.diffMore + ' lines, not 4000');
         if (git.made !== 200) fail(what, 'the git panel made ' + git.made + ' rows of 6000 at once, not 200');
         if (!git.kept) fail(what, 'the git panel made its list again for a state that changed nothing in it');
