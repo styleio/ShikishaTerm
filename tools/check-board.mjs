@@ -217,7 +217,7 @@ for (const side of ['window', 'remote']) {
               busyKept = G.busy === "stage" && /800/.test(gitUi.main.textContent);
               // The stage done while an unstage still runs: still working
               window.__git({act: "stage", ok: true, data: null, still: "unstage"});
-              busyKept = busyKept && G.busy === "unstage" && gitUi.main.disabled;
+              busyKept = busyKept && G.busy === "unstage" && gitUi.main.disabled && !G.far;
               asked.length = 0;
               window.__git({act: "stage", ok: false, error: "failed part of the way"});
               refreshed = asked.some(a => a.kind === "gitpanel" ? a.act === "status" : JSON.stringify(a).includes('"status"'));

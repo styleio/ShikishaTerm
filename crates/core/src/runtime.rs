@@ -21054,7 +21054,8 @@ impl GitLines {
         // An answer that ends something says which change to the same folder
         // is still going, if one is: the panel's "working" is about that one
         // now, rather than ended by the first answer to anything else -- a
-        // reading asked before it, another change, one said to be slow
+        // reading asked before it, another change, one said to be slow. One
+        // already said to be slow is not: its own warning is what is shown
         out.into_iter()
             .map(|(mut payload, about)| {
                 let ends = !payload.get("busy").and_then(|b| b.as_bool()).unwrap_or(false);
@@ -21063,7 +21064,7 @@ impl GitLines {
                     let still = self
                         .waiting
                         .iter()
-                        .find(|w| w.busy && w.panel == panel && Some(w.seq) != about && !GIT_READS.contains(&w.act.as_str()));
+                        .find(|w| w.busy && !w.slow && w.panel == panel && Some(w.seq) != about && !GIT_READS.contains(&w.act.as_str()));
                     if let Some(w) = still {
                         payload["still"] = serde_json::json!(w.act);
                     }
@@ -26781,6 +26782,13 @@ mod git_line_tests {
         assert_eq!(stage["still"], "unstage", "{got:?}");
         let slow = got.iter().find(|g| g["slow"] == true).expect("the reading said to be slow");
         assert_eq!((slow["act"].as_str(), slow["read"].as_bool(), slow["still"].as_str()), (Some("hunks"), Some(true), Some("unstage")), "{got:?}");
+        // A change already said to be slow is not the one still going: its
+        // own warning is shown instead
+        lines.waiting[0].slow = true;
+        lines.tx.send(GitDone { seq: 9, panel: "p1".into(), act: "fetch".into(), payload: serde_json::json!({"act": "fetch", "ok": true}) }).unwrap();
+        let after_slow: Vec<serde_json::Value> = lines.answers().iter().map(|j| serde_json::from_str(j).unwrap()).collect();
+        assert!(after_slow.iter().all(|g| g.get("still").is_none()), "{after_slow:?}");
+        lines.waiting[0].slow = false;
         // The last change answering leaves nothing still going
         lines.tx.send(GitDone { seq: 2, panel: "p1".into(), act: "unstage".into(), payload: serde_json::json!({"act": "unstage", "ok": true}) }).unwrap();
         let last: Vec<serde_json::Value> = lines.answers().iter().map(|j| serde_json::from_str(j).unwrap()).collect();

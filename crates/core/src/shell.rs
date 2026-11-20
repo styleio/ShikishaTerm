@@ -27625,9 +27625,10 @@ window.__git = function (d) {
   if (d.busy) { G.busy = d.act; G.far = d.of ? [d.done || 0, d.of] : null; if (!quiet) { G.said = ""; G.fix = ""; } G.need = false; drawGit(); return; }
   if (quiet) G.quietFetch = false;
   // Another change to the folder still going: what the button says is about
-  // that one now (the app says which), not ended by this answer. A reading
-  // never ends what it says about something else
-  if (d.still) { if (G.busy !== d.still) G.far = null; G.busy = d.still; }
+  // that one now (the app says which), not ended by this answer -- and the
+  // count it showed was of the one that ended. A reading never ends what it
+  // says about something else
+  if (d.still) { G.busy = d.still; G.far = null; }
   else if (!(d.read && G.busy && G.busy !== d.act)) { G.busy = ""; G.far = null; }
   G.need = false;
   // A refusal to sign in names the folder whose project chooses the account;
