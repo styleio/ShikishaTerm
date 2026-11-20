@@ -186,7 +186,7 @@ for (const side of ['window', 'remote']) {
             const more = list.querySelectorAll(".row").length;
             G.rows = G.rows.slice(0, 10);
             drawGit();
-            const fewer = list.querySelectorAll(".row").length, button = !!list.querySelector(".gmore");
+            const fewer = list.querySelectorAll(".row").length, button = !!list.querySelector(".growsmore");
             return {made, kept, fifty, more, fewer, button};
           } finally { G = was.G; box.hidden = was.hidden; gitUi = null; box.textContent = ""; }
         })()`);
