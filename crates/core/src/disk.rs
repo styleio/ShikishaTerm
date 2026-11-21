@@ -8,6 +8,9 @@
 //!
 //! Every path is from the working folder, with forward slashes.
 
+/// A folder's files and folders, by name
+pub type Entries = (Vec<String>, Vec<String>);
+
 pub trait Disk {
     /// The names of the files in a folder, `None` when there is no folder
     fn files(&self, dir: &str) -> Result<Option<Vec<String>>, String>;
@@ -15,7 +18,7 @@ pub trait Disk {
     fn folders(&self, dir: &str) -> Result<Vec<String>, String>;
     /// Both at once -- the files, then the folders -- `None` when there is no
     /// folder. One question where the machine is far, not two
-    fn entries(&self, dir: &str) -> Result<Option<(Vec<String>, Vec<String>)>, String> {
+    fn entries(&self, dir: &str) -> Result<Option<Entries>, String> {
         Ok(match self.files(dir)? {
             None => None,
             Some(files) => Some((files, self.folders(dir)?)),

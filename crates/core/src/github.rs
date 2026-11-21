@@ -1724,7 +1724,8 @@ pub fn far_head_folder(s: &Source, head: &str) -> Option<(std::path::PathBuf, St
     // The rest a machine at a time: the folders of one server are asked in
     // one command there. Each MicroVM is a machine of its own, and is still
     // asked alone
-    let mut machines: Vec<(&crate::elsewhere::Elsewhere, Vec<&(std::path::PathBuf, crate::elsewhere::Elsewhere, String)>)> = Vec::new();
+    type Folder = (std::path::PathBuf, crate::elsewhere::Elsewhere, String);
+    let mut machines: Vec<(&crate::elsewhere::Elsewhere, Vec<&Folder>)> = Vec::new();
     for f in rest {
         match machines.iter_mut().find(|(at, _)| at.machine_key() == f.1.machine_key()) {
             Some((_, list)) => list.push(f),

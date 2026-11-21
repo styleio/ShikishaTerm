@@ -17833,7 +17833,7 @@ impl FolderThere {
 impl crate::disk::Disk for FolderThere {
     // One listing, asked straight away: one that is not a folder there
     // fails, and that is no folder
-    fn entries(&self, dir: &str) -> std::result::Result<Option<(Vec<String>, Vec<String>)>, String> {
+    fn entries(&self, dir: &str) -> std::result::Result<Option<crate::disk::Entries>, String> {
         match self.run(ssh::FileJob::List { path: dir.to_string() }) {
             Ok(ssh::FileAnswer::Listing(rows)) => {
                 let (dirs, files): (Vec<_>, Vec<_>) = rows.into_iter().filter(|r| r.name != "." && r.name != "..").partition(|r| r.dir);
@@ -18622,7 +18622,9 @@ fn far_stamp_polls(
 ) {
     // The editors due, a machine at a time: every file open there is asked
     // about in one question, not one each
-    let mut due: Vec<(crate::elsewhere::Elsewhere, Vec<(String, String, String)>)> = Vec::new();
+    // (the editor, the file as it shows it, the file on the machine)
+    type Asked = (String, String, String);
+    let mut due: Vec<(crate::elsewhere::Elsewhere, Vec<Asked>)> = Vec::new();
     for e in editors {
         let (Some(at), Some(dir), Some(rel), None) = (&e.at, &e.dir, &e.showing, &e.diff) else { continue };
         if polls.get(&e.key).is_some_and(|p| p.busy || p.at.elapsed() < FAR_STAMP_EVERY) {
