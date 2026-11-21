@@ -158,8 +158,11 @@ pub fn send_away(at: &crate::elsewhere::Elsewhere, from: &std::path::Path) -> an
         Ok(crate::ssh::FileAnswer::Listing(rows)) => rows.into_iter().map(|r| r.name.to_lowercase()).collect(),
         _ => Default::default(),
     };
-    // A file of that name can still arrive in between: the send refuses to
-    // write over one, and the next name is tried, a few times at most
+    // A file of that name can still arrive in between, or be one the disk
+    // there takes for the same name (another case, another way of writing
+    // an accent): the send refuses to write over it, the name is asked
+    // after, and one that is there is passed over. Only a send that failed
+    // with nothing there counts against the few tries
     let mut tries = 0;
     let mut last = None;
     for n in 0..1000 {
@@ -174,6 +177,9 @@ pub fn send_away(at: &crate::elsewhere::Elsewhere, from: &std::path::Path) -> an
                 return Ok(to);
             }
             Err(e) => {
+                if crate::elsewhere::files(at, FileJob::Stat { path: to.clone() }, 60_000).is_ok() {
+                    continue;
+                }
                 tries += 1;
                 last = Some(e);
                 if tries >= SEND_TRIES {
