@@ -1684,7 +1684,12 @@ pub fn integrated_into(dir: &Path, branch: &str) -> Option<String> {
         .collect::<Vec<_>>()
         .join(",");
     let key = (format!("{repo}\u{1f}{settings}"), head.to_string(), target.to_string());
-    if let Some(went) = INTEGRATED.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+    // Settings kept in other files it reads (`[include]`) can change with
+    // neither of those two: then nothing is kept, and it is worked out each time
+    let keep = !crate::repo::family_of(dir)
+        .and_then(|f| std::fs::read_to_string(f.join("config")).ok())
+        .is_some_and(|t| t.to_ascii_lowercase().contains("[include"));
+    if keep && let Some(went) = INTEGRATED.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
         return went.then_some(base);
     }
     let went = match run(dir, &["merge-base", "--is-ancestor", head, target]).is_ok() {
@@ -1693,11 +1698,13 @@ pub fn integrated_into(dir: &Path, branch: &str) -> Option<String> {
         // is not kept as one
         false => merged_apart(dir, target, head)?.lines().next() == Some(tree),
     };
-    let mut known = INTEGRATED.lock().unwrap_or_else(|e| e.into_inner());
-    if known.len() >= INTEGRATED_KEPT {
-        known.clear();
+    if keep {
+        let mut known = INTEGRATED.lock().unwrap_or_else(|e| e.into_inner());
+        if known.len() >= INTEGRATED_KEPT {
+            known.clear();
+        }
+        known.insert(key, went);
     }
-    known.insert(key, went);
     went.then_some(base)
 }
 

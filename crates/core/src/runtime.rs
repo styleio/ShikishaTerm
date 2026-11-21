@@ -17838,8 +17838,13 @@ impl FolderThere {
 }
 
 impl crate::disk::Disk for FolderThere {
+    // Asked of a file that was listed a moment ago: a question that fails
+    // is the machine not answering, and said, never taken for the file gone
     fn size(&self, path: &str) -> std::result::Result<Option<u64>, String> {
-        Ok(self.there(path).filter(|e| !e.dir).map(|e| e.size))
+        match self.run(ssh::FileJob::Stat { path: path.to_string() })? {
+            ssh::FileAnswer::One(e) if !e.dir => Ok(Some(e.size)),
+            _ => Ok(None),
+        }
     }
     // One listing, asked straight away: one that is not a folder there
     // fails, and that is no folder

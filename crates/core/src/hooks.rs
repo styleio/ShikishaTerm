@@ -1957,8 +1957,19 @@ end
 local want, files, dirs = {}, {}, {}
 for _, name in ipairs(job.names) do want[name] = true end
 
-local level = {}
-for _, e in ipairs(list(at, from)) do
+-- A name ticked that is no longer there is said, not passed over: the rest
+-- would go and the send would say it finished
+local level, seen, top = {}, {}, list(at, from)
+for _, e in ipairs(top) do
+  seen[e.name] = true
+end
+for _, name in ipairs(job.names) do
+  if not seen[name] then
+    shikisha.set_progress(nil, name .. ": " .. shikisha.t("err.files.gone"), at)
+    return
+  end
+end
+for _, e in ipairs(top) do
   if want[e.name] then
     if e.dir then
       dirs[#dirs + 1] = e.name
@@ -9404,6 +9415,16 @@ mod live_sftp {
         // The same folder a second time. Its folders are already there, which is
         // the ordinary case rather than a fault
         finished(&run_template(&mut e, out)).expect("sending the same folder again");
+
+        // A name ticked that is gone by the time it is sent is said, not
+        // passed over while the rest go
+        let gone = run_template(&mut e, json!({
+            "tab": "deploy", "send": true,
+            "here": slashed(&here), "there": site(&l),
+            "names": ["dist", "no-such-thing.txt"], "overwrite": true,
+        }));
+        let why = finished(&gone).expect_err("a missing name was passed over");
+        assert!(why.contains("no-such-thing.txt"), "{why}");
 
         // Back: a folder from the server, landing in folders made on the way in
         let said = run_template(&mut e, json!({
