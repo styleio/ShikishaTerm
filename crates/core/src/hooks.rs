@@ -6535,6 +6535,19 @@ return o"#,
                 Ok(crate::ssh::FileAnswer::Bytes(b)) => {
                     Value::String(self.lua.create_string(&b)?)
                 }
+                // Not asked for from a script (no act names a `ReadAll`), but
+                // said the way it would be: a string in each place, false where nothing
+                // was read (a nil would leave a hole a script cannot count past)
+                Ok(crate::ssh::FileAnswer::Several(read)) => {
+                    let out = self.lua.create_table()?;
+                    for (i, b) in read.iter().enumerate() {
+                        match b {
+                            Some(b) => out.set(i + 1, self.lua.create_string(b)?)?,
+                            None => out.set(i + 1, false)?,
+                        }
+                    }
+                    Value::Table(out)
+                }
                 // A listing asked for by `stat` that came back as nothing
                 Ok(crate::ssh::FileAnswer::Nothing) if act == "stat" => Value::Nil,
                 Ok(crate::ssh::FileAnswer::Nothing) => Value::Boolean(true),
@@ -8990,6 +9003,7 @@ mod live_sftp {
     //! SHIKISHA_LIVE_SFTP_USER=me
     //! SHIKISHA_LIVE_SFTP_KEY=C:/path/to/private_key
     //! SHIKISHA_LIVE_SFTP_ROOT=/home/me/serve
+    //! SHIKISHA_LIVE_SFTP_FINGERPRINT=SHA256:...
     //! cargo test -p shikisha-core live_sftp -- --ignored --test-threads=1
     //! ```
     //!
@@ -8997,7 +9011,9 @@ mod live_sftp {
     //! "two", "three"), `site/assets/img/hero.png` holding `hero-on-the-server`,
     //! and `outside/secret.txt`. Known servers are written to a folder of this
     //! run's own, as every test build does, so nothing here is remembered by the
-    //! app a person uses.
+    //! app a person uses -- and so each run meets the server as new, and trusts
+    //! it the way a person does: by answering the question with the
+    //! fingerprint it was given.
     use super::*;
     use crate::ssh::{FileAnswer, FileJob, Spec};
     use crate::transfer::Fences;
@@ -9022,6 +9038,13 @@ mod live_sftp {
                 ..Default::default()
             },
             root: std::env::var("SHIKISHA_LIVE_SFTP_ROOT").ok()?,
+        })
+        .inspect(|l| {
+            // Met once, to be asked about; then trusted by the fingerprint
+            // the server's own key file gave, and nothing that answered since
+            let Ok(fingerprint) = std::env::var("SHIKISHA_LIVE_SFTP_FINGERPRINT") else { return };
+            let _ = crate::ssh::files(&l.spec, FileJob::Stat { path: ".".into() }, 10_000);
+            let _ = crate::ssh::answer_key_change(&l.spec.machine(), fingerprint.trim(), true);
         })
     }
 
@@ -9077,6 +9100,35 @@ mod live_sftp {
             FileAnswer::Bytes(b) => assert_eq!(b, b"one\ntwo\nthree\n"),
             other => panic!("a read came back as {other:?}"),
         }
+        // Several over one session, each in its place: a file, one not there,
+        // a folder, and one over the size asked for
+        let asked: Vec<String> = ["notes.txt", "not-there.txt", "assets", "notes.txt"].map(String::from).to_vec();
+        match run(FileJob::ReadAll { paths: asked.clone(), most: 64 }).expect("several read") {
+            FileAnswer::Several(read) => {
+                assert_eq!(read.len(), 4);
+                assert_eq!(read[0].as_deref(), Some(&b"one\ntwo\nthree\n"[..]));
+                assert_eq!(read[1], None, "not there is nothing, not a fault");
+                assert_eq!(read[2], None, "a folder is not read");
+            }
+            other => panic!("several came back as {other:?}"),
+        }
+        match run(FileJob::ReadAll { paths: asked, most: 4 }).expect("several read") {
+            FileAnswer::Several(read) => assert!(read.iter().all(Option::is_none), "over the size is left unread: {read:?}"),
+            other => panic!("{other:?}"),
+        }
+        // Thirty at once, the same file each time: all of them answer, in order
+        let many: Vec<String> = (0..30).map(|_| "notes.txt".to_string()).collect();
+        match run(FileJob::ReadAll { paths: many, most: 1 << 20 }).expect("many read") {
+            FileAnswer::Several(read) => {
+                assert_eq!(read.len(), 30);
+                assert!(read.iter().all(|b| b.as_deref() == Some(&b"one\ntwo\nthree\n"[..])));
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(
+            run(FileJob::ReadAll { paths: vec!["notes.txt".into(), "../outside/secret.txt".into()], most: 64 }).is_err(),
+            "one outside the folder refuses the lot"
+        );
 
         // Out and back again, byte for byte
         std::fs::write(here.join("round.txt"), "there and back").unwrap();

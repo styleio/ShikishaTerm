@@ -664,26 +664,233 @@ fn generate_with_local_ai(
 /// is right: it is written to the working tree, where the person reads it as a
 /// diff and stages it, or throws it away. Proposing is the AI's half.
 pub fn resolve_conflict(name: &str, body: &str, engine: Option<&str>) -> Result<String> {
+    untangle_one(name, body, &|p| ask_local_ai(p, engine))
+}
+
+/// What a question is put to: the assistant AI, or what a test answers with
+type Asker<'a> = &'a (dyn Fn(&str) -> Result<String> + Sync);
+
+fn untangle_one(name: &str, body: &str, ask: Asker) -> Result<String> {
     if !body.contains("<<<<<<<") {
         anyhow::bail!("{}", crate::i18n::tp("err.git.no_markers", &[("file", name)]));
     }
-    // A file with a conflict in it is usually ordinary in size; one that is not
-    // is not something to send half of, because half a file written back is
-    // worse than the conflict
-    const ROOM: usize = 60_000;
-    if body.chars().count() > ROOM {
+    if body.chars().count() > UNTANGLE_ROOM {
         anyhow::bail!("{}", crate::i18n::tp("err.git.too_big", &[("file", name)]));
     }
     let prompt = crate::i18n::fill(crate::asking::UNTANGLE, &[("file", name), ("body", body)]);
-    let said = ask_local_ai(&prompt, engine)?;
-    let text = strip_fence(&said);
+    let said = ask(&prompt)?;
+    untangled(name, body, &unwrap_answer(body, &said))
+}
+
+/// The most of a conflicted file handed over: one that is larger is not
+/// something to send half of, because half a file written back is worse
+/// than the conflict
+const UNTANGLE_ROOM: usize = 60_000;
+
+/// How much of several files goes in one question, and how many files at
+/// most. Small, so that what comes back is a few files' worth and not
+/// enough to run past what a model writes in one answer
+const UNTANGLE_GROUP_ROOM: usize = 24_000;
+const UNTANGLE_GROUP_MOST: usize = 6;
+
+/// How many questions about conflicts are asked at once: each is a whole AI
+/// CLI started, and a machine with twenty of them starting is not one a
+/// person can go on working on
+const UNTANGLE_AT_ONCE: usize = 3;
+
+/// How many conflicted files are read, answered and written back before the
+/// next are read: as many as are asked about at once
+pub const UNTANGLE_BATCH: usize = UNTANGLE_AT_ONCE * UNTANGLE_GROUP_MOST;
+
+/// What an answer for a file comes to, checked: something there, with no
+/// marker left in it, ending the way the file ended
+fn untangled(name: &str, body: &str, text: &str) -> Result<String> {
     if text.trim().is_empty() {
         anyhow::bail!("{}", crate::i18n::tp("err.git.no_answer", &[("file", name)]));
     }
     if text.contains("<<<<<<<") || text.contains(">>>>>>>") {
         anyhow::bail!("{}", crate::i18n::tp("err.git.markers_left", &[("file", name)]));
     }
-    Ok(text)
+    Ok(ending_as(body, text))
+}
+
+/// The answer, ending the way the file did: with its last line break, or
+/// without one. A model gives its answer back trimmed, and a file that loses
+/// its last line break is a change in every diff of it
+fn ending_as(body: &str, text: &str) -> String {
+    let bare = text.trim_end_matches(['\r', '\n']);
+    let end = if body.ends_with("\r\n") {
+        "\r\n"
+    } else if body.ends_with('\n') {
+        "\n"
+    } else {
+        ""
+    };
+    format!("{bare}{end}")
+}
+
+/// What a model said, taken out of the fence it may have wrapped it in. A
+/// file that has fences of its own (a README with code in it) loses only a
+/// fence around the whole answer: taking the first fenced block of it as the
+/// answer would write back one code sample in place of the file
+fn unwrap_answer(body: &str, said: &str) -> String {
+    if !body.contains("```") {
+        return strip_fence(said);
+    }
+    let text = said.trim();
+    let wrapped = text.starts_with("```") && text.ends_with("```") && !body.trim_start().starts_with("```");
+    match (wrapped, text.find('\n'), text.rfind("```")) {
+        (true, Some(nl), Some(end)) if end > nl => text[nl + 1..end].trim_end_matches(['\r', '\n']).to_string(),
+        _ => text.to_string(),
+    }
+}
+
+/// Have the assistant AI untangle several conflicted files.
+///
+/// The small ones are handed over a few in a question -- one AI started for
+/// a few files, not one for each -- and a few questions are asked at once.
+/// A file the answer left out, or answered with a marker still in it, is
+/// asked about again on its own, so what one shared answer got wrong costs
+/// that file a question of its own and nothing else. Each file's answer is
+/// in the place the file was given
+pub fn resolve_conflicts(files: &[(String, String)], engine: Option<&str>) -> Vec<Result<String>> {
+    untangle_all(files, &|p| ask_local_ai(p, engine))
+}
+
+fn untangle_all(files: &[(String, String)], ask: Asker) -> Vec<Result<String>> {
+    let mut out: Vec<Option<Result<String>>> = files.iter().map(|_| None).collect();
+    // What cannot be asked about at all is said now; what can is put in groups
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    let mut room = 0usize;
+    for (i, (name, body)) in files.iter().enumerate() {
+        if !body.contains("<<<<<<<") {
+            out[i] = Some(Err(anyhow::anyhow!(crate::i18n::tp("err.git.no_markers", &[("file", name)]))));
+            continue;
+        }
+        let size = body.chars().count();
+        if size > UNTANGLE_ROOM {
+            out[i] = Some(Err(anyhow::anyhow!(crate::i18n::tp("err.git.too_big", &[("file", name)]))));
+            continue;
+        }
+        let fits = groups.last().is_some_and(|g| g.len() < UNTANGLE_GROUP_MOST && room + size <= UNTANGLE_GROUP_ROOM);
+        if !fits {
+            groups.push(Vec::new());
+            room = 0;
+        }
+        room += size;
+        groups.last_mut().expect("a group was just made").push(i);
+    }
+    // A question for each group, a few at once; then each file a group's
+    // answer did not settle, on its own, a few at once
+    let asked = at_once(&groups, UNTANGLE_AT_ONCE, |g| match g.as_slice() {
+        [one] => vec![(*one, Some(untangle_one(&files[*one].0, &files[*one].1, ask)))],
+        _ => {
+            let some: Vec<(&str, &str)> = g.iter().map(|&i| (files[i].0.as_str(), files[i].1.as_str())).collect();
+            g.iter().copied().zip(untangle_together(&some, ask)).map(|(i, r)| (i, r.map(Ok))).collect()
+        }
+    });
+    let mut again: Vec<usize> = Vec::new();
+    for (i, r) in asked.into_iter().flatten() {
+        match r {
+            Some(r) => out[i] = Some(r),
+            None => again.push(i),
+        }
+    }
+    for (i, r) in at_once(&again, UNTANGLE_AT_ONCE, |&i| (i, untangle_one(&files[i].0, &files[i].1, ask))) {
+        out[i] = Some(r);
+    }
+    out.into_iter()
+        .zip(files)
+        .map(|(r, (name, _))| r.unwrap_or_else(|| Err(anyhow::anyhow!(crate::i18n::tp("err.git.no_answer", &[("file", name)])))))
+        .collect()
+}
+
+/// `work` done for each of `items`, `most` at a time, the answers in the
+/// order the items were given. One whose work panicked is left out
+fn at_once<T: Sync, R: Send>(items: &[T], most: usize, work: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    let mut out = Vec::with_capacity(items.len());
+    for some in items.chunks(most.max(1)) {
+        std::thread::scope(|s| {
+            let going: Vec<_> = some.iter().map(|it| s.spawn(|| work(it))).collect();
+            out.extend(going.into_iter().filter_map(|g| g.join().ok()));
+        });
+    }
+    out
+}
+
+/// Several conflicted files in one question. Each file's answer, checked
+/// the way one file's is, or `None` for one the answer did not settle
+fn untangle_together(files: &[(&str, &str)], ask: Asker) -> Vec<Option<String>> {
+    let seal = seal_word();
+    let mut given = String::new();
+    for (n, (name, body)) in files.iter().enumerate() {
+        given.push_str(&format!("@@@ {seal} FILE {}: {name} @@@\n{}\n@@@ {seal} END {} @@@\n\n", n + 1, body.trim_end_matches(['\r', '\n']), n + 1));
+    }
+    let prompt = crate::i18n::fill(crate::asking::UNTANGLE_MANY, &[("seal", &seal), ("files", &given)]);
+    let said = match ask(&prompt) {
+        Ok(said) => said,
+        Err(e) => {
+            crate::append_hook_log(&format!("untangling {} files together failed, asking for each alone: {e:#}", files.len()));
+            return files.iter().map(|_| None).collect();
+        }
+    };
+    let names: Vec<&str> = files.iter().map(|(n, _)| *n).collect();
+    let parts = framed(&said, &seal, &names);
+    files
+        .iter()
+        .zip(parts)
+        .map(|((name, body), part)| part.and_then(|t| untangled(name, body, &unwrap_answer(body, &t)).ok()))
+        .collect()
+}
+
+/// A word made for one question, to mark where its files begin and end
+fn seal_word() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static ASKED: AtomicU64 = AtomicU64::new(0);
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0);
+    format!("{:x}{:x}", now ^ 0x5d1c_a3b7_e924_0f61, ASKED.fetch_add(1, Ordering::Relaxed))
+}
+
+/// The files an answer gives back between its lines, by number. One said
+/// twice, not closed, or said back under another file's path is not taken:
+/// there is no telling which is meant, and an answer in the wrong file is
+/// worse than a question asked again
+fn framed(said: &str, seal: &str, names: &[&str]) -> Vec<Option<String>> {
+    let count = names.len();
+    let mut out: Vec<Option<String>> = vec![None; count];
+    let mut seen = vec![0u8; count];
+    let opens = format!("@@@ {seal} FILE ");
+    let mut open: Option<(usize, Vec<&str>)> = None;
+    for line in said.split('\n') {
+        let bare = line.trim();
+        if let Some(rest) = bare.strip_prefix(&opens).and_then(|r| r.strip_suffix("@@@")) {
+            // "FILE 2 @@@", or "FILE 2: path @@@" said back the way it was given
+            let (num, path) = match rest.split_once(':') {
+                Some((num, path)) => (num, Some(path.trim())),
+                None => (rest, None),
+            };
+            let n = num.trim().parse::<usize>().ok().filter(|n| (1..=count).contains(n)).map(|n| n - 1);
+            open = match (n, path) {
+                (Some(n), Some(path)) if path != names[n] => {
+                    seen[n] = u8::MAX;
+                    None
+                }
+                (Some(n), _) => Some((n, Vec::new())),
+                (None, _) => None,
+            };
+            continue;
+        }
+        if let Some((n, lines)) = open.as_mut() {
+            if bare == format!("@@@ {seal} END {} @@@", *n + 1) {
+                seen[*n] = seen[*n].saturating_add(1);
+                out[*n] = Some(lines.join("\n"));
+                open = None;
+            } else {
+                lines.push(line);
+            }
+        }
+    }
+    out.into_iter().zip(seen).map(|(t, s)| t.filter(|_| s == 1)).collect()
 }
 
 /// What a model says, minus the way models like to wrap it. A fenced block is
@@ -21310,6 +21517,144 @@ mod tests {
             "a folder with tabs in it goes without a word");
         assert!(PAGE.contains(r#"if ((desk.folders || []).length <= 1) { toast(T["settings.group.last"], true); return false; }"#),
             "the last folder of a desk can be taken away");
+    }
+
+    /// A conflict in a file named `name`, one side writing `ours` and the
+    /// other `theirs`
+    fn tangle(name: &str, ours: &str, theirs: &str) -> (String, String) {
+        (name.to_string(), format!("top\n<<<<<<< HEAD\n{ours}\n=======\n{theirs}\n>>>>>>> topic\nend\n"))
+    }
+
+    /// Answers a question the way a model would: every file it was handed,
+    /// both sides kept, between the lines it was asked for -- unless the
+    /// file's name is one it is told to get wrong
+    fn answering<'a>(wrong: &'static [&'static str], asked: &'a std::sync::Mutex<Vec<usize>>) -> impl Fn(&str) -> Result<String> + Sync + 'a {
+        move |prompt: &str| {
+            let merged = |body: &str| body.replace("<<<<<<< HEAD\n", "").replace("=======\n", "").replace(">>>>>>> topic\n", "");
+            let Some(seal) = prompt.split("@@@ ").nth(1).and_then(|r| r.split(' ').next()).filter(|_| prompt.contains(" FILE 1: ")) else {
+                // One file alone
+                asked.lock().unwrap().push(1);
+                let body = prompt.split("\n\n").skip_while(|p| !p.starts_with("File: ")).skip(1).collect::<Vec<_>>().join("\n\n");
+                return Ok(merged(&body));
+            };
+            let mut out = String::new();
+            let mut n = 0;
+            for part in prompt.split(&format!("@@@ {seal} FILE ")).skip(3) {
+                let (head, rest) = part.split_once(" @@@\n").unwrap();
+                let (num, name) = head.split_once(": ").unwrap();
+                let body = rest.split(&format!("\n@@@ {seal} END ")).next().unwrap();
+                n += 1;
+                let said = if wrong.contains(&name) { body.to_string() } else { merged(&format!("{body}\n")) };
+                out.push_str(&format!("@@@ {seal} FILE {num} @@@\n{said}\n@@@ {seal} END {num} @@@\n"));
+            }
+            asked.lock().unwrap().push(n);
+            Ok(out)
+        }
+    }
+
+    /// Six ordinary conflicts, each side adding something of its own, asked
+    /// of the assistant AI installed on this machine: once together, and once
+    /// one file to a question the way it was asked before. Prints how long
+    /// each took; fails if a file comes back without what either side wrote
+    #[test]
+    #[ignore = "asks the assistant AI installed on this machine"]
+    fn a_real_ai_untangles_several_files_together() {
+        let side = |ours: &str, theirs: &str| format!("<<<<<<< HEAD\n{ours}\n=======\n{theirs}\n>>>>>>> topic\n");
+        let files: Vec<(String, String)> = vec![
+            ("src/math.rs".into(), format!("pub fn add(a: i32, b: i32) -> i32 {{\n    a + b\n}}\n\n{}", side("pub fn double(x: i32) -> i32 {\n    x * 2\n}", "pub fn negate(x: i32) -> i32 {\n    -x\n}"))),
+            ("src/main.rs".into(), format!("mod math;\n\nfn main() {{\n{}}}\n", side("    println!(\"{{}}\", math::double(21));", "    println!(\"{{}}\", math::negate(7));"))),
+            ("README.md".into(), format!("# Calc\n\n## Functions\n\n{}\n## Build\n\n```sh\ncargo build\n```\n", side("- `double` doubles a number", "- `negate` flips the sign of a number"))),
+            ("Cargo.toml".into(), format!("[package]\nname = \"calc\"\nversion = \"0.1.0\"\n\n[dependencies]\n{}", side("serde = \"1\"", "anyhow = \"1\""))),
+            ("web/app.js".into(), format!("export function start() {{\n{}}}\n", side("  console.log('ready');\n  loadTheme();", "  console.log('ready');\n  connectSocket();"))),
+            ("CHANGELOG.md".into(), format!("# Changelog\n\n## Unreleased\n\n{}", side("- Added double.", "- Added negate."))),
+        ];
+        let wanted: [&[&str]; 6] = [
+            &["fn double", "fn negate", "fn add"],
+            &["double(21)", "negate(7)"],
+            &["doubles", "flips the sign", "cargo build"],
+            &["serde", "anyhow"],
+            &["loadTheme", "connectSocket"],
+            &["Added double", "Added negate"],
+        ];
+        let check = |how: &str, said: &[Result<String>]| {
+            for ((name, _), (r, want)) in files.iter().zip(said.iter().zip(wanted)) {
+                let text = r.as_ref().unwrap_or_else(|e| panic!("{how}: {name}: {e}"));
+                for w in want {
+                    assert!(text.contains(w), "{how}: {name} lost {w:?}:\n{text}");
+                }
+                assert!(text.ends_with('\n'), "{how}: {name} lost its last line break");
+            }
+        };
+        let t = std::time::Instant::now();
+        let together = resolve_conflicts(&files, None);
+        let took_together = t.elapsed();
+        check("together", &together);
+        let t = std::time::Instant::now();
+        let alone: Vec<Result<String>> = files.iter().map(|(n, b)| resolve_conflict(n, b, None)).collect();
+        let took_alone = t.elapsed();
+        check("alone", &alone);
+        eprintln!("UNTANGLE together: {took_together:?}  one at a time: {took_alone:?}");
+        for ((name, _), r) in files.iter().zip(&together) {
+            eprintln!("----- {name}\n{}", r.as_ref().unwrap());
+        }
+    }
+
+    #[test]
+    fn conflicts_are_handed_over_a_few_to_a_question_and_a_wrong_one_is_asked_again_alone() {
+        let files: Vec<(String, String)> = (1..=8).map(|n| tangle(&format!("src/f{n}.rs"), &format!("ours {n}"), &format!("theirs {n}"))).collect();
+        let asked = std::sync::Mutex::new(Vec::new());
+        let said = untangle_all(&files, &answering(&["src/f3.rs"], &asked));
+        assert_eq!(said.len(), 8);
+        for (n, r) in said.iter().enumerate() {
+            let text = r.as_ref().unwrap_or_else(|e| panic!("f{}: {e}", n + 1));
+            assert_eq!(text, &format!("top\nours {0}\ntheirs {0}\nend\n", n + 1), "each answer in its own file's place, ending as it did");
+        }
+        let mut asked = asked.into_inner().unwrap();
+        asked.sort();
+        // Six in one question, two in another, and the one answered with its
+        // markers still in it asked again on its own
+        assert_eq!(asked, vec![1, 2, 6]);
+    }
+
+    #[test]
+    fn what_cannot_be_handed_over_is_said_in_its_place_without_asking() {
+        let big = ("big.txt".to_string(), format!("<<<<<<< HEAD\n{}\n=======\nb\n>>>>>>> topic\n", "a".repeat(UNTANGLE_ROOM)));
+        let files = vec![("plain.txt".to_string(), "nothing tangled\n".to_string()), big, tangle("one.rs", "x", "y")];
+        let asked = std::sync::Mutex::new(Vec::new());
+        let said = untangle_all(&files, &answering(&[], &asked));
+        assert!(said[0].is_err() && said[1].is_err());
+        assert_eq!(said[2].as_deref().unwrap(), "top\nx\ny\nend\n");
+        assert_eq!(asked.into_inner().unwrap(), vec![1], "one file left, asked on its own");
+    }
+
+    #[test]
+    fn an_answer_is_taken_only_between_its_own_lines_once() {
+        let seal = "s1";
+        let said = "chatter first\n@@@ s1 FILE 2 @@@\nb\n@@@ s1 END 2 @@@\n@@@ s1 FILE 1: a.rs @@@\na1\na2\n@@@ s1 END 1 @@@\n@@@ s1 FILE 3 @@@\nc\n@@@ s1 END 3 @@@\n@@@ s1 FILE 3 @@@\nc again\n@@@ s1 END 3 @@@\n@@@ s1 FILE 4 @@@\nnot closed\n@@@ other FILE 5 @@@\n";
+        let got = framed(said, seal, &["a.rs", "b.rs", "c.rs", "d.rs", "e.rs"]);
+        assert_eq!(got[0].as_deref(), Some("a1\na2"), "said back with its path, still taken");
+        assert_eq!(got[1].as_deref(), Some("b"), "in another order, still in its place");
+        assert_eq!(got[2], None, "said twice: there is no telling which is meant");
+        assert_eq!(got[3], None, "never closed");
+        assert_eq!(got[4], None, "another question's lines are not this one's");
+        // Numbered for one file and named for another: neither is taken
+        let crossed = "@@@ s1 FILE 1: b.rs @@@\nfor b\n@@@ s1 END 1 @@@\n@@@ s1 FILE 2: a.rs @@@\nfor a\n@@@ s1 END 2 @@@\n";
+        assert_eq!(framed(crossed, seal, &["a.rs", "b.rs"]), vec![None, None]);
+    }
+
+    #[test]
+    fn an_answer_ends_the_way_its_file_did_and_keeps_the_files_own_fences() {
+        assert_eq!(ending_as("a\r\nb\r\n", "a\r\nb"), "a\r\nb\r\n");
+        assert_eq!(ending_as("a\nb\n", "a\nb\n\n"), "a\nb\n");
+        assert_eq!(ending_as("a\nb", "a\nb\n"), "a\nb");
+        // A README with code in it is not cut down to its first code sample
+        let readme = "# T\n<<<<<<< HEAD\nx\n=======\ny\n>>>>>>> t\n```sh\nmake\n```\nafter\n";
+        let answer = "# T\nx y\n```sh\nmake\n```\nafter";
+        assert_eq!(unwrap_answer(readme, answer), answer);
+        // ...but a fence around the whole answer is still taken off
+        assert_eq!(unwrap_answer(readme, &format!("```markdown\n{answer}\n```")), answer);
+        // A file with no fences of its own is taken out of the model's fence
+        assert_eq!(unwrap_answer("a\n", "Here:\n```\nfine\n```"), "fine");
     }
 
     #[test]

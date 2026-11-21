@@ -1792,6 +1792,63 @@ fn tree_file_write(dir: &std::path::Path, rel: &str, at: Option<&crate::elsewher
         }
     }
 }
+/// Several files of a working tree, as text, each in its place. On another
+/// machine they come over one connection together, not one each
+fn tree_files_read(dir: &std::path::Path, rels: &[String], at: Option<&crate::elsewhere::Elsewhere>) -> Vec<anyhow::Result<String>> {
+    let Some(at) = at else { return rels.iter().map(|r| tree_file_read_up_to(dir, r, None)).collect() };
+    let root = crate::desk::far_path(dir).trim_end_matches('/').to_string();
+    let mut out: Vec<anyhow::Result<String>> = Vec::with_capacity(rels.len());
+    for some in rels.chunks(FAR_READS_TO_A_JOB) {
+        let paths: Vec<String> = some.iter().map(|r| format!("{root}/{r}")).collect();
+        match crate::elsewhere::files(at, crate::ssh::FileJob::ReadAll { paths, most: TREE_FILE_MOST }, TREE_FILE_WAIT_MS) {
+            Ok(crate::ssh::FileAnswer::Several(read)) if read.len() == some.len() => out.extend(some.iter().zip(read).map(|(r, b)| match b {
+                Some(b) => Ok(String::from_utf8_lossy(&b).into_owned()),
+                // Not there, or larger than anything that would be handed
+                // over: looked at on its own, so what it says is why
+                None => tree_file_read_up_to(dir, r, Some(at)),
+            })),
+            // One file that will not read fails the question for all of
+            // them: each is then read on its own, so the rest still are
+            _ => out.extend(some.iter().map(|r| tree_file_read_up_to(dir, r, Some(at)))),
+        }
+    }
+    out
+}
+/// One file of a tree, as text, unless it is larger than anything that
+/// would be handed over: sized first, so one that is too big is said to be
+/// so without being read whole
+fn tree_file_read_up_to(dir: &std::path::Path, rel: &str, at: Option<&crate::elsewhere::Elsewhere>) -> anyhow::Result<String> {
+    let size = match at {
+        None => std::fs::metadata(dir.join(rel))?.len(),
+        Some(at) => {
+            let path = format!("{}/{rel}", crate::desk::far_path(dir).trim_end_matches('/'));
+            match crate::elsewhere::files(at, crate::ssh::FileJob::Stat { path }, TREE_FILE_WAIT_MS)? {
+                crate::ssh::FileAnswer::One(e) if !e.dir => e.size,
+                _ => anyhow::bail!(crate::i18n::t("err.files.gone")),
+            }
+        }
+    };
+    if size > TREE_FILE_MOST {
+        anyhow::bail!(crate::i18n::tp("err.git.too_big", &[("file", rel)]));
+    }
+    tree_file_read(dir, rel, at)
+}
+/// Several files written back where the tree is, each answered in its
+/// place. On another machine a few go at once
+fn tree_files_write(dir: &std::path::Path, files: &[(String, String)], at: Option<&crate::elsewhere::Elsewhere>) -> Vec<anyhow::Result<()>> {
+    let mut out = Vec::with_capacity(files.len());
+    for some in files.chunks(crate::ssh::READS_AT_ONCE) {
+        std::thread::scope(|s| {
+            let going: Vec<_> = some.iter().map(|(f, text)| s.spawn(move || tree_file_write(dir, f, at, text))).collect();
+            out.extend(going.into_iter().map(|g| g.join().unwrap_or_else(|_| Err(anyhow::anyhow!(crate::i18n::t("err.files.far_odd"))))));
+        });
+    }
+    out
+}
+/// The most of one file of a tree read for handing to the AI: four bytes
+/// for each character it may hand over, so nothing it would take is left
+/// unread
+const TREE_FILE_MOST: u64 = 4 * 60_000;
 /// How long a file of a tree on another machine may take to come or go
 const TREE_FILE_WAIT_MS: u64 = 60_000;
 fn tab_place(t: &Tab) -> hooks::TabPlace {
@@ -9821,25 +9878,43 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 "catch_up" => crate::git::catch_up(&dir, &base, &who)
                                     .map(|n| serde_json::json!({"taken": n, "base": base}).to_string()),
                                 #[allow(unreachable_patterns)]
-                                // Every file git left marked, one at a time.
-                                // Nothing is staged and nothing is committed:
-                                // what comes back is written into the tree, and
-                                // the person reads it as a diff like any other
+                                // Every file git left marked: read together,
+                                // handed over a few to a question, written
+                                // back together. Nothing is staged and
+                                // nothing is committed: what comes back is
+                                // written into the tree, and the person
+                                // reads it as a diff like any other
                                 "resolve" => crate::git::tangled(&dir).and_then(|files| {
                                     let mut done: Vec<String> = Vec::new();
                                     let mut failed: Vec<String> = Vec::new();
-                                    for f in &files {
-                                        // The file where the tree is: read
-                                        // and written back over there when
-                                        // the folder is on another machine
-                                        let said = tree_file_read(&dir, f, at.as_ref())
-                                            .and_then(|body| {
-                                                crate::webui::resolve_conflict(f, &body, ai.as_deref())
-                                            })
-                                            .and_then(|text| tree_file_write(&dir, f, at.as_ref(), &text));
-                                        match said {
-                                            Ok(()) => done.push(f.clone()),
-                                            Err(e) => failed.push(format!("{f}: {e}")),
+                                    // As many at a time as are asked about
+                                    // at once, read, answered and written
+                                    // back before the next: what is held is
+                                    // that many files, not every conflict
+                                    for some in files.chunks(crate::webui::UNTANGLE_BATCH) {
+                                        // The files where the tree is: read and
+                                        // written back over there when the
+                                        // folder is on another machine
+                                        let mut given: Vec<(String, String)> = Vec::new();
+                                        for (f, body) in some.iter().zip(tree_files_read(&dir, some, at.as_ref())) {
+                                            match body {
+                                                Ok(body) => given.push((f.clone(), body)),
+                                                Err(e) => failed.push(format!("{f}: {e}")),
+                                            }
+                                        }
+                                        let answers = crate::webui::resolve_conflicts(&given, ai.as_deref());
+                                        let mut write: Vec<(String, String)> = Vec::new();
+                                        for ((f, _), said) in given.into_iter().zip(answers) {
+                                            match said {
+                                                Ok(text) => write.push((f, text)),
+                                                Err(e) => failed.push(format!("{f}: {e}")),
+                                            }
+                                        }
+                                        for ((f, _), wrote) in write.iter().zip(tree_files_write(&dir, &write, at.as_ref())) {
+                                            match wrote {
+                                                Ok(()) => done.push(f.clone()),
+                                                Err(e) => failed.push(format!("{f}: {e}")),
+                                            }
                                         }
                                     }
                                     if done.is_empty() && !failed.is_empty() {
@@ -17655,6 +17730,20 @@ impl crate::disk::Disk for FolderHere {
             Ok(b) => Ok(Some(b)),
         }
     }
+    fn read_all(&self, paths: &[String], most: usize) -> std::result::Result<Vec<Option<Vec<u8>>>, String> {
+        paths
+            .iter()
+            .map(|p| {
+                // Sized before it is read: one too big is left unread, not
+                // read whole to be thrown away
+                let at = self.at(p)?;
+                match std::fs::metadata(&at) {
+                    Ok(m) if m.is_file() && m.len() <= most as u64 => self.read(p).map(|b| b.filter(|b| b.len() <= most)),
+                    _ => Ok(None),
+                }
+            })
+            .collect()
+    }
     fn write(&self, path: &str, bytes: &[u8], fresh: bool) -> std::result::Result<(), String> {
         use std::io::Write as _;
         let at = self.at(path)?;
@@ -17675,6 +17764,9 @@ impl crate::disk::Disk for FolderHere {
         std::fs::create_dir_all(self.at(dir)?).map_err(|e| e.to_string())
     }
 }
+
+/// How many files one question to another machine reads at most
+const FAR_READS_TO_A_JOB: usize = 200;
 
 /// A working folder on another machine (`crate::disk`): each step a file job
 /// over the connection that machine already has
@@ -17726,6 +17818,18 @@ impl crate::disk::Disk for FolderThere {
                 _ => Ok(None),
             },
         }
+    }
+    fn read_all(&self, paths: &[String], most: usize) -> std::result::Result<Vec<Option<Vec<u8>>>, String> {
+        let mut out = Vec::with_capacity(paths.len());
+        // A few hundred to a question: each question has its own time to
+        // answer in, and a folder of thousands is not asked to fit in one
+        for some in paths.chunks(FAR_READS_TO_A_JOB) {
+            match self.run(ssh::FileJob::ReadAll { paths: some.to_vec(), most: most as u64 })? {
+                ssh::FileAnswer::Several(read) if read.len() == some.len() => out.extend(read),
+                _ => return Err(i18n::t("err.files.far_odd")),
+            }
+        }
+        Ok(out)
     }
     fn write(&self, path: &str, bytes: &[u8], fresh: bool) -> std::result::Result<(), String> {
         if fresh && self.there(path).is_some() {
@@ -26923,5 +27027,25 @@ mod git_line_tests {
         assert_eq!(got.len(), 1);
         assert_eq!(got[0]["ok"], false);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod tree_file_tests {
+    use super::*;
+
+    #[test]
+    fn conflicted_files_are_sized_before_they_are_read_and_each_says_its_own_trouble() {
+        let dir = crate::test_temp("tree-files");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("small.rs"), "<<<<<<< a\nx\n=======\ny\n>>>>>>> b\n").unwrap();
+        std::fs::write(dir.join("huge.json"), vec![b'a'; TREE_FILE_MOST as usize + 1]).unwrap();
+        let rels: Vec<String> = ["small.rs", "huge.json", "gone.rs"].map(String::from).to_vec();
+        let read = tree_files_read(&dir, &rels, None);
+        assert_eq!(read.len(), 3, "an answer in each file's place");
+        assert!(read[0].as_ref().unwrap().contains("======="));
+        let big = read[1].as_ref().unwrap_err().to_string();
+        assert_eq!(big, crate::i18n::tp("err.git.too_big", &[("file", "huge.json")]), "too big is said, not read whole");
+        assert!(read[2].is_err(), "one not there is an error in its own place");
     }
 }

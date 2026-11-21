@@ -42,7 +42,7 @@ pub fn grant_of(job: &FileJob) -> &'static str {
         FileJob::List { .. } => "sftp_ls",
         FileJob::Stat { .. } => "sftp_stat",
         FileJob::Get { .. } => "sftp_get",
-        FileJob::Read { .. } => "sftp_read",
+        FileJob::Read { .. } | FileJob::ReadAll { .. } => "sftp_read",
         FileJob::Put { .. } => "sftp_put",
         // The same act as sending a file there: what arrives is the contents
         FileJob::Write { .. } => "sftp_put",
@@ -104,6 +104,10 @@ pub fn inside(job: FileJob, fences: &Fences) -> Result<FileJob> {
         FileJob::List { path } => FileJob::List { path: there(&path)? },
         FileJob::Stat { path } => FileJob::Stat { path: there(&path)? },
         FileJob::Read { path } => FileJob::Read { path: there(&path)? },
+        FileJob::ReadAll { paths, most } => FileJob::ReadAll {
+            paths: paths.iter().map(|p| there(p)).collect::<Result<_>>()?,
+            most,
+        },
         FileJob::MakeDir { path } => FileJob::MakeDir { path: there(&path)? },
         FileJob::Remove { path } => FileJob::Remove { path: there(&path)? },
         FileJob::Rename { from, to } => {
@@ -180,6 +184,21 @@ mod tests {
             grant_of(&FileJob::Put { from: "a".into(), to: "b".into(), overwrite: false }),
             "sftp_put"
         );
+    }
+
+    #[test]
+    fn reading_several_is_fenced_path_by_path_under_the_read_permission() {
+        let job = |paths: &[&str]| FileJob::ReadAll { paths: paths.iter().map(|p| p.to_string()).collect(), most: 9 };
+        assert_eq!(grant_of(&job(&["a"])), "sftp_read");
+        match inside(job(&["a.md", "docs/b.md"]), &fences("/srv/app")).unwrap() {
+            FileJob::ReadAll { paths, most } => {
+                assert_eq!(paths, vec!["/srv/app/a.md", "/srv/app/docs/b.md"]);
+                assert_eq!(most, 9);
+            }
+            other => panic!("came back as {other:?}"),
+        }
+        // One that climbs out refuses the lot: none of it is read
+        assert!(inside(job(&["a.md", "../../etc/passwd"]), &fences("/srv/app")).is_err());
     }
 
     #[test]

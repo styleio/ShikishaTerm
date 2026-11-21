@@ -2522,6 +2522,37 @@ pub fn files(
             Ok(FileAnswer::Nothing)
         }
         FileJob::Read { path } => Ok(FileAnswer::Bytes(download(sandbox, &path, wait_ms)?)),
+        // Each file its own request here, so a few are asked at once: a
+        // folder of a hundred records is then a few waits rather than a
+        // hundred and one
+        FileJob::ReadAll { paths, most } => {
+            let mut out: Vec<Option<Vec<u8>>> = Vec::with_capacity(paths.len());
+            for some in paths.chunks(crate::ssh::READS_AT_ONCE) {
+                let read: Vec<Result<Option<Vec<u8>>>> = std::thread::scope(|s| {
+                    let going: Vec<_> = some
+                        .iter()
+                        .map(|path| {
+                            s.spawn(move || {
+                                // Not there is said as not there, the way a
+                                // single read finds it
+                                let Ok(FileAnswer::One(e)) = files(sandbox, FileJob::Stat { path: path.clone() }, wait_ms) else {
+                                    return Ok(None);
+                                };
+                                if e.dir || e.size > most {
+                                    return Ok(None);
+                                }
+                                download(sandbox, path, wait_ms).map(|b| (b.len() as u64 <= most).then_some(b))
+                            })
+                        })
+                        .collect();
+                    going.into_iter().map(|g| g.join().unwrap_or_else(|_| Err(anyhow!("read")))).collect()
+                });
+                for r in read {
+                    out.push(r?);
+                }
+            }
+            Ok(FileAnswer::Several(out))
+        }
         FileJob::Get { from, to, overwrite } => {
             if !overwrite && to.exists() {
                 bail!(crate::i18n::tp(

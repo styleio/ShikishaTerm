@@ -2025,6 +2025,7 @@
   "files.copy.suffix": " - Copy",
   "err.files.bad_name": "That name cannot be used. Type one name, without a slash (/ or \\).",
   "err.files.exists": "\"{name}\" is already in this folder. Choose another name.",
+  "err.files.far_odd": "That machine did not answer with the files asked for. Try again.",
   "err.files.gone": "That file is no longer there.",
   "err.files.not_binned": "Could not move it to the recycle bin ({code}). Close any program that has it open, and try again.",
   "settings.sec.resume": "Carrying conversations",

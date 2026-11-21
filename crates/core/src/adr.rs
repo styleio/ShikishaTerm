@@ -60,6 +60,9 @@ const SEARCH_ROOM: usize = 12_000;
 /// the ceiling is for a folder that turned out to be something else
 const MOST: usize = 2000;
 
+/// How many records are asked for in one question
+const RECORDS_TO_A_QUESTION: usize = 32;
+
 /// Room for the words of a file name taken from a title, in characters
 const SLUG_ROOM: usize = 60;
 
@@ -730,8 +733,15 @@ fn clean_file(name: &str) -> Option<String> {
 /// The template the folder keeps, and what it was read from; MADR when it
 /// keeps none
 fn fields_of(disk: &dyn Disk, dir: &str) -> (Vec<Field>, Option<String>) {
-    for name in TEMPLATES {
-        if let Ok(Some(bytes)) = disk.read(&join(dir, name))
+    // Both asked at once: on a far machine that is one wait, not one each.
+    // One that will not read fails the question for both, and then each is
+    // read on its own, so the one that reads is still the template
+    let paths: Vec<String> = TEMPLATES.iter().map(|n| join(dir, n)).collect();
+    let read = disk
+        .read_all(&paths, RECORD_LIMIT)
+        .unwrap_or_else(|_| paths.iter().map(|p| disk.read(p).ok().flatten().filter(|b| b.len() <= RECORD_LIMIT)).collect());
+    for (name, bytes) in TEMPLATES.iter().zip(read) {
+        if let Some(bytes) = bytes
             && let Some(fields) = template_fields(&crate::charset::read(&bytes).text)
         {
             return (fields, Some((*name).to_string()));
@@ -749,13 +759,20 @@ pub fn records(disk: &dyn Disk, dir: &str, fields: &[Field]) -> Result<Option<Ve
     });
     names.sort_by(|a, b| number_of(a).cmp(&number_of(b)).then_with(|| a.cmp(b)));
     names.truncate(MOST);
+    // A few dozen to a question: on a far machine, a folder of a hundred
+    // records was two waits for each. Each few is read into records before
+    // the next is asked for, so what is held at once is a few dozen files'
+    // worth, not every record of the folder at its largest
     let mut out = Vec::new();
-    for name in names {
-        let Some(bytes) = disk.read(&join(dir, &name))? else { continue };
-        if bytes.len() > RECORD_LIMIT || bytes.contains(&0) {
-            continue;
+    for some in names.chunks(RECORDS_TO_A_QUESTION) {
+        let paths: Vec<String> = some.iter().map(|n| join(dir, n)).collect();
+        for (name, bytes) in some.iter().zip(disk.read_all(&paths, RECORD_LIMIT)?) {
+            let Some(bytes) = bytes else { continue };
+            if bytes.contains(&0) {
+                continue;
+            }
+            out.push(parse(name, &crate::charset::read(&bytes).text, fields));
         }
-        out.push(parse(&name, &crate::charset::read(&bytes).text, fields));
     }
     // "Superseded by ADR-0005" names a record by number: said as its file,
     // so the list can link the two
@@ -1024,7 +1041,108 @@ mod tests {
         }
     }
 
-    const MADR_RECORD: &str = "---\nstatus: accepted\ndate: 2026-01-02\ndecision-makers: Aiko, Ben\n---\n\n# Use PostgreSQL\n\n## Context and Problem Statement\n\nWe need a database.\n\n## Considered Options\n\n* PostgreSQL\n* SQLite\n\n## Decision Outcome\n\nChosen option: \"PostgreSQL\".\n\n### Consequences\n\n* Good, because it scales.\n\n## Pros and Cons of the Options\n\n### PostgreSQL\n\n* Good, because mature.\n";
+    /// A folder on a far machine: the same files, with every question to it
+    /// counted, the way each one is a wait there
+    #[derive(Default)]
+    struct Far {
+        mem: Mem,
+        asks: std::cell::Cell<usize>,
+    }
+
+    impl Disk for Far {
+        fn files(&self, dir: &str) -> Result<Option<Vec<String>>, String> {
+            self.asks.set(self.asks.get() + 1);
+            self.mem.files(dir)
+        }
+        fn folders(&self, dir: &str) -> Result<Vec<String>, String> {
+            self.asks.set(self.asks.get() + 1);
+            self.mem.folders(dir)
+        }
+        fn read(&self, path: &str) -> Result<Option<Vec<u8>>, String> {
+            self.asks.set(self.asks.get() + 1);
+            self.mem.read(path)
+        }
+        fn read_all(&self, paths: &[String], most: usize) -> Result<Vec<Option<Vec<u8>>>, String> {
+            self.asks.set(self.asks.get() + 1);
+            self.mem.read_all(paths, most)
+        }
+        fn write(&self, path: &str, bytes: &[u8], fresh: bool) -> Result<(), String> {
+            self.mem.write(path, bytes, fresh)
+        }
+        fn make_dirs(&self, dir: &str) -> Result<(), String> {
+            self.mem.make_dirs(dir)
+        }
+    }
+
+    #[test]
+    fn a_far_folder_of_records_is_listed_in_a_few_questions_not_one_for_each() {
+        let far = Far::default();
+        for n in 1..=120 {
+            far.mem.put(&format!("docs/decisions/{n:04}-pick-{n}.md"), &format!("---\nstatus: accepted\n---\n# Pick {n}\n"));
+        }
+        // One too big to be a record, and one that is not text: both left out
+        far.mem.0.borrow_mut().insert("docs/decisions/0500-huge.md".into(), vec![b'a'; RECORD_LIMIT + 1]);
+        far.mem.0.borrow_mut().insert("docs/decisions/0501-binary.md".into(), b"# x\0y".to_vec());
+        let said = answer(&far, "list", &json!({"dir": "docs/decisions"}));
+        assert_eq!(said["ok"], true, "{said}");
+        let records = said["records"].as_array().unwrap();
+        assert_eq!(records.len(), 120, "every record and nothing else");
+        assert_eq!(records[0]["title"], "Pick 1");
+        assert_eq!(records[119]["title"], "Pick 120");
+        // The templates, the listing, and the records a few dozen at a
+        // time: six questions for a hundred and twenty-two files, not two
+        // hundred and forty-four
+        assert_eq!(far.asks.get(), 2 + 122_usize.div_ceil(RECORDS_TO_A_QUESTION), "a question for a few dozen files, not one for each");
+    }
+
+    /// A far folder where one file is there and will not read: asking for it
+    /// with others fails the whole question, the way one SFTP read does
+    struct Locked {
+        mem: Mem,
+        locked: &'static str,
+    }
+
+    impl Disk for Locked {
+        fn files(&self, dir: &str) -> Result<Option<Vec<String>>, String> {
+            self.mem.files(dir)
+        }
+        fn folders(&self, dir: &str) -> Result<Vec<String>, String> {
+            self.mem.folders(dir)
+        }
+        fn read(&self, path: &str) -> Result<Option<Vec<u8>>, String> {
+            if path.ends_with(self.locked) { Err("permission denied".into()) } else { self.mem.read(path) }
+        }
+        fn read_all(&self, paths: &[String], most: usize) -> Result<Vec<Option<Vec<u8>>>, String> {
+            if paths.iter().any(|p| p.ends_with(self.locked)) { Err("permission denied".into()) } else { self.mem.read_all(paths, most) }
+        }
+        fn write(&self, path: &str, bytes: &[u8], fresh: bool) -> Result<(), String> {
+            self.mem.write(path, bytes, fresh)
+        }
+        fn make_dirs(&self, dir: &str) -> Result<(), String> {
+            self.mem.make_dirs(dir)
+        }
+    }
+
+    #[test]
+    fn a_template_that_reads_is_kept_when_the_other_one_will_not_read() {
+        let disk = Locked { mem: Mem::default(), locked: "/template.md" };
+        disk.mem.put("docs/decisions/adr-template.md", "# {short title}\n\n## Why\n\n{why}\n");
+        disk.mem.put("docs/decisions/template.md", "unreadable");
+        let (fields, from) = fields_of(&disk, "docs/decisions");
+        assert_eq!(from.as_deref(), Some("adr-template.md"), "the template that reads is the one used");
+        assert_ne!(fields, madr());
+    }
+
+    #[test]
+    fn reading_several_leaves_out_what_is_too_big_in_its_own_place() {
+        let mem = Mem::default();
+        mem.put("a.md", "small");
+        mem.put("b.md", "rather longer");
+        let read = mem.read_all(&["a.md".into(), "gone.md".into(), "b.md".into()], 6).unwrap();
+        assert_eq!(read, vec![Some(b"small".to_vec()), None, None]);
+    }
+
+    const MADR_RECORD: &str ="---\nstatus: accepted\ndate: 2026-01-02\ndecision-makers: Aiko, Ben\n---\n\n# Use PostgreSQL\n\n## Context and Problem Statement\n\nWe need a database.\n\n## Considered Options\n\n* PostgreSQL\n* SQLite\n\n## Decision Outcome\n\nChosen option: \"PostgreSQL\".\n\n### Consequences\n\n* Good, because it scales.\n\n## Pros and Cons of the Options\n\n### PostgreSQL\n\n* Good, because mature.\n";
 
     #[test]
     fn a_madr_record_is_read_with_its_front_matter_and_sections() {

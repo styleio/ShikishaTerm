@@ -81,6 +81,20 @@ once it reaches its first tagged release.
   - A commit message longer than a command line can be is committed, and a
     folder on another machine with many conflicted files is asked about in a
     few commands, not one per file.
+  - The decisions (ADR) list of a project on another machine reads all its
+    records over one connection, a few at a time, instead of opening a new
+    one twice for each record: a hundred records took eleven seconds even on
+    the same machine, and now take a tenth of one. They are read a few dozen
+    at a time, so a folder of large records is never held in memory whole.
+  - **Resolve with AI** hands the assistant AI the small conflicted files a
+    few to a question (six at most), and asks up to three questions at
+    once, instead of starting it once for each file: six ordinary conflicts
+    took half the time. A file the shared answer left out, or answered with
+    a marker still in it, is asked about again on its own. On another
+    machine the files are read over one connection and written back a few
+    at once. A resolved file now keeps the last line break it had, and a
+    file with code samples of its own (a README) is no longer cut down to
+    its first sample when the answer is unwrapped.
 - **The time at the master password lock is no longer taken for the window
   not answering.** The window was timed from when it opened, but asked to
   answer only once the lock was open, so the seconds spent typing the

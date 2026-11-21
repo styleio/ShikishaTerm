@@ -15,6 +15,13 @@ pub trait Disk {
     fn folders(&self, dir: &str) -> Result<Vec<String>, String>;
     /// A file's bytes, `None` when there is no file
     fn read(&self, path: &str) -> Result<Option<Vec<u8>>, String>;
+    /// Several files' bytes, each in the place it was asked in: `None` for
+    /// one that is not there, or is over `most` bytes (left unread). One
+    /// question for all of them where the machine is far, so a folder of a
+    /// hundred records is not a hundred waits
+    fn read_all(&self, paths: &[String], most: usize) -> Result<Vec<Option<Vec<u8>>>, String> {
+        paths.iter().map(|p| Ok(self.read(p)?.filter(|b| b.len() <= most))).collect()
+    }
     /// Write a file. `fresh` refuses one that is already there
     fn write(&self, path: &str, bytes: &[u8], fresh: bool) -> Result<(), String>;
     /// Make a folder and every folder above it
