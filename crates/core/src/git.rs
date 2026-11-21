@@ -1671,25 +1671,13 @@ pub fn integrated_into(dir: &Path, branch: &str) -> Option<String> {
     let repo = far_of(dir).map(|at| format!("{}\u{1f}{}", at.machine_key(), dir.display()))
         .or_else(|| crate::repo::family_of(dir).map(|f| f.display().to_string()))
         .unwrap_or_else(|| dir.display().to_string());
-    // ...and of the settings as they are now: a merge driver set or taken
-    // away changes what merging gives, with the same two commits
-    let settings = crate::repo::family_of(dir)
-        .map(|f| f.join("config"))
-        .into_iter()
-        .chain(std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(|h| std::path::PathBuf::from(h).join(".gitconfig")))
-        .map(|p| match std::fs::metadata(p) {
-            Ok(m) => format!("{:?}/{}", m.modified().ok(), m.len()),
-            Err(_) => "-".to_string(),
-        })
-        .collect::<Vec<_>>()
-        .join(",");
+    // ...and of the merge settings as git reads them now, from wherever they
+    // are kept (the repository's, the person's, an included file): a merge
+    // driver set or taken away changes what merging gives, with the same two
+    // commits. One quick question, against a merge worked out each time
+    let settings = run(dir, &["config", "--get-regexp", "^merge\\."]).unwrap_or_default();
     let key = (format!("{repo}\u{1f}{settings}"), head.to_string(), target.to_string());
-    // Settings kept in other files it reads (`[include]`) can change with
-    // neither of those two: then nothing is kept, and it is worked out each time
-    let keep = !crate::repo::family_of(dir)
-        .and_then(|f| std::fs::read_to_string(f.join("config")).ok())
-        .is_some_and(|t| t.to_ascii_lowercase().contains("[include"));
-    if keep && let Some(went) = INTEGRATED.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+    if let Some(went) = INTEGRATED.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
         return went.then_some(base);
     }
     let went = match run(dir, &["merge-base", "--is-ancestor", head, target]).is_ok() {
@@ -1698,13 +1686,11 @@ pub fn integrated_into(dir: &Path, branch: &str) -> Option<String> {
         // is not kept as one
         false => merged_apart(dir, target, head)?.lines().next() == Some(tree),
     };
-    if keep {
-        let mut known = INTEGRATED.lock().unwrap_or_else(|e| e.into_inner());
-        if known.len() >= INTEGRATED_KEPT {
-            known.clear();
-        }
-        known.insert(key, went);
+    let mut known = INTEGRATED.lock().unwrap_or_else(|e| e.into_inner());
+    if known.len() >= INTEGRATED_KEPT {
+        known.clear();
     }
+    known.insert(key, went);
     went.then_some(base)
 }
 

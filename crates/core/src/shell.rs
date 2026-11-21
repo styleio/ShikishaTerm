@@ -29700,7 +29700,7 @@ function sftpSend(which) {
   // Several go to the template the folder button uses, which hands them over
   // a batch to a connection: one job a file was one connection a file
   const go = over => files.length > 1
-    ? sftpMoveFolder(which, files.map(r => r.name), over)
+    ? sftpMoveFolder(which, files.map(r => r.name), over, true)
     : sftpMove(act, build(over));
   // Nothing is replaced, so nothing can be lost and there is nothing to ask.
   // A question whose only answer is yes is one people stop reading
@@ -29738,7 +29738,7 @@ function askFolders(which, picked) {
 // Handed over, and then this page is out of it until the template says how far
 // it has got. Nothing is queued here: what to do in what order is the
 // template's, which is the whole reason it is a template
-function sftpMoveFolder(which, names, over) {
+function sftpMoveFolder(which, names, over, filesOnly) {
   F.queue = []; F.moving = null; F.total = 0; F.done = 0;
   F.said = T["sftp.folders.doing"] || "";
   F.bad = false;
@@ -29752,6 +29752,9 @@ function sftpMoveFolder(which, names, over) {
     // files with nothing of their name there were asked nothing, and replace
     // nothing
     overwrite: over !== false,
+    // Ticked as files: one that has become a folder since is not walked
+    // into without the question a folder gets
+    files_only: filesOnly === true,
   });
 }
 

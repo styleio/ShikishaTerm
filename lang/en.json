@@ -2028,6 +2028,7 @@
   "err.files.far_odd": "That machine did not answer with the files asked for. Try again.",
   "err.files.far_late": "The time for these files ran out before this one was done. Try again.",
   "err.files.gone": "That file is no longer there.",
+  "err.files.became_folder": "This was a file when it was picked and is a folder now. Pick it again to send it as a folder.",
   "err.files.not_binned": "Could not move it to the recycle bin ({code}). Close any program that has it open, and try again.",
   "settings.sec.resume": "Carrying conversations",
   "settings.sec.resume.sub": "What survives a restart",

@@ -226,7 +226,7 @@ const SEARCH_BLOCK: usize = 4 * 1024 * 1024;
 /// the record (what its folder and id are read from). Where the line it is
 /// on starts is counted from the start of the file, as a reader opened on it
 /// counts. A line is never cut in two: a block ends at the last line it ends
-fn mention_in(path: &Path, needle: &str, stop: &dyn Fn() -> bool) -> Option<(crate::reader::Mention, String)> {
+fn mention_in(path: &Path, needle: &str, stop: &dyn Fn() -> bool, passed: &std::cell::Cell<bool>) -> Option<(crate::reader::Mention, String)> {
     use std::io::Read as _;
     let mut file = std::fs::File::open(path).ok()?;
     // The lines read and not yet searched, and where in the file they start
@@ -262,6 +262,9 @@ fn mention_in(path: &Path, needle: &str, stop: &dyn Fn() -> bool) -> Option<(cra
             held_at += held.len() as u64;
             held.clear();
             skipping = true;
+            // Said, so a search that finds nothing does not claim nothing
+            // is there
+            passed.set(true);
             continue;
         }
         // The whole lines, up to the last newline; all of it at the end
@@ -307,6 +310,7 @@ fn search_in(sources: &[Source], query: &str, limit: usize, stop: &dyn Fn() -> b
 
     let mut hits = Vec::new();
     let mut read = 0;
+    let passed = std::cell::Cell::new(false);
     for (when, src, path) in &files {
         if hits.len() >= limit || stop() {
             break;
@@ -321,7 +325,7 @@ fn search_in(sources: &[Source], query: &str, limit: usize, stop: &dyn Fn() -> b
                 None => continue,
             },
             false => {
-                let Some((found, head)) = mention_in(path, &needle, stop) else { continue };
+                let Some((found, head)) = mention_in(path, &needle, stop, &passed) else { continue };
                 line = Some(found.line);
                 said = Said::of(&found);
                 (head, snippet(&found.words, found.at, needle.len()))
@@ -343,8 +347,9 @@ fn search_in(sources: &[Source], query: &str, limit: usize, stop: &dyn Fn() -> b
             ..Hit::default()
         });
     }
-    // Stopped at enough with records left unread: there may be older ones
-    Found { capped: hits.len() >= limit && read < files.len(), hits }
+    // Stopped at enough with records left unread: there may be older ones.
+    // Or a line too long to search was read past: there may be one in it
+    Found { capped: (hits.len() >= limit && read < files.len()) || passed.get(), hits }
 }
 
 /// The same search over the records on another machine: every CLI's, newest
@@ -1905,9 +1910,14 @@ mod whole_tests {
         let record = [said("user", "D:/w", "why"), giant, after.clone()].join("\n");
         let path = root.join("proj").join("eeee-giant.jsonl");
         std::fs::write(&path, &record).unwrap();
-        let (found, _) = mention_in(&path, "word after the picture", &|| false).expect("the line after it is searched");
+        let passed = std::cell::Cell::new(false);
+        let (found, _) = mention_in(&path, "word after the picture", &|| false, &passed).expect("the line after it is searched");
         assert!(record.as_bytes()[found.line as usize..].starts_with(after.as_bytes()), "placed at {}", found.line);
-        assert!(mention_in(&path, "giant word", &|| false).is_none(), "the line too long is not held to be searched");
+        assert!(passed.get(), "reading past the long line was not said");
+        assert!(mention_in(&path, "giant word", &|| false, &passed).is_none(), "the line too long is not held to be searched");
+        let none = std::cell::Cell::new(false);
+        mention_in(&path, "why", &|| false, &none).expect("the first line is searched");
+        assert!(!none.get(), "found before the long line, nothing was read past");
     }
 
     /// One listing of a CLI's records is handed out again while it is fresh,

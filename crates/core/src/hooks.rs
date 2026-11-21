@@ -1969,6 +1969,16 @@ for _, name in ipairs(job.names) do
     return
   end
 end
+-- Ticked as files, and one is a folder now: not walked into, since what is
+-- in a folder was never asked about
+if job.files_only then
+  for _, e in ipairs(top) do
+    if want[e.name] and e.dir then
+      shikisha.set_progress(nil, e.name .. ": " .. shikisha.t("err.files.became_folder"), at)
+      return
+    end
+  end
+end
 for _, e in ipairs(top) do
   if want[e.name] then
     if e.dir then
@@ -9425,6 +9435,16 @@ mod live_sftp {
         }));
         let why = finished(&gone).expect_err("a missing name was passed over");
         assert!(why.contains("no-such-thing.txt"), "{why}");
+
+        // Ticked as files, and one is a folder by the time it is sent: not
+        // walked into without the question a folder gets
+        let became = run_template(&mut e, json!({
+            "tab": "deploy", "send": true,
+            "here": slashed(&here), "there": site(&l),
+            "names": ["dist"], "overwrite": true, "files_only": true,
+        }));
+        let why = finished(&became).expect_err("a folder ticked as a file was walked into");
+        assert!(why.starts_with("dist: "), "{why}");
 
         // Back: a folder from the server, landing in folders made on the way in
         let said = run_template(&mut e, json!({
