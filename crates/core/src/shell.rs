@@ -5533,10 +5533,18 @@ function toastBottom() {
 // The activity graph keeps redrawing constantly, so this wasn't some rare
 // edge case — it was the default behavior.
 let holding = false, queued = null, holdTimer = 0;
+// The bars that moved while a press was held, in the order they came, after
+// the state held back (which carries the bars as they were when it was made)
+let heldPulses = [];
 const release = () => {
   holding = false;
   clearTimeout(holdTimer);
-  if (queued === null) return;
+  const pulses = heldPulses;
+  heldPulses = [];
+  if (queued === null) {
+    if (pulses.length) setTimeout(() => { for (const p of pulses) window.__pulse(p); }, 0);
+    return;
+  }
   const j = queued; queued = null;
   // Hand the held-back redraw to the NEXT task rather than running it here.
   // A click has not been delivered yet at pointerup — the browser dispatches it
@@ -5544,7 +5552,7 @@ const release = () => {
   // element the click was about to land on, and the press vanishes with it.
   // That is the same "started and ended on the same element" rule the guard
   // above exists for; it simply has to hold one step longer than the press.
-  setTimeout(() => window.__state(j), 0);
+  setTimeout(() => { window.__state(j); for (const p of pulses) window.__pulse(p); }, 0);
 };
 addEventListener("pointerdown", () => {
   holding = true;
@@ -5701,7 +5709,28 @@ function drawTabs() {
   // The folders of one project: the repository's own checkout and the
   // worktrees cut from it, on every machine the project is checked out on.
   // A folder in no repository is a project of its own
-  const kinOf = g => g.family ? folders.filter(o => !o.parked && projKey(o, folders) === projKey(g, folders)) : [g];
+  //
+  // Each folder's project worked out once for this drawing, and the folders
+  // of each project gathered once: asked of every folder against every other,
+  // a desk of hundreds of worktrees was millions of steps at every state
+  const projectKey = projKeys(folders);
+  const folderAt = new Map(folders.map((g, i) => [g, i]));
+  const kinBy = new Map();
+  for (const o of folders) {
+    if (o.parked || !o.family) continue;
+    const k = projectKey(o);
+    if (!kinBy.has(k)) kinBy.set(k, []);
+    kinBy.get(k).push(o);
+  }
+  const kinOf = g => g.family ? (kinBy.get(projectKey(g)) || []) : [g];
+  const insideOf = o => inside[folderAt.get(o)] || [];
+  // The jobs each tab leads, gathered once
+  const jobsBy = new Map();
+  for (const j of S.jobs || []) {
+    if (!jobsBy.has(j.lead)) jobsBy.set(j.lead, []);
+    jobsBy.get(j.lead).push(j);
+  }
+  const jobsOf = t => (t.uid && jobsBy.get(t.uid)) || [];
   // The order the folders are read in, and the headings that break it up.
   //
   // By project unless another axis is chosen. Two groupings at once would put
@@ -5720,17 +5749,18 @@ function drawTabs() {
   // the checkout the others were cut from first among them. A project on
   // several machines keeps each machine's folders together, this PC first,
   // then the MicroVMs, then the servers. Stable otherwise
-  const projectKey = g => projKey(g, folders);
   if (axis === "none") {
     const firsts = [];
-    for (const r of keyed) if (!firsts.includes(projectKey(r.g))) firsts.push(projectKey(r.g));
+    const seenFirst = new Set();
+    for (const r of keyed) { const k = projectKey(r.g); if (!seenFirst.has(k)) { seenFirst.add(k); firsts.push(k); } }
     const pinned = new Set(keyed.filter(r => r.g.keep_first).map(r => projectKey(r.g)));
     firsts.sort((a, b) => Number(pinned.has(b)) - Number(pinned.has(a)));
-    const homes = [];
-    for (const r of keyed) if (!homes.includes(r.g.family)) homes.push(r.g.family);
-    keyed.sort((a, b) => (firsts.indexOf(projectKey(a.g)) - firsts.indexOf(projectKey(b.g)))
+    const firstAt = new Map(firsts.map((k, i) => [k, i]));
+    const homeAt = new Map();
+    for (const r of keyed) if (!homeAt.has(r.g.family)) homeAt.set(r.g.family, homeAt.size);
+    keyed.sort((a, b) => (firstAt.get(projectKey(a.g)) - firstAt.get(projectKey(b.g)))
       || (machineRank(a.g.host) - machineRank(b.g.host))
-      || (homes.indexOf(a.g.family) - homes.indexOf(b.g.family))
+      || (homeAt.get(a.g.family) - homeAt.get(b.g.family))
       || (Number(!!b.g.keep_first) - Number(!!a.g.keep_first))
       || ((a.g.linked ? 1 : 0) - (b.g.linked ? 1 : 0)) || (a.gi - b.gi));
   }
@@ -5738,10 +5768,10 @@ function drawTabs() {
     // Stable: folders keep the order the settings put them in, within their
     // group. A list that reshuffles itself as states change is a list nobody
     // can point at
-    const seen = [];
-    for (const r of keyed) if (!seen.includes(r.key)) seen.push(r.key);
+    const seen = [...new Set(keyed.map(r => r.key))];
     seen.sort((a, b) => groupRank(a, axis) - groupRank(b, axis));
-    keyed.sort((a, b) => seen.indexOf(a.key) - seen.indexOf(b.key) || Number(!!b.g.keep_first) - Number(!!a.g.keep_first));
+    const seenAt = new Map(seen.map((k, i) => [k, i]));
+    keyed.sort((a, b) => seenAt.get(a.key) - seenAt.get(b.key) || Number(!!b.g.keep_first) - Number(!!a.g.keep_first));
   }
   let groupKey = null, headKey = null, homeKey = null, spread = false;
   for (const row of keyed) {
@@ -5762,7 +5792,7 @@ function drawTabs() {
         // even a project on that one alone, so it never reads as this PC's.
         // A project only on this PC is drawn as it always was
         spread = kin.some(o => o.host);
-        nav.append(projectHead(g, kin, kin.flatMap(o => inside[folders.indexOf(o)] || []), pk));
+        nav.append(projectHead(g, kin, kin.flatMap(insideOf), pk));
         // Worktrees git knows this project has and the desk does not list, said
         // under the heading until somebody shows them or keeps them hidden
         const found = foundFor(g);
@@ -5778,7 +5808,7 @@ function drawTabs() {
         homeKey = g.family;
         const part = kinOf(g).filter(o => o.family === g.family);
         if (!folded.has("proj:" + pk)) nav.append(machineHead(part.find(o => !o.linked) || g,
-          part.flatMap(o => inside[folders.indexOf(o)] || [])));
+          part.flatMap(insideOf)));
         for (const m of making) if (sameFolder(m.family, g.family)) nav.append(makingRow(m));
       }
       if (folded.has("proj:" + pk)) continue;
@@ -6659,6 +6689,14 @@ function drawIssuesKeepingCursor() {
   if (at) back.setSelectionRange(at[0], at[1]);
 }
 
+// A number for a list, the same for as long as the list is the same one
+const listMarks = new WeakMap();
+let listMarkNext = 0;
+function listMark(list) {
+  let n = listMarks.get(list);
+  if (n === undefined) { n = ++listMarkNext; listMarks.set(list, n); }
+  return n;
+}
 function drawIssues() {
   const box = document.getElementById("issuespanel");
   if (!box || box.hidden) return;
@@ -6666,9 +6704,14 @@ function drawIssues() {
   // is being typed in: a list redrawn under the cursor takes the words away
   const typing = document.activeElement && box.contains(document.activeElement)
     && ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName);
-  // A GitHub Project's cards are many: they count by their change number
+  // A GitHub Project's cards are many: they count by their change number. A
+  // pull request's thread is up to a thousand comments, read once and never
+  // changed where it lies (a comment sent reads the issue again): it counts
+  // by which list it is and how long
+  const thread = I.detail ? [I.detail.comments, I.detail.events] : [];
   const sig = JSON.stringify([I, (S && S.groups || []).map(g => g.work_item)],
-    (k, v) => v !== null && v === I.gh.data ? "rev" + I.gh.rev : v);
+    (k, v) => v !== null && v === I.gh.data ? "rev" + I.gh.rev
+      : v && thread.includes(v) ? "list" + listMark(v) + ":" + v.length : v);
   if (sig === issuesSig || typing) return;
   issuesSig = sig;
   // What scrolls sideways inside the tab (a board, a table, a timeline) stays
@@ -8106,19 +8149,46 @@ function ghpCell(card, field) {
 function ghpGroupField(d, view) {
   return view && view.group ? (d.fields || []).find(f => f.id === view.group) || null : null;
 }
+// The cards of each value of `field`, in the order the cards come: one pass
+// over them, not one for each value -- a Project can hold twenty thousand
+function ghpByKey(cards, field) {
+  const by = new Map();
+  for (const c of cards) {
+    const k = ghpKey(c, field);
+    let these = by.get(k);
+    if (!these) by.set(k, these = []);
+    these.push(c);
+  }
+  return by;
+}
 // The cards by their value in a field, in the field's own order, the cards
 // with no value in it last, as GitHub shows the groups
 function ghpGroups(cards, field) {
-  const order = (field.options || field.iterations || []).map(o => o.id);
-  const keys = [];
-  for (const c of cards) { const k = ghpKey(c, field); if (!keys.includes(k)) keys.push(k); }
-  keys.sort((a, b) => (a === null) - (b === null) || (order.indexOf(a) - order.indexOf(b))
+  const order = new Map((field.options || field.iterations || []).map((o, i) => [o.id, i]));
+  const at = k => order.has(k) ? order.get(k) : -1;
+  const by = ghpByKey(cards, field);
+  const keys = [...by.keys()];
+  keys.sort((a, b) => (a === null) - (b === null) || (at(a) - at(b))
     || (typeof a === "number" && typeof b === "number" ? a - b : String(a).localeCompare(String(b))));
   return keys.map(k => {
-    const these = cards.filter(c => ghpKey(c, field) === k);
+    const these = by.get(k);
     return {key: k, cards: these,
       name: k === null ? (T["ghp.no_value"] || "{field}").replaceAll("{field}", field.name) : ghpWords(these[0], field)};
   });
+}
+// How many cards a column of the board, or a group of the table, makes at a
+// time: the rest is a press away. Made again on every change -- a tick while
+// choosing, a field set -- so what is made is what one change costs
+const GHP_CARDS_AT_ONCE = 100;
+function ghpUpTo(key) {
+  return (I.gh.upTo && I.gh.upTo[key]) || GHP_CARDS_AT_ONCE;
+}
+function ghpShowMore(key, shown, left) {
+  return el("button", {type:"button", class:"link growsmore",
+    onclick:e => { e.stopPropagation(); (I.gh.upTo || (I.gh.upTo = {}))[key] = shown + GHP_CARDS_AT_ONCE; I.gh.rev++; drawIssues(); }},
+    (T["list.rows.more"] || "")
+      .replaceAll("{n}", Math.min(left, GHP_CARDS_AT_ONCE).toLocaleString())
+      .replaceAll("{left}", left.toLocaleString()));
 }
 function ghpTable(d, view) {
   const all = d.fields || [];
@@ -8143,15 +8213,21 @@ function ghpTable(d, view) {
   // the group's value -- where that is a value a card can be given
   const adder = (key, values) => el("tr", {class:"addrow"}, el("td", {colspan: String(span)}, ghpAdder(key, values)));
   // With no cards there are no groups: one place to add, all the same
+  // The first part of a long list, and a row with the press for the next
+  const rows = (list, key) => {
+    const upTo = ghpUpTo(key);
+    for (const c of list.slice(0, upTo)) body.append(row(c, list));
+    if (list.length > upTo) body.append(el("tr", {class:"addrow"}, el("td", {colspan: String(span)}, ghpShowMore(key, upTo, list.length - upTo))));
+  };
   if (group && cards.length) {
     for (const g of ghpGroups(cards, group)) {
       body.append(el("tr", {class:"grp"}, el("td", {colspan: String(span)}, g.name + "  ", el("span", {class:"faint"}, String(g.cards.length)))));
-      for (const c of g.cards) body.append(row(c, g.cards));
+      rows(g.cards, "t " + g.key);
       const v = ghpGroupValue(group, g.key);
       body.append(adder("table " + g.key, v === undefined || v === null ? [] : [{field: group.id, value: v}]));
     }
   } else {
-    for (const c of cards) body.append(row(c, cards));
+    rows(cards, "t");
     body.append(adder("table", []));
   }
   table.append(body);
@@ -8224,18 +8300,22 @@ function ghpBoard(d, view) {
     (iter ? (field.iterations || []).map(i => ({id: i.id, name: i.title, done: i.done}))
       : (field.options || []).map(o => ({id: o.id, name: o.name}))).map(c => Object.assign(c, {drop: iter ? {iteration: c.id} : {option: c.id}})));
   const cards = ghpSorted(d.cards || [], view, all);
-  for (const c of cards) {
-    const k = ghpKey(c, field);
-    if (k !== null && !cols.some(col => col.id === k)) cols.push({id: k, name: ghpWords(c, field), drop: undefined});
+  const all_by = ghpByKey(cards, field);
+  const known = new Set(cols.map(col => col.id));
+  for (const [k, these] of all_by) {
+    if (k !== null && !known.has(k)) { known.add(k); cols.push({id: k, name: ghpWords(these[0], field), drop: undefined}); }
   }
   // A finished iteration with nothing in it is history, not a place to work;
   // left out of every lane alike, so the lanes' columns stay one under another
-  const shown = cols.filter(col => !(col.done && !cards.some(c => ghpKey(c, field) === col.id)));
+  const shown = cols.filter(col => !(col.done && !all_by.has(col.id)));
   const byHand = ghpByHand(view);
   const columns = (these, lane) => {
     const wrap = el("div", {class:"ghcols"});
+    const by = these === cards ? all_by : ghpByKey(these, field);
     for (const col of shown) {
-      const mine = these.filter(c => ghpKey(c, field) === col.id);
+      const mine = by.get(col.id) || [];
+      const upKey = "b " + (lane ? lane.key : "") + " " + col.id;
+      const upTo = ghpUpTo(upKey);
       // A card dragged here: this column's value, the lane's, and -- dropped
       // on a card, in a view kept in the board's own order -- its place
       const into = (c, target, below) => {
@@ -8256,7 +8336,8 @@ function ghpBoard(d, view) {
         }};
       const box = el("div", {class:"ghcol"},
         el("div", {class:"ghhead"}, el("span", {class:"grow"}, col.name), el("span", {class:"n"}, String(mine.length))),
-        ...mine.map(c => ghpCard(c, o)));
+        ...mine.slice(0, upTo).map(c => ghpCard(c, o)),
+        mine.length > upTo ? ghpShowMore(upKey, upTo, mine.length - upTo) : null);
       if (col.drop !== undefined) {
         box.addEventListener("dragover", e => { if (ghpDragging) { e.preventDefault(); box.classList.add("drop"); } });
         box.addEventListener("dragleave", () => box.classList.remove("drop"));
@@ -11473,6 +11554,27 @@ function projKey(g, folders) {
   if (g.whole && g.family && folders.some(o => o.whole === g.whole && o.family && o.family !== g.family)) return "whole:" + g.whole;
   return g.family || "dir:" + g.folder;
 }
+// `projKey` for every folder of `folders`, worked out in one pass over them:
+// which households each whole project has, and then each folder's key at once
+function projKeys(folders) {
+  const households = new Map();
+  for (const o of folders) {
+    if (!o.whole || !o.family) continue;
+    if (!households.has(o.whole)) households.set(o.whole, new Set());
+    households.get(o.whole).add(o.family);
+  }
+  const keys = new Map();
+  return g => {
+    let k = keys.get(g);
+    if (k === undefined) {
+      const h = g.whole && g.family ? households.get(g.whole) : null;
+      // Another household of the same whole project: drawn as the whole
+      k = h && (h.size > 1 || !h.has(g.family)) ? "whole:" + g.whole : g.family || "dir:" + g.folder;
+      keys.set(g, k);
+    }
+    return k;
+  };
+}
 // Where a machine's folders stand among a project's: this PC first, then the
 // MicroVMs, then the servers, each kind in the order the settings list them
 function machineRank(host) {
@@ -11817,9 +11919,7 @@ function folderRow(g, mine, card) {
   }
   if (shut && (mine || []).length) {
     // Every tab's bars laid over each other, so one busy tab still shows
-    row.append(spark(mine.map(t => t.activity || [])
-      .reduce((a, b) => a.map((v, i) => Math.max(v, b[i] || 0)),
-              new Array(10).fill(0))));
+    row.append(spark(barsOver(mine), "g:" + (S.groups || []).indexOf(g)));
   }
   // Which repository, and where in it. Each half only when it is not already
   // on the row: a worktree folder is named after its branch unless somebody
@@ -12135,7 +12235,7 @@ function tabRow(t, g, deep, head) {
     t.unread ? el("span", {class:"unreadmark", title:T["tui.unread"] || ""}) : null,
     // When its automation next runs by the clock (at_0900.lua, every_30m.lua)
     t.timed ? el("span", {class:"timed", title:(T["tui.timed"] || "").replaceAll("{at}", t.timed)}, "⏰ " + t.timed) : null,
-    t.ai && t.since ? agoMark(t.since) : spark(t.activity));
+    t.ai && t.since ? agoMark(t.since) : spark(t.activity, "t:" + t.key));
   // Its settings are its own page, opened from here: the settings list no
   // longer carries every tab of every folder
   row.addEventListener("contextmenu", e => { e.preventDefault(); tabMenu(row, t, "tabs", e); });
@@ -12784,17 +12884,20 @@ function drawFolderManager() {
     put(r.meta, [...flags, g ? g.folder : key].join(" · "));
     const u = usage[key], outcome = results[key];
     put(r.size, !g ? "" : u ? (u.partial && !u.bytes ? T["tui.folders.unavailable"] : (u.partial ? "≥ " : "≈ ") + bytesSay(u.bytes)) : T["tui.folders.unmeasured"]);
-    r.size.title = u ? T["tui.folders.measured"].replaceAll("{time}", new Date(u.measured * 1000).toLocaleString()) : T["tui.folders.measure"];
+    // Put in words once for the row: drawn again at every state while open
+    const measured = u ? T["tui.folders.measured"].replaceAll("{time}", new Date(u.measured * 1000).toLocaleString()) : "";
+    r.size.title = u ? measured : T["tui.folders.measure"];
     const status = outcome ? outcome.busy ? T["tui.folders.deleting"] : outcome.error || T[g ? "tui.folders.done" : "tui.folders.deleted"] : "";
     put(r.note, [status, u && u.error].filter(Boolean).join(" · "));
-    put(r.time, u && g ? T["tui.folders.measured"].replaceAll("{time}", new Date(u.measured * 1000).toLocaleString()) : "");
+    put(r.time, u && g ? measured : "");
     r.time.hidden = !r.time.textContent;
     r.note.hidden = !r.note.textContent;
     r.note.classList.toggle("bad", !!(outcome?.error || u?.error));
     wanted.push(r.row);
   }
   if (!wanted.length) wanted.push(m.empty);
-  for (const node of [...m.list.children]) if (!wanted.includes(node)) node.remove();
+  const keep = new Set(wanted);
+  for (const node of [...m.list.children]) if (!keep.has(node)) node.remove();
   wanted.forEach((node,i) => { if (m.list.children[i] !== node) m.list.insertBefore(node, m.list.children[i] || null); });
 }
 function folderMenu(e, g) {
@@ -12901,6 +13004,18 @@ function adrName(r) { return r.number != null ? "ADR-" + String(r.number).padSta
 // Words compared the way a person means them: full-width and half-width
 // letters the same, and case not counted
 function adrFold(s) { return String(s || "").normalize("NFKC").toLocaleLowerCase(); }
+// What a record is searched through, folded once: a record holds up to twelve
+// thousand characters of its text, and folding all of them again for every
+// record at every letter typed held the panel up
+const adrHays = new WeakMap();
+function adrHay(r) {
+  let hay = adrHays.get(r);
+  if (hay === undefined) {
+    hay = adrFold([r.title, r.file, adrName(r), r.makers, r.text].join("\n"));
+    adrHays.set(r, hay);
+  }
+  return hay;
+}
 function adrToday() {
   const d = new Date();
   const two = n => String(n).padStart(2, "0");
@@ -13057,10 +13172,13 @@ function adrFill() {
   if (AD.error) list.append(el("div", {class:"fsay bad"}, AD.error));
   const q = adrFold(AD.q.trim());
   const shown = AD.records.filter(r => (AD.status === "all" || r.status === AD.status)
-    && (!q || adrFold([r.title, r.file, adrName(r), r.makers, r.text].join("\n")).includes(q)));
+    && (!q || adrHay(r).includes(q)));
   // Newest first: the decision being talked about is the one written last
   shown.sort((a, b) => (b.number ?? -1) - (a.number ?? -1) || a.file.localeCompare(b.file));
-  for (const r of shown) list.append(adrRow(r));
+  // The first part of a long list; a search typed afresh starts from the top
+  const asked = AD.status + "\n" + q;
+  if (AD.upToFor !== asked) { AD.upToFor = asked; AD.upTo = 0; }
+  rowsUpTo(list, shown, AD.upTo, n => { AD.upTo = n; adrFill(); }, adrRow);
   if (!AD.records.length && !AD.error) list.append(el("div", {class:"fsay"}, (T["adr.empty"] || "").replaceAll("{dir}", AD.dir)));
   else if (!shown.length && AD.records.length) list.append(el("div", {class:"fsay"}, T["adr.none_found"] || ""));
   foot.textContent = (T["adr.count"] || "").replaceAll("{n}", AD.records.length).replaceAll("{dir}", AD.dir)
@@ -16867,8 +16985,11 @@ function pillsRow(mine) {
 }
 
 // Draw output volume as a real bar chart, not ▁▄█ characters
-function spark(a) {
+// `mark` names the bars, for `__pulse` to draw them again by: a tab's
+// ("t:" and its key) or a folder's laid over each other ("g:" and its place)
+function spark(a, mark) {
   const box = el("div", {class:"spark"});
+  if (mark) box.dataset.spark = mark;
   for (const v of (a || []).slice(-10)) {
     const b = el("i");
     b.style.height = Math.max(1, v * 2) + "px";
@@ -17754,8 +17875,40 @@ function layout() {
   report();
 }
 
+// Every tab's bars laid over each other, so one busy tab still shows
+function barsOver(tabs) {
+  return tabs.map(t => t.activity || []).reduce((a, b) => a.map((v, i) => Math.max(v, b[i] || 0)), new Array(10).fill(0));
+}
+// Only what moves on its own moved: each tab's bars of output and what it is
+// costing. Put into the state the page has, and drawn again where they are
+// drawn -- the rest of the page is as the last state left it, and is not
+// made again five times a second for a terminal that is printing
+window.__pulse = function (list) {
+  // Not under a press: the bars are on the row being pressed
+  if (holding) { heldPulses.push(list); return; }
+  if (!S || !S.tabs) return;
+  for (const p of list || []) {
+    const t = S.tabs[p.at];
+    if (t) { t.activity = p.activity; t.cost = p.cost; }
+  }
+  for (const box of document.querySelectorAll(".spark[data-spark]")) {
+    const m = box.dataset.spark;
+    let bars = null;
+    if (m.startsWith("t:")) bars = (S.tabs.find(t => t.key === m.slice(2)) || {}).activity;
+    else {
+      const gi = Number(m.slice(2));
+      bars = barsOver(S.tabs.filter(t => t.group === gi && !t.settings && t.kind !== "issues"));
+    }
+    if (bars) box.replaceWith(spark(bars, m));
+  }
+  // The dashboard's table says both for every tab
+  if (S.board) drawBoard();
+  // A quick answer can come and go between two states: the conversation
+  // watches the bars too
+  if (sidePanel === "convo" && !cvAll && !cvConfer) convoFollow();
+};
 window.__state = function (json) {
-  if (holding) { queued = json; return; }
+  if (holding) { queued = json; heldPulses = []; return; }
   // The board is live now — take down the startup splash.
   const _sp = document.getElementById("splash");
   if (_sp && !_sp.hidden) _sp.hidden = true;
@@ -21294,7 +21447,11 @@ const CV = {
   seq: {},          // kind of request -> the newest one, so an older answer is not drawn over it
   rev: 0,
 };
-let cvUi = null, cvTimer = 0, cvAgain = 0;
+let cvUi = null, cvTimer = 0, cvAgain = 0, cvDrawn = 0;
+// How long after the last letter typed in the search the list is drawn: each
+// drawing puts every row read through markdown again, and a word typed is a
+// few letters in a row -- drawn once for the word, not once for each letter
+const CONVO_TYPED_DRAW_MS = 150;
 // Answers are broadcast to the window and every remote viewer. A request
 // belongs to this page instance as well as to its panel and slot.
 const convoViewer = Array.from(crypto.getRandomValues(new Uint8Array(16)), n => n.toString(16).padStart(2, "0")).join("");
@@ -21472,7 +21629,8 @@ function convoNewer() {
 function convoFindSoon() {
   clearTimeout(cvTimer);
   CV.found = null; CV.capped = false; CV.rev++;
-  drawConvo();
+  clearTimeout(cvDrawn);
+  cvDrawn = setTimeout(drawConvo, CONVO_TYPED_DRAW_MS);
   if (!CV.q && !CV.pins) return;
   cvTimer = setTimeout(() => convoAsk("find", {q: CV.q, pins: CV.pins}), 250);
 }
@@ -22010,6 +22168,7 @@ function cfRefresh() {
 }
 // Show one conversation, from its newest page
 function cfShow(thread, picked) {
+  CF.lastPage = "";
   if (thread !== CF.thread) {
     delete CF.seq.earlier; delete CF.seq.confer;
     CF.said = []; CF.more = false; CF.full = new Set(); CF.stick = true;
@@ -22061,8 +22220,13 @@ function cfGot(d) {
     CF.keepTop = true;
   } else {
     // The newest page, in place of the newest part of what is here: what was
-    // read further back is kept, with the page's lines taking theirs
+    // read further back is kept, with the page's lines taking theirs. It is
+    // asked again whenever anything in the conference moves; a page the same
+    // as the last one changes nothing, and every line is not made again
     const fresh = d.said || [];
+    const page = JSON.stringify([d.thread, fresh, !!d.more]);
+    if (page === CF.lastPage && CF.said.length && !CF.bad) return;
+    CF.lastPage = page;
     const first = fresh.length ? fresh[0].at : Infinity;
     const fresh_keys = new Set(fresh.map(cfKey));
     const older = CF.said.filter(s => s.at <= first && !fresh_keys.has(cfKey(s)));
@@ -26513,7 +26677,13 @@ function drawIdeas(fresh) {
     prev = card;
   }
   for (const card of have.values()) card.remove();
-  for (const card of grow) ideasGrow(card.querySelector(".itext"));
+  // Every box let out first, then every height read, then set: one at a time,
+  // each read waited on a layout of the whole list -- a thousand cards opened
+  // were a thousand layouts of a thousand cards
+  const boxes = grow.map(card => card.querySelector(".itext"));
+  for (const t of boxes) t.style.height = "auto";
+  const heights = boxes.map(t => t.scrollHeight);
+  boxes.forEach((t, i) => { t.style.height = heights[i] + "px"; });
   if (fresh) { const b = box.querySelector(".ibody"); b.scrollTop = b.scrollHeight; }
 }
 (function () {
@@ -30249,7 +30419,12 @@ function drawGitBranches(u) {
   everything.append(el("span", {class:"x"}, "\u2261"));
   everything.append(el("span", {class:"p", style:"direction:ltr"}, T["git.view.all"] || ""));
   u.branches.append(everything);
-  for (const b of G.branches || []) {
+  // A repository can hold thousands of branches: the first part is made, with
+  // a button for the next, and the one the folder is on is always among them
+  const all = G.branches || [];
+  const here = all.findIndex(b => b.current);
+  const list = here >= (G.upTo.branches || ROWS_AT_ONCE) ? [all[here], ...all.filter((_, i) => i !== here)] : all;
+  gitRowsUpTo(u.branches, list, "branches", b => {
     // Pointing at a branch asks to see it. Moving onto one is a different
     // thing -- it changes the files on disk -- so it has a button of its own
     // rather than hiding behind a second click
@@ -30269,9 +30444,22 @@ function drawGitBranches(u) {
         onclick:e => { e.stopPropagation(); gitAsk("checkout", {text: b.name}); }},
         "→"));
     }
-    u.branches.append(row);
+    return row;
+  });
+  if (!all.length) u.branches.append(el("div", {class:"empty"}, "\u2026"));
+}
+// What a list of branches says, the same for the same branches: the panel asks
+// for them again after every stage and commit, and a new answer that names the
+// same branches is not a list to make again
+const branchSigs = new WeakMap();
+function branchesSig(list) {
+  if (!list) return "";
+  let sig = branchSigs.get(list);
+  if (sig === undefined) {
+    sig = list.map(b => (b.current ? "*" : "") + b.name).join("\n");
+    branchSigs.set(list, sig);
   }
-  if (!(G.branches || []).length) u.branches.append(el("div", {class:"empty"}, "\u2026"));
+  return sig;
 }
 // How many rows a long list makes at a time: the git panel's, the files
 // panel's. A folder whose build output git does not ignore lists every file of
@@ -30312,7 +30500,7 @@ function drawGit() {
   const u = gitUi;
   drawGitCommit();
 
-  if (!drawnFrom(u.branches, [G.branches, G.view === "history", G.pickBranch, T])) drawGitBranches(u);
+  if (!drawnFrom(u.branches, [branchesSig(G.branches), G.view === "history", G.pickBranch, T, G.upTo.branches])) drawGitBranches(u);
 
   const history = G.view === "history";
   const narrow = box.clientWidth > 0 && box.clientWidth < GIT_NARROW;
@@ -33722,7 +33910,7 @@ say(edText() === "a\nb", "an empty file did not take plain line feeds");
     #[test]
     fn a_press_outlives_the_redraw_that_ends_it() {
         assert!(
-            PAGE.contains("setTimeout(() => window.__state(j), 0);"),
+            PAGE.contains("setTimeout(() => { window.__state(j); for (const p of pulses) window.__pulse(p); }, 0);"),
             "the redraws held during a press are flushed on the spot (clicks are lost)"
         );
         assert!(
@@ -34718,7 +34906,7 @@ say(edText() === "a\nb", "an empty file did not take plain line feeds");
     fn an_ai_row_says_its_state_its_name_and_how_long_ago() {
         assert!(PAGE.contains(r#"el("span", {class:"st"}, t.state_label || t.state), el("span", {class:"who"}, " - ", tabName(t, "tabs", "")))"#),
             "an AI's row does not lead with its state");
-        assert!(PAGE.contains("t.ai && t.since ? agoMark(t.since) : spark(t.activity));"), "an AI's row does not say how long ago");
+        assert!(PAGE.contains(r#"t.ai && t.since ? agoMark(t.since) : spark(t.activity, "t:" + t.key));"#), "an AI's row does not say how long ago");
         assert!(PAGE.contains(r##"for (const a of document.querySelectorAll("#tabs .ago[data-since]")) {"##), "the time goes stale on a quiet board");
     }
 
@@ -34968,7 +35156,7 @@ say(edText() === "a\nb", "an empty file did not take plain line feeds");
 
     #[test]
     fn the_list_is_drawn_by_project_with_every_folder_a_card_under_its_heading() {
-        assert!(PAGE.contains("nav.append(projectHead(g, kin, kin.flatMap(o => inside[folders.indexOf(o)] || []), pk));"),
+        assert!(PAGE.contains("nav.append(projectHead(g, kin, kin.flatMap(insideOf), pk));"),
             "there is no heading over a project");
         assert!(PAGE.contains(r#"return g.family || "dir:" + g.folder;"#), "a folder in no repository has no heading of its own");
         // One project on several machines: one heading, each machine a part

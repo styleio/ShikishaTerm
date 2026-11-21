@@ -2992,6 +2992,38 @@ impl BallState {
 }
 
 impl UiState {
+    /// This state without what moves on its own -- each tab's bars of output
+    /// and what it is costing -- for telling whether anything else changed
+    pub fn without_pulse(&self) -> UiState {
+        let mut bare = self.clone();
+        for t in &mut bare.tabs {
+            t.activity.clear();
+            t.cost = None;
+        }
+        bare
+    }
+
+    /// What moved on its own since `before`, for each tab it moved in, when
+    /// nothing else did (`without_pulse` the same): the window is handed this
+    /// and not the whole state again. A tab printing moves its bars five
+    /// times a second, and the whole state is every folder and tab of the desk
+    pub fn pulse_since(&self, before: &UiState) -> Vec<Pulse> {
+        self.tabs
+            .iter()
+            .enumerate()
+            .filter(|(i, t)| before.tabs.get(*i).is_none_or(|b| b.activity != t.activity || b.cost != t.cost))
+            .map(|(i, t)| Pulse { at: i, activity: t.activity.clone(), cost: t.cost.clone() })
+            .collect()
+    }
+}
+
+/// One tab's part of what moves on its own (`UiState::pulse_since`): which
+/// tab, by its place in `UiState::tabs`, and its bars and cost now
+#[derive(Clone, Serialize, PartialEq, Debug)]
+pub struct Pulse {
+    pub at: usize,
+    pub activity: Vec<u8>,
+    pub cost: Option<String>,
 }
 
 #[cfg(test)]
@@ -3449,6 +3481,26 @@ mod tests {
         assert!(PALETTE.contains(&odd.color.as_str()), "{}", odd.color);
         assert_eq!(odd.color, MarkState::of("prod.example.com:22", &marks("production", None)).unwrap().color,
             "the same name came out two colours");
+    }
+
+    /// What moves on its own is told apart from everything else: a state
+    /// that differs only in a tab's bars or cost is that and nothing more,
+    /// and says which tab moved; any other change is not
+    #[test]
+    fn what_moves_on_its_own_is_told_apart_from_the_rest() {
+        let before = UiState { tabs: vec![tab(1, "a"), tab(2, "b")], ..Default::default() };
+        let mut now = before.clone();
+        now.tabs[1].activity = vec![0, 3, 7];
+        now.tabs[1].cost = Some("2% · 80 MB".into());
+        assert_eq!(now.without_pulse(), before.without_pulse(), "the bars and the cost count as a change of the rest");
+        assert_eq!(
+            now.pulse_since(&before),
+            vec![Pulse { at: 1, activity: vec![0, 3, 7], cost: Some("2% · 80 MB".into()) }],
+            "only the tab that moved is told"
+        );
+        let mut renamed = now.clone();
+        renamed.tabs[0].name = "renamed".into();
+        assert_ne!(renamed.without_pulse(), before.without_pulse(), "a name changed was taken for the bars moving");
     }
 
     fn tab(index: usize, name: &str) -> TabState {

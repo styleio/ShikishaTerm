@@ -159,13 +159,77 @@ fn fill(pattern: &str, with: impl Fn(Option<usize>) -> String) -> String {
 /// that file, and a second walk written beside this one would be a second
 /// place for the pattern rules to drift.
 pub fn locate(pattern: &str, id: &str) -> Option<PathBuf> {
+    located(pattern, id, false)
+}
+
+/// The same, for what asks again and again on its own -- a tab looking at
+/// its conversation every few seconds -- rather than for a person waiting on
+/// the answer. A record not there yet is not walked for again at every ask:
+/// a Codex record is one file among every day's folder of every conversation
+/// had, and a CLI that has not written its record yet would have all of them
+/// listed every two seconds for as long as it does not. It is walked for
+/// again after a wait that grows, up to [`MISSED_REST_MOST`]
+pub fn locate_lately(pattern: &str, id: &str) -> Option<PathBuf> {
+    located(pattern, id, true)
+}
+
+/// The longest a record not found is left before it is walked for again
+pub const MISSED_REST_MOST: std::time::Duration = std::time::Duration::from_secs(16);
+const MISSED_REST_FIRST: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// What a walk found, kept: where a record is, or when it was last not there
+/// and how many times running
+enum Located {
+    At(PathBuf),
+    Missed { at: std::time::Instant, times: u32 },
+}
+
+/// How long after the `times`-th miss running the record is walked for again
+fn missed_rest(times: u32) -> std::time::Duration {
+    MISSED_REST_FIRST.saturating_mul(1u32 << times.saturating_sub(1).min(8)).min(MISSED_REST_MOST)
+}
+
+fn memo() -> std::sync::MutexGuard<'static, std::collections::HashMap<(String, String), Located>> {
+    static MEMO: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<(String, String), Located>>> =
+        std::sync::OnceLock::new();
+    MEMO.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// How many records are kept in mind before they are all forgotten: a
+/// conversation is one, and a long run has a few hundred at most
+const MEMO_MOST: usize = 4096;
+
+fn located(pattern: &str, id: &str, lately: bool) -> Option<PathBuf> {
     if id.is_empty() {
         return None;
+    }
+    let key = (pattern.to_string(), id.to_string());
+    // Where it was found: still there is one look, not a walk
+    match memo().get(&key) {
+        Some(Located::At(path)) if path.is_file() => return Some(path.clone()),
+        Some(Located::Missed { at, times }) if lately && at.elapsed() < missed_rest(*times) => return None,
+        _ => {}
     }
     // The CLI's own folder first, as it finds it, then every account's of it
     // (`crate::accounts::patterns`): a conversation had as another account is
     // that account's record, and still this one
-    crate::accounts::patterns(pattern).iter().find_map(|p| locate_one(p, id))
+    let found = crate::accounts::patterns(pattern).iter().find_map(|p| locate_one(p, id));
+    let mut memo = memo();
+    if memo.len() >= MEMO_MOST {
+        memo.clear();
+    }
+    let times = match memo.get(&key) {
+        Some(Located::Missed { times, .. }) => *times,
+        _ => 0,
+    };
+    memo.insert(
+        key,
+        match &found {
+            Some(path) => Located::At(path.clone()),
+            None => Located::Missed { at: std::time::Instant::now(), times: times.saturating_add(1) },
+        },
+    );
+    found
 }
 
 /// Whether the record is in one of these places exactly, `{home}` and all
@@ -208,13 +272,16 @@ fn walk_glob(at: PathBuf, steps: &[String]) -> Option<PathBuf> {
     if !step.contains('*') {
         return walk_glob(at.join(step), &steps[1..]);
     }
-    let entries = std::fs::read_dir(&at).ok()?;
-    entries.flatten().find_map(|e| {
-        let name = e.file_name().to_string_lossy().to_string();
-        name_matches(step, &name)
-            .then(|| walk_glob(e.path(), &steps[1..]))
-            .flatten()
-    })
+    // The newest first: a folder of dated folders (`2026/11/21`) is listed
+    // oldest first, and the record looked for is almost always today's
+    let mut names: Vec<(String, PathBuf)> = std::fs::read_dir(&at)
+        .ok()?
+        .flatten()
+        .map(|e| (e.file_name().to_string_lossy().to_string(), e.path()))
+        .filter(|(name, _)| name_matches(step, name))
+        .collect();
+    names.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+    names.into_iter().find_map(|(_, path)| walk_glob(path, &steps[1..]))
 }
 
 /// One name against one pattern. `*` is any run of characters, and the pieces
@@ -480,5 +547,44 @@ mod tests {
         record(&root.join("d"), "x.jsonl", "same-place", &other_way);
         let since = SystemTime::now() - Duration::from_secs(60);
         assert_eq!(find(&spec(&root), Some(&work), since).as_deref(), Some("same-place"));
+    }
+
+    /// A record walked for over and over by a tab is not walked for at every
+    /// ask while it is not there; one asked for by a person always is; where
+    /// one was found is looked at, not walked for
+    #[test]
+    fn a_record_not_there_yet_is_not_walked_for_at_every_ask() {
+        let root = tmp("lately");
+        let pattern = format!("{}/*/*/*/rollout-*-{{id}}.jsonl", root.display()).replace('\\', "/");
+        let id = format!("lately-{}", std::process::id());
+        assert_eq!(locate_lately(&pattern, &id), None);
+        let day = root.join("2026").join("11").join("21");
+        std::fs::create_dir_all(&day).unwrap();
+        let file = day.join(format!("rollout-2026-11-21T10-00-00-{id}.jsonl"));
+        std::fs::write(&file, "{}\n").unwrap();
+        assert_eq!(locate_lately(&pattern, &id), None, "walked for again before the rest is over");
+        assert_eq!(locate(&pattern, &id).as_deref(), Some(file.as_path()), "a person asking is answered at once");
+        assert_eq!(locate_lately(&pattern, &id).as_deref(), Some(file.as_path()), "and once found, it is where it was");
+        std::fs::remove_file(&file).unwrap();
+        assert_eq!(locate(&pattern, &id), None, "a record gone is not still there");
+        // The rest grows, and stops growing
+        assert_eq!(missed_rest(1), Duration::from_secs(2));
+        assert_eq!(missed_rest(2), Duration::from_secs(4));
+        assert_eq!(missed_rest(40), MISSED_REST_MOST);
+    }
+
+    /// Dated folders are walked newest first: today's record is found
+    /// without listing every day before it
+    #[test]
+    fn dated_folders_are_walked_newest_first() {
+        let root = tmp("newest-first");
+        for day in ["2026/11/20", "2026/11/21"] {
+            let d = root.join(day);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("rollout-x-same.jsonl"), "{}\n").unwrap();
+        }
+        let pattern = format!("{}/*/*/*/rollout-*-{{id}}.jsonl", root.display()).replace('\\', "/");
+        let found = locate(&pattern, "same").unwrap();
+        assert!(found.display().to_string().replace('\\', "/").contains("2026/11/21"), "{found:?}");
     }
 }

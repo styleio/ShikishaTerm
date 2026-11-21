@@ -545,15 +545,37 @@ pub struct Standing {
     pub kind: FailKind,
 }
 
-/// [`Standing`] of a record on this machine
+/// [`Standing`] of a record on this machine.
+///
+/// Asked every few seconds for every AI tab, and a record mostly lies still
+/// between turns: one that is the same length and was last written at the
+/// same moment as when it was last read stands where it stood, and is not
+/// read again
 pub fn standing_of(path: &Path) -> Option<Standing> {
+    type Seen = std::collections::HashMap<std::path::PathBuf, (u64, Option<std::time::SystemTime>, Standing)>;
+    static SEEN: std::sync::OnceLock<std::sync::Mutex<Seen>> = std::sync::OnceLock::new();
+    let seen = || SEEN.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
     let mut file = File::open(path).ok()?;
-    let len = file.metadata().ok()?.len();
+    let meta = file.metadata().ok()?;
+    let (len, written) = (meta.len(), meta.modified().ok());
+    if let Some((l, w, standing)) = seen().get(path)
+        && (*l, *w) == (len, written)
+        && written.is_some()
+    {
+        return Some(standing.clone());
+    }
     let start = len.saturating_sub(TAIL_READ);
     let mut buf = vec![0u8; (len - start) as usize];
     file.seek(SeekFrom::Start(start)).ok()?;
     file.read_exact(&mut buf).ok()?;
-    Some(standing_in(len, &buf, start > 0))
+    let standing = standing_in(len, &buf, start > 0);
+    let mut seen = seen();
+    // A record per conversation: a long run has a few hundred at most
+    if seen.len() >= 1024 {
+        seen.clear();
+    }
+    seen.insert(path.to_path_buf(), (len, written, standing.clone()));
+    Some(standing)
 }
 
 /// [`Standing`] of a record `len` long whose end is `tail`, read as

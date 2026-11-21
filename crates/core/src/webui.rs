@@ -7079,7 +7079,9 @@ function refreshSave() {
 }
 // Adding, removing, or reordering tabs doesn't fire an input event,
 // so listening for events alone would miss it. Comparing the content directly is more reliable
-setInterval(refreshSave, 600);
+// Not while nobody can see it: the whole of the settings is put in words for
+// each look, and a desk of hundreds of folders is a lot of words
+setInterval(() => { if (!document.hidden) refreshSave(); }, 600);
 
 // ── Widgets ─────────────────────────────────────────────
 // One thing to fill in: its name above, the control, and under it the line

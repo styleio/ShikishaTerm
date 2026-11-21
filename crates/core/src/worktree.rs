@@ -3870,9 +3870,15 @@ fn bases_said(out: &str) -> (Vec<String>, String) {
         .or(current)
         .unwrap_or_else(|| "HEAD".into());
     let mut out = vec![chosen.clone()];
+    // A repository can hold tens of thousands of branches: told apart by a
+    // set, not by going through the list for each one
+    let mut seen: std::collections::HashSet<String> = std::iter::once(chosen.clone()).collect();
     for name in all {
+        if out.len() >= BASES_MOST {
+            break;
+        }
         // `origin/HEAD` points at another of these; nobody starts from it
-        if !name.ends_with("/HEAD") && name != "origin" && !out.contains(&name) {
+        if !name.ends_with("/HEAD") && name != "origin" && seen.insert(name.clone()) {
             out.push(name);
         }
     }
@@ -3889,8 +3895,11 @@ pub fn bases(main: &Path) -> Vec<String> {
         return vec!["HEAD".into()];
     };
     let mut out = vec![default_base(main)];
+    // Told apart by a set: a repository can hold tens of thousands of branches,
+    // and going through the list for each would be their number squared
+    let mut seen: std::collections::HashSet<String> = out.iter().cloned().collect();
     let mut add = |name: String| {
-        if !name.is_empty() && !out.contains(&name) {
+        if out.len() < BASES_MOST && !name.is_empty() && seen.insert(name.clone()) {
             out.push(name);
         }
     };
@@ -3929,9 +3938,12 @@ pub fn bases(main: &Path) -> Vec<String> {
             }
         }
     }
-    out.truncate(200);
     out
 }
+
+/// How many branches the worktree dialog is offered to grow from: the
+/// default, then the remote's, then this machine's, as many as a picker shows
+const BASES_MOST: usize = 200;
 
 /// Whether a name drawn for new work is still free: no branch of that name
 /// here, and nothing standing where this project would put its folder

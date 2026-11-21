@@ -227,6 +227,77 @@ pub fn stamp_of(path: &Path) -> String {
     stamp_from(when, m.len())
 }
 
+/// How long a file's mark stands before the disk is asked again
+const STAMP_FRESH: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// The marks of the files open in editors, read off the drawing.
+///
+/// The editor is told when somebody else wrote its file by the mark in the
+/// state, which is built every pass. Asking the disk there costs little on a
+/// local disk, but a file on a share that stopped answering would stop the
+/// drawing -- every tab with it -- for as long as the share takes. So the
+/// disk is asked on a thread, at most every [`STAMP_FRESH`], and the drawing
+/// takes the last answer. What the app itself reads or writes is put here at
+/// once (`put`), so its own save is never taken for somebody else's
+#[derive(Default)]
+pub struct Stamps {
+    known: std::sync::Mutex<std::collections::HashMap<PathBuf, Stamped>>,
+}
+
+#[derive(Default)]
+struct Stamped {
+    stamp: String,
+    read: Option<std::time::Instant>,
+    out: bool,
+    /// Asked for since the table was last tidied
+    wanted: bool,
+}
+
+/// The one table, for the whole app
+pub fn stamps() -> &'static Stamps {
+    static STAMPS: std::sync::OnceLock<Stamps> = std::sync::OnceLock::new();
+    STAMPS.get_or_init(Stamps::default)
+}
+
+impl Stamps {
+    fn table(&self) -> std::sync::MutexGuard<'_, std::collections::HashMap<PathBuf, Stamped>> {
+        self.known.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The last mark of this file, empty until the disk has answered; and the
+    /// disk asked again, off this thread, once that has stood a while
+    pub fn look(&'static self, at: &Path) -> String {
+        let mut known = self.table();
+        let e = known.entry(at.to_path_buf()).or_default();
+        e.wanted = true;
+        if !e.out && e.read.is_none_or(|r| r.elapsed() >= STAMP_FRESH) {
+            e.out = true;
+            let at = at.to_path_buf();
+            std::thread::spawn(move || {
+                let stamp = stamp_of(&at);
+                if let Some(e) = self.table().get_mut(&at) {
+                    (e.stamp, e.read, e.out) = (stamp, Some(std::time::Instant::now()), false);
+                }
+            });
+        }
+        e.stamp.clone()
+    }
+
+    /// What the app itself just read or wrote: the mark it handed the page
+    pub fn put(&self, at: &Path, stamp: &str) {
+        let mut known = self.table();
+        let e = known.entry(at.to_path_buf()).or_default();
+        (e.stamp, e.read) = (stamp.to_string(), Some(std::time::Instant::now()));
+    }
+
+    /// Forget the files not asked about since the last time: those no editor
+    /// has open any more. One being read is kept until its answer is in
+    pub fn tidy(&self) {
+        let mut known = self.table();
+        known.retain(|_, e| std::mem::take(&mut e.wanted) || e.out);
+    }
+}
+
 /// The same mark, from what another machine said about its file. One way of
 /// writing it, so a file there and a file here are followed by the same page
 pub fn stamp_from(modified: u64, len: u64) -> String {
@@ -1756,6 +1827,33 @@ mod tests {
         std::fs::write(&at, "one and a half").unwrap();
         assert_ne!(stamp_of(&at), first, "when the length changes the mark changes too");
         assert!(stamp_of(&at.with_file_name("nothing")).is_empty(), "what is not there has no mark");
+    }
+
+    /// The drawing is handed the last mark without asking the disk itself;
+    /// what the app wrote is the mark at once; a file nobody has open goes
+    #[test]
+    fn the_marks_of_open_files_are_read_off_the_drawing() {
+        let marks: &'static Stamps = Box::leak(Box::default());
+        let at = scratch("stamps").join("a.txt");
+        std::fs::write(&at, "one").unwrap();
+        assert_eq!(marks.look(&at), "", "the first look waits on nothing");
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while marks.look(&at).is_empty() && std::time::Instant::now() < until {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(marks.look(&at), stamp_of(&at), "the disk's answer comes in");
+        // Written by the app: the drawing has that mark before the disk is asked again
+        std::fs::write(&at, "one and a half").unwrap();
+        marks.put(&at, &stamp_of(&at));
+        assert_eq!(marks.look(&at), stamp_of(&at));
+        // Asked since the last tidy: kept. Not asked by the next one: gone
+        marks.tidy();
+        assert!(marks.table().contains_key(&at));
+        while marks.table().get(&at).is_some_and(|e| e.out) {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        marks.tidy();
+        assert!(!marks.table().contains_key(&at), "a file no editor has open is kept");
     }
 
     /// What another machine prints for a search by name reads as the same

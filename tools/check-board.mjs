@@ -261,6 +261,128 @@ for (const side of ['window', 'remote']) {
         if (files.hitsMore !== 400) fail(what, '"show more" of the hits left ' + files.hitsMore + ' rows, not 400');
         if (files.tree !== 200) fail(what, 'a folder of 6000 entries made ' + files.tree + ' rows at once, not 200');
       } catch (e) { fail(what, 'the files panel threw: ' + String(e.message).split('\n')[0]); }
+      // Other long lists: a repository of thousands of branches, a Project
+      // of a thousand cards, a folder of a thousand decisions -- each made a
+      // part at a time, and made again only when it changed
+      try {
+        const lists = await chrome.run(`(() => {
+          const out = {};
+          // The branches, the one the folder is on far down the list
+          const box = document.getElementById("gitpanel");
+          const was = {G, hidden: box.hidden};
+          try {
+            box.hidden = false;
+            G = gitFresh("branches");
+            const names = Array.from({length: 3000}, (_, i) => "feature/" + String(i).padStart(4, "0"));
+            G.branches = names.map((name, i) => ({name, current: i === 2900}));
+            drawGit();
+            out.branchRows = gitUi.branches.querySelectorAll(".row").length;
+            out.hereShown = !!gitUi.branches.querySelector(".row.here");
+            const first = gitUi.branches.querySelector(".row");
+            // Asked again after a stage: a new answer naming the same branches
+            G.branches = names.map((name, i) => ({name, current: i === 2900}));
+            drawGit();
+            out.branchesKept = gitUi.branches.querySelector(".row") === first;
+            gitUi.branches.querySelector(".growsmore").click();
+            out.branchMore = gitUi.branches.querySelectorAll(".row").length;
+          } finally { G = was.G; box.hidden = was.hidden; gitUi = null; box.textContent = ""; }
+          // A Project's board and table
+          const ghWas = I.gh.upTo;
+          try {
+            I.gh.upTo = {};
+            const status = {id: "f1", name: "Status", type: "SINGLE_SELECT", options: [{id: "o1", name: "Todo"}, {id: "o2", name: "Done"}]};
+            const title = {id: "f0", name: "Title", type: "TITLE"};
+            const d = {fields: [title, status], columns: "f1",
+              cards: Array.from({length: 1000}, (_, i) => ({id: "c" + i, title: "card " + i, kind: "issue",
+                values: {f1: {option: i < 900 ? "o1" : "o2"}}}))};
+            const board = ghpBoard(d, {columns: "f1"});
+            const cols = [...board.querySelectorAll(".ghcol")].map(c => c.querySelectorAll(".ghcard").length);
+            out.boardCols = cols;
+            out.boardCounts = [...board.querySelectorAll(".ghcol .ghhead .n")].map(n => n.textContent);
+            board.querySelector(".growsmore").click();
+            out.boardMore = I.gh.upTo;
+            const table = ghpTable(d, {fields: ["f0", "f1"]});
+            out.tableRows = table.querySelectorAll("tr[data-card]").length;
+          } finally { I.gh.upTo = ghWas; }
+          // The decisions, searched through their words
+          const adWas = {records: AD.records, q: AD.q, status: AD.status, listEl: AD.listEl, footEl: AD.footEl, upTo: AD.upTo, upToFor: AD.upToFor};
+          try {
+            AD.listEl = el("div"); AD.footEl = el("div"); AD.status = "all"; AD.q = "";
+            AD.records = Array.from({length: 1000}, (_, i) => ({number: i, file: i + ".md", title: "Decision " + i, status: "accepted",
+              makers: "", text: (i % 3 ? "x " : "the ledger ") + "y".repeat(12000)}));
+            adrFill();
+            out.adrRows = AD.listEl.querySelectorAll(".arow").length;
+            AD.q = "ledger";
+            const t0 = performance.now();
+            for (let i = 0; i < 20; i++) adrFill();
+            out.adrTyped = performance.now() - t0;
+            out.adrFound = AD.listEl.querySelectorAll(".arow").length + (AD.listEl.querySelector(".growsmore") ? "+" : "");
+          } finally { Object.assign(AD, adWas); }
+          return out;
+        })()`);
+        if (lists.branchRows !== 201) fail(what, 'a repository of 3000 branches made ' + lists.branchRows + ' rows at once, not 200 and the row for all of them');
+        if (!lists.hereShown) fail(what, 'the branch the folder is on was not among the branches shown');
+        if (!lists.branchesKept) fail(what, 'the same branches asked for again were made again');
+        if (lists.branchMore !== 401) fail(what, '"show more" of the branches left ' + lists.branchMore + ' rows, not 400');
+        if (JSON.stringify(lists.boardCols) !== JSON.stringify([0, 100, 100])) fail(what, 'the board made ' + JSON.stringify(lists.boardCols) + ' cards in its columns, not up to 100 each');
+        if (JSON.stringify(lists.boardCounts) !== JSON.stringify(["0", "900", "100"])) fail(what, 'the columns counted ' + JSON.stringify(lists.boardCounts));
+        if (!lists.boardMore || !Object.values(lists.boardMore).includes(200)) fail(what, '"show more" of a column did not ask for 200: ' + JSON.stringify(lists.boardMore));
+        if (lists.tableRows !== 100) fail(what, 'the table made ' + lists.tableRows + ' rows of 1000 at once, not 100');
+        if (lists.adrRows !== 200) fail(what, 'a thousand decisions made ' + lists.adrRows + ' rows at once, not 200');
+        if (lists.adrFound !== "200+") fail(what, 'a search of the decisions showed ' + lists.adrFound + ', not the first 200 of 334');
+        if (lists.adrTyped > 600) fail(what, "twenty letters typed in the decisions' search took " + Math.round(lists.adrTyped) + ' ms');
+      } catch (e) { fail(what, 'the long lists threw: ' + String(e.message).split('\n')[0]); }
+      // A terminal printing moves its bars five times a second. Only they
+      // are handed over then, and only they are drawn again: the row they
+      // are on stays the one that was made
+      try {
+        const pulse = await chrome.run(`(() => {
+          // A terminal among the tabs: an AI's row says how long ago instead
+          const was = JSON.stringify(S);
+          try {
+          S = {...S, active: 1, tabs: [{index: 1, name: "sh", id: "sh", key: "pulse-check", kind: "pty", state: "WAIT",
+            state_label: "WAIT", profile: "GENERIC", activity: [0, 0, 0], cost: "1%"}]};
+          drawTabs();
+          const box = document.querySelector('.spark[data-spark^="t:"]');
+          if (!box) return {none: true, tabs: S.tabs.map(t => [t.kind, t.ai, t.group]).slice(0, 5)};
+          const key = box.dataset.spark.slice(2);
+          const at = S.tabs.findIndex(t => t.key === key);
+          const row = box.parentNode;
+          const nav = document.getElementById("tabs") || document.body;
+          const outside = () => [...nav.querySelectorAll("*")].filter(e => !e.closest(".spark"));
+          const rows = outside();
+          window.__pulse([{at, activity: [7, 7, 7, 7, 7, 7, 7, 7, 7, 7], cost: "9%"}]);
+          const now = document.querySelector('.spark[data-spark="t:' + key + '"]');
+          return {rowKept: !!now && now.parentNode === row, tall: now ? [...now.children].every(i => i.style.height === "14px") : false,
+            inState: S.tabs[at].activity.join("") === "7777777777" && S.tabs[at].cost === "9%",
+            rest: outside().every((e, i) => e === rows[i]) && outside().length === rows.length};
+          } finally { S = JSON.parse(was); drawTabs(); }
+        })()`);
+        if (pulse.none) fail(what, 'no tab row drew its bars to be moved: ' + JSON.stringify(pulse.tabs));
+        else {
+          if (!pulse.rowKept) fail(what, 'the bars moving made the row again');
+          if (!pulse.tall) fail(what, 'the bars handed over were not drawn');
+          if (!pulse.inState) fail(what, 'the bars handed over did not reach the state the page keeps');
+          if (!pulse.rest) fail(what, 'the bars moving changed the rest of the list');
+        }
+        // Under a press nothing is drawn; what moved meanwhile is drawn once it is over
+        const held = await chrome.run(`(async () => {
+          const was = JSON.stringify(S);
+          try {
+            S = {...S, active: 1, tabs: [{index: 1, name: "sh", id: "sh", key: "pulse-held", kind: "pty", state: "WAIT",
+              state_label: "WAIT", profile: "GENERIC", activity: [0], cost: ""}]};
+            drawTabs();
+            holding = true;
+            window.__pulse([{at: 0, activity: [5, 5], cost: "3%"}]);
+            const during = S.tabs[0].activity.join("");
+            release();
+            await new Promise(r => setTimeout(r, 20));
+            return {during, after: S.tabs[0].activity.join("")};
+          } finally { holding = false; S = JSON.parse(was); drawTabs(); }
+        })()`);
+        if (held.during !== "0") fail(what, 'the bars were drawn under a press');
+        if (held.after !== "55") fail(what, 'the bars that moved under a press were not drawn after it: ' + held.after);
+      } catch (e) { fail(what, 'the bars moving threw: ' + String(e.message).split('\n')[0]); }
       // Removing a worktree that holds thousands of new files: the question
       // names the first of them, and the rest a press away
       try {

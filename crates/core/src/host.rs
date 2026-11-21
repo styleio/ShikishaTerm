@@ -179,6 +179,12 @@ pub trait Shell {
         true
     }
     fn last_drawn(&self) -> Option<&crate::uistate::UiState>;
+    /// A number that moves whenever what `last_drawn` holds does, for a
+    /// caller that keeps a copy of it to tell whether its copy still stands.
+    /// None: not kept, and the copy is to be taken again every time
+    fn drawn_gen(&self) -> Option<u64> {
+        None
+    }
     fn queue_input(&mut self, ev: Event);
     fn inject(&mut self, ev: Event);
     /// Whether the event `poll` last handed over was `inject`ed -- done by

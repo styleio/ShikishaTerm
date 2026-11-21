@@ -4602,6 +4602,14 @@ impl Tab {
         crate::sessionfind::locate(glob, id)
     }
 
+    /// The same, for the looks this tab makes again and again by itself: a
+    /// record not written yet is walked for again after a rest
+    /// (`crate::sessionfind::locate_lately`)
+    fn record_lately(&self) -> Option<std::path::PathBuf> {
+        let (glob, id) = self.record_named()?;
+        crate::sessionfind::locate_lately(glob, id)
+    }
+
     /// Where this tab's CLI keeps its record of the conversation, on this PC
     /// or on the machine the tab runs on -- the record the reader (📖) reads
     pub fn record_at(&self) -> Option<crate::reader::Record> {
@@ -4711,7 +4719,7 @@ impl Tab {
             (None, _) => true,
         };
         if stale {
-            self.turn_look.found = id.zip(self.record());
+            self.turn_look.found = id.zip(self.record_lately());
         }
         let standing = self.turn_look.found.as_ref().and_then(|(_, path)| crate::reader::standing_of(path));
         let (busy, failed, kind) = reading(standing);
@@ -4768,7 +4776,7 @@ impl Tab {
         }
         r.next = now + RECORD_EVERY;
         if r.path.is_none() {
-            let found = self.record();
+            let found = self.record_lately();
             if let Some(r) = self.record_reply.as_mut() {
                 r.path = found;
             }

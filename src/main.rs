@@ -487,6 +487,11 @@ struct WinSurface {
     phone: Option<(u16, u16)>,
     /// The last state we sent. Only send again when it changes.
     last: Option<shikisha_core::uistate::UiState>,
+    /// The last whole state sent, without what moves on its own
+    /// (`UiState::without_pulse`): while a new state is this, only that moved
+    last_bare: Option<shikisha_core::uistate::UiState>,
+    /// Moves whenever `last` does (`Shell::drawn_gen`)
+    drawn_gen: u64,
     /// The terminal contents as the page last got them, row by row. Kept in
     /// pieces because that is the shape of a change: an AI's spinner turning
     /// over moves one line, and the page can be told to repair just that one
@@ -557,6 +562,7 @@ impl WinSurface {
     fn set_phone_panes(&mut self, panes: Vec<shikisha_shared::PaneGeom>) { self.phone_panes = panes; }
     fn is_hidden(&self) -> bool { self.hidden }
     fn last_drawn(&self) -> Option<&shikisha_core::uistate::UiState> { self.last.as_ref() }
+    fn drawn_gen(&self) -> Option<u64> { Some(self.drawn_gen) }
     fn queue_input(&mut self, ev: Event) { self.pending.push_back((ev, false)); }
 
     /// Puts an externally-arrived operation into the same queue as window keystrokes.
@@ -1093,6 +1099,8 @@ impl WinSurface {
                 Ev::Ready { from: None, .. } => {
                     self.page_up = true;
                     self.last = None;
+                    self.last_bare = None;
+                    self.drawn_gen += 1;
                     self.last_screen_rows.clear();
                     self.last_screen_key = None;
                     self.last_cursor = None;
@@ -1297,6 +1305,8 @@ fn run_in_window() -> Result<()> {
             cols: 120,
             phone: None,
             last: None,
+            last_bare: None,
+            drawn_gen: 0,
             last_screen_rows: Vec::new(),
             last_screen_key: None,
             last_cursor: None,
@@ -1765,7 +1775,20 @@ impl WinSurface {
             {
                 let w = &mut *self;
                 let state = ui_state_of(tabs, ui, flash);
-                if w.last.as_ref() != Some(&state) {
+                // Only the bars and costs moved: those, and not the whole state.
+                // The page draws the rest from what it already has
+                let bare = (w.last.as_ref() != Some(&state)).then(|| state.without_pulse());
+                if let (Some(last), Some(bare)) = (w.last.as_ref(), bare.as_ref())
+                    && w.last_bare.as_ref() == Some(bare)
+                {
+                    let pulse = state.pulse_since(last);
+                    let _ = w.win.eval(&format!(
+                        "return window.__pulse && window.__pulse({});",
+                        serde_json::to_string(&pulse).unwrap_or_default()
+                    ));
+                    w.last = Some(state);
+                    w.drawn_gen += 1;
+                } else if w.last.as_ref() != Some(&state) {
                     let json = serde_json::to_string(&state).unwrap_or_default();
                     if w.last.is_none() {
                         shikisha_core::append_hook_log(&format!(
@@ -1780,6 +1803,8 @@ impl WinSurface {
                         serde_json::to_string(&json).unwrap_or_default()
                     ));
                     w.last = Some(state);
+                    w.last_bare = bare;
+                    w.drawn_gen += 1;
                 }
                 // Opened only once the page has what it draws from: a page
                 // that has just come back gets its state in the lines above
@@ -2342,6 +2367,7 @@ impl shikisha_core::host::Shell for WinSurface {
     fn is_hidden(&self) -> bool { WinSurface::is_hidden(self) }
     fn pages_find_themselves(&self) -> bool { browser::Browser::pages_find_themselves() }
     fn last_drawn(&self) -> Option<&shikisha_core::uistate::UiState> { WinSurface::last_drawn(self) }
+    fn drawn_gen(&self) -> Option<u64> { WinSurface::drawn_gen(self) }
     fn queue_input(&mut self, ev: Event) { WinSurface::queue_input(self, ev) }
     fn inject(&mut self, ev: Event) { WinSurface::inject(self, ev) }
     fn polled_from_afar(&self) -> bool { self.polled_afar }

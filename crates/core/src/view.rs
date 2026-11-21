@@ -437,10 +437,11 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
                 && crate::uistate::same_folder(m.place(), k)))
         .collect();
     // A row is put away with the folder it stands in: that path on that
-    // machine (see [`surface_place`])
-    let hidden_here = |place: Option<&std::path::Path>| {
-        place.is_some_and(|d| put_away.iter().any(|h| crate::uistate::same_folder(h, d)))
-    };
+    // machine (see [`surface_place`]). Each folder is put in words once and
+    // looked up, not compared with every one put away for every row: this is
+    // built on every pass, for every tab
+    let put_away_keys: std::collections::HashSet<String> = put_away.iter().map(|h| crate::folder_key(h)).collect();
+    let hidden_here = |place: Option<&std::path::Path>| place.is_some_and(|d| put_away_keys.contains(&crate::folder_key(d)));
     crate::uistate::GroupState::name_projects(&mut groups, &ui.folder_projects);
     crate::uistate::GroupState::name_work_items(&mut groups, &ui.folder_items);
     crate::uistate::GroupState::describe(&mut groups, &ui.folder_labels);
@@ -571,15 +572,25 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
     // Ad-hoc folders still belong only to their live tabs.
     let folder_catalog = groups.iter().filter(|(k, _)| ui.folders.iter().any(|(p, _)| crate::uistate::same_folder(k, p)))
         .map(|(_, g)| g.clone()).collect();
-    groups.retain(|(k, _)| !put_away.iter().any(|h| crate::uistate::same_folder(h, k)));
+    groups.retain(|(k, _)| !put_away_keys.contains(&crate::folder_key(k)));
     // The pairing link as it should be shown, with the network it leads to
     let shown = ui.qr.as_deref().map(crate::netaddr::shown_link);
     // The folder a row stands under: its folder on the machine that folder
     // is on, by place key (see [`surface_place`])
+    // Looked up by the folder in words, the first of a spelling as before
+    let mut group_index: std::collections::HashMap<String, usize> = std::collections::HashMap::with_capacity(groups.len());
+    for (i, (k, _)) in groups.iter().enumerate() {
+        group_index.entry(crate::folder_key(k)).or_insert(i);
+    }
     let group_of = |p: &Surface| -> Option<usize> {
         let key = surface_place(p, tabs)?;
-        groups.iter().position(|(k, _)| crate::uistate::same_folder(k, &key))
+        group_index.get(&crate::folder_key(&key)).copied()
     };
+    // The draft of each folder, the same way
+    let mut drafts_by: std::collections::HashMap<String, &_> = std::collections::HashMap::with_capacity(ui.drafts.len());
+    for (k, d) in ui.drafts.iter() {
+        drafts_by.entry(crate::folder_key(k)).or_insert(d);
+    }
     crate::uistate::UiState {
         folder_catalog,
         groups: groups.iter().map(|(_, g)| g.clone()).collect(),
@@ -681,8 +692,8 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
                     ts.draft = t
                         .place()
                         .filter(|_| t.is_ai())
-                        .and_then(|c| ui.drafts.iter().find(|(k, _)| crate::uistate::same_folder(k, &c)))
-                        .map(|(_, d)| d.clone());
+                        .and_then(|c| drafts_by.get(&crate::folder_key(&c)))
+                        .map(|d| (*d).clone());
                     // Under its own machine's folder, by place key
                     ts.group = group_of(p);
                     // A terminal on a server wears that server's name. A tab

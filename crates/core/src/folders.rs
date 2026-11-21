@@ -808,13 +808,28 @@ impl Drift {
 }
 
 /// One folder's last answer, and what it was an answer about.
+#[derive(Default)]
 struct Drifted {
     drift: Drift,
     /// The two commits it was worked out from. While these are unchanged the
-    /// answer cannot have changed either, so nothing is recomputed
-    of: (String, String),
+    /// answer cannot have changed either, so nothing is recomputed. None: the
+    /// folder is in no repository, or on a branch the remote has never heard of
+    of: Option<(String, String)>,
     settled: bool,
+    /// When the two commits were last read
+    read: Option<Instant>,
+    /// Whether they are being read now
+    out: bool,
 }
+
+/// How long the two commits a folder was last found at stand before they are
+/// read again: a fetch, a commit or a switch of branch shows within this
+const DRIFT_FRESH: Duration = Duration::from_secs(2);
+
+/// How many folders are looked at together. Each look is a few small files
+/// and, when they moved, one git; a hundred worktrees after a fetch are
+/// looked at a few at a time, never a hundred gits at once
+const DRIFTS_AT_ONCE: usize = 2;
 
 /// How far each folder has drifted, kept up to date in the background.
 #[derive(Clone, Default)]
@@ -831,53 +846,58 @@ pub fn drifts() -> &'static Drifts {
 impl Drifts {
     /// Ask about these folders, and answer with what is known so far.
     ///
-    /// Which two commits to compare is read off the disk here — it is a couple
-    /// of small files. Counting what lies between them is not: that is a walk
-    /// of the history, so it happens on a thread of its own and only when the
-    /// two commits have actually changed. In practice that is once per fetch,
-    /// not once per frame.
+    /// Called from the drawing, every frame, so nothing is read here: which
+    /// two commits to compare is a few small files, but a hundred folders of
+    /// them every frame is thousands of reads a second, and a folder on a
+    /// share that stopped answering would stop the drawing with it. They are
+    /// read on a thread, a few folders at a time, each again once what was
+    /// read has stood for [`DRIFT_FRESH`]. Counting what lies between them --
+    /// a walk of the history -- happens on that thread too, and only when the
+    /// two commits have changed: once per fetch, not once per look.
     pub fn look(&self, paths: &[PathBuf]) -> HashMap<PathBuf, Drift> {
+        let now = Instant::now();
         let mut out = HashMap::with_capacity(paths.len());
-        let mut send: Vec<(PathBuf, String, String)> = Vec::new();
+        let mut send: Vec<PathBuf> = Vec::new();
         {
             let mut known = self.known.lock().unwrap_or_else(|e| e.into_inner());
-            known.retain(|k, _| paths.iter().any(|p| p == k));
+            let wanted: std::collections::HashSet<&PathBuf> = paths.iter().collect();
+            known.retain(|k, _| wanted.contains(k));
+            let mut busy = known.values().filter(|e| e.out).count();
             for p in paths {
-                let Some(ends) = ends_of(p) else {
-                    // Not in a repository, or on a branch the remote has never
-                    // heard of. Neither is a state to draw a number for
-                    known.remove(p);
-                    continue;
-                };
-                match known.get(p) {
-                    Some(e) if e.of == ends => {
-                        if e.settled {
-                            out.insert(p.clone(), e.drift.clone());
-                        }
-                    }
-                    _ => {
-                        known.insert(
-                            p.clone(),
-                            Drifted { drift: Drift::default(), of: ends.clone(), settled: false },
-                        );
-                        send.push((p.clone(), ends.0, ends.1));
-                    }
+                let e = known.entry(p.clone()).or_default();
+                if e.settled && e.of.is_some() {
+                    out.insert(p.clone(), e.drift.clone());
+                }
+                if busy < DRIFTS_AT_ONCE && !e.out && e.read.is_none_or(|at| now.duration_since(at) >= DRIFT_FRESH) {
+                    e.out = true;
+                    busy += 1;
+                    send.push(p.clone());
                 }
             }
         }
-        for (p, mine, theirs) in send {
+        for p in send {
             let known = Arc::clone(&self.known);
             std::thread::spawn(move || {
-                let drift = count_between(&p, &mine, &theirs);
-                if let Ok(mut map) = known.lock()
-                    && let Some(e) = map.get_mut(&p) {
-                        // Only if it is still an answer to the question that
-                        // was asked: a fetch during the walk moves the ends
-                        if e.of == (mine, theirs) {
-                            e.drift = drift;
-                            e.settled = true;
-                        }
-                    }
+                let ends = ends_of(&p);
+                // Counted only when the commits moved since the last answer
+                let before = known.lock().ok().and_then(|map| map.get(&p).map(|e| (e.of.clone(), e.settled)));
+                let counted = match (&ends, before) {
+                    (Some(now), Some((Some(was), true))) if *now == was => None,
+                    (Some((mine, theirs)), _) => Some(count_between(&p, mine, theirs)),
+                    (None, _) => None,
+                };
+                let Ok(mut map) = known.lock() else { return };
+                // A folder no longer asked about has gone from the table
+                let Some(e) = map.get_mut(&p) else { return };
+                e.read = Some(Instant::now());
+                e.out = false;
+                match (ends, counted) {
+                    // Not in a repository, or on a branch the remote has
+                    // never heard of. Neither is a state to draw a number for
+                    (None, _) => (e.of, e.settled) = (None, false),
+                    (Some(ends), Some(drift)) => (e.of, e.drift, e.settled) = (Some(ends), drift, true),
+                    (Some(_), None) => {}
+                }
             });
         }
         out
@@ -907,6 +927,9 @@ const LEFT_FRESH: Duration = Duration::from_secs(20);
 /// files, and each look reads all of them: one that takes two seconds is asked
 /// a minute later, never all the time
 const LEFT_REST: u32 = 30;
+
+/// How many worktrees are looked at together
+const LEFT_AT_ONCE: usize = 2;
 
 /// One folder's last answer about what is left, and whether one is out
 #[derive(Default)]
@@ -940,14 +963,19 @@ impl Leftovers {
         let mut send = Vec::new();
         {
             let mut known = self.known.lock().unwrap_or_else(|e| e.into_inner());
-            known.retain(|k, _| paths.iter().any(|p| p == k));
+            let wanted: std::collections::HashSet<&PathBuf> = paths.iter().collect();
+            known.retain(|k, _| wanted.contains(k));
+            // A few at a time: each look is several gits, and two hundred
+            // worktrees asked at once would be eight hundred gits at once
+            let mut busy = known.values().filter(|e| e.out).count();
             for p in paths {
                 let e = known.entry(p.clone()).or_default();
                 if let Some(left) = &e.left {
                     out.insert(p.clone(), left.clone());
                 }
-                if !e.out && e.settled.is_none_or(|at| now.duration_since(at) >= LEFT_FRESH.max(e.took * LEFT_REST)) {
+                if busy < LEFT_AT_ONCE && !e.out && e.settled.is_none_or(|at| now.duration_since(at) >= LEFT_FRESH.max(e.took * LEFT_REST)) {
                     e.out = true;
+                    busy += 1;
                     send.push(p.clone());
                 }
             }
@@ -1106,6 +1134,43 @@ mod tests {
             }
         }
         panic!("the look never came back");
+    }
+
+    /// How far a folder is from the remote is worked out off the drawing and
+    /// arrives at a later look; asking reads nothing itself
+    #[test]
+    fn a_drift_arrives_without_the_look_reading_anything() {
+        let at = std::env::temp_dir().join(format!("shikisha-drift-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&at);
+        std::fs::create_dir_all(&at).unwrap();
+        let git = |args: &[&str]| {
+            let mut run = std::process::Command::new("git");
+            run.arg("-C").arg(&at).args(args);
+            let out = crate::detach_console(&mut run).output().expect("git is needed");
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "--allow-empty", "-m", "one"]);
+        let first = git(&["rev-parse", "HEAD"]);
+        git(&["-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "--allow-empty", "-m", "two"]);
+        // As a fetch leaves it: the remote one commit behind
+        std::fs::create_dir_all(at.join(".git/refs/remotes/origin")).unwrap();
+        std::fs::write(at.join(".git/refs/remotes/origin/main"), format!("{first}\n")).unwrap();
+        let drifts = Drifts::default();
+        let paths = vec![at.clone()];
+        assert!(drifts.look(&paths).is_empty(), "the first look has nothing yet, and waits on nothing");
+        let until = Instant::now() + Duration::from_secs(20);
+        let mut seen = None;
+        while Instant::now() < until {
+            seen = drifts.look(&paths).get(&at).cloned();
+            if seen.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(seen, Some(Drift { behind: 0, ahead: 1 }));
+        let _ = std::fs::remove_dir_all(&at);
     }
 
     /// Folders that are no longer worked in stop being asked about.

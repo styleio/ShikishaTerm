@@ -2047,8 +2047,12 @@ fn reload_said_only_that(note: &str) -> bool {
 /// (see the call). `where_` names the desk in the log when it is not the
 /// one in front
 fn probe_sessions(tabs: &mut [Tab], where_: &str) {
+    // Worked out only when a tab is due to look: on every pass for every tab
+    // it was every tab against every other
+    let due = tabs.iter().any(|t| t.session_probe.is_some_and(|(at, _)| std::time::Instant::now() >= at));
+    let alone_all = if due { alone_each(tabs) } else { Vec::new() };
     for i in 0..tabs.len() {
-        let alone = only_one_here(tabs, i);
+        let alone = alone_all.get(i).copied().unwrap_or(false);
         let Some(t) = tabs.get_mut(i) else { continue };
         let Some((at, left)) = t.session_probe else { continue };
         if std::time::Instant::now() < at {
@@ -2131,6 +2135,19 @@ fn probe_sessions(tabs: &mut [Tab], where_: &str) {
             }
         }
     }
+}
+
+/// [`only_one_here`] for every tab at once, in their order. Asked on every
+/// pass, and asked one tab at a time it is every tab against every other --
+/// a hundred and fifty tabs are twenty thousand folders compared each pass.
+/// Each tab's program and folder are put in words once here, and counted
+pub fn alone_each(tabs: &[Tab]) -> Vec<bool> {
+    let keys: Vec<(&str, Option<String>)> = tabs.iter().map(|t| (t.program(), t.cwd().map(crate::folder_key))).collect();
+    let mut count: std::collections::HashMap<&(&str, Option<String>), usize> = std::collections::HashMap::new();
+    for k in &keys {
+        *count.entry(k).or_default() += 1;
+    }
+    keys.iter().map(|k| count.get(k).copied().unwrap_or(0) <= 1).collect()
 }
 
 pub fn only_one_here(tabs: &[Tab], index: usize) -> bool {
@@ -2243,6 +2260,15 @@ pub const EDITOR_SCRATCH: &str = "editor.here";
 /// moment it is sent; a device that watches by asking instead asks every
 /// second and a half, so this is a few of its asks, with room for a slow line
 const LEAVING_GRACE: Duration = Duration::from_secs(5);
+
+/// What the worktree dialog was offered as it opened (see `dialog_offers` in `run`)
+struct DialogOffers {
+    seq: u64,
+    main: std::path::PathBuf,
+    rules: Vec<crate::config::BringRule>,
+    bases: Vec<String>,
+    carry: Vec<crate::worktree::Carry>,
+}
 
 pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // The mode flag is not a command to launch.
@@ -3156,6 +3182,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // The checkout, what it offers, and the places the dialog has open, whose
     // counts the open dialog waits for
     let mut sizes_watch: Option<(std::path::PathBuf, Vec<crate::worktree::Carry>, Vec<String>)> = None;
+    // What the worktree dialog open now was offered as it opened: the
+    // branches to grow from and the things to carry, as the project's rules
+    // gave them. Asked again on every keystroke in the dialog, and finding
+    // them is git run and every branch read -- so they are found once, as it
+    // opens, and again only when the folder or the rules change
+    let mut dialog_offers: Option<DialogOffers> = None;
     // The sign-in step of a project just cloned onto a MicroVM: the checkout
     // whose AI is to be signed in to, before its first worktree is cut
     let mut login_pending: Option<LoginPending> = None;
@@ -3188,6 +3220,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // send on change. The screen is also rate-limited (see below) so a burst of
     // AI output doesn't flood a slow phone link the way pushing every frame would.
     let mut last_remote_ui: Option<String> = None;
+    // Where the window's drawing stood when the phone's copy of it was taken
+    // (`Shell::drawn_gen`)
+    let mut remote_drawn_gen: Option<u64> = None;
     let mut last_remote_rows: Vec<String> = Vec::new();
     let mut last_remote_push = Instant::now() - Duration::from_secs(1);
     // The panes, for the viewers from afar that lay the board out in them
@@ -4491,7 +4526,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             for t in tabs.iter_mut().chain(desk_tabs.iter_mut().flatten()) {
                 t.reconsider();
             }
-            let alone: Vec<bool> = (0..tabs.len()).map(|i| only_one_here(&tabs, i)).collect();
+            let alone: Vec<bool> = alone_each(&tabs);
             for (i, t) in tabs.iter_mut().enumerate() {
                 // Ask what to do about the conversation only once it is
                 // actually being restarted. Working it out first would mean
@@ -4690,6 +4725,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             }
             if std::time::Instant::now() >= place_at {
                 place_at = std::time::Instant::now() + std::time::Duration::from_secs(2);
+                // The files no editor has open any more are forgotten
+                crate::files::stamps().tidy();
                 let mut roots: Vec<(usize, u32)> = tabs
                     .iter()
                     .enumerate()
@@ -5324,12 +5361,18 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
 
             // Hand the current status to the remote UI and run any operations it sent
             if let Some(r) = remote_ui.as_ref() {
-                let snap = remote::Snapshot {
+                // Whether what the window drew moved since the phone's copy
+                // was taken: a whole desk's state is copied, and put in words
+                // for a phone, only when it did -- not five times a second
+                let drawn_now = shell.drawn_gen();
+                let drawn_moved = drawn_now.is_none() || drawn_now != remote_drawn_gen;
+                remote_drawn_gen = drawn_now;
+                let mut snap = remote::Snapshot {
                     // What was built at draw time, read back from where the
                     // window keeps it. `ui` doesn't exist here yet, and
                     // building it again would be a second place that assembles
                     // state -- and one more full build of it every frame.
-                    ui: shell.last_drawn().cloned(),
+                    ui: None,
                     // What the screen push last sent, so a viewer that joins now
                     // is handed the same picture the ones already here can see
                     screen_html: last_remote_rows.join("\n"),
@@ -5372,12 +5415,19 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // whenever it changes; the screen goes out as the rows that
                 // moved, no faster than the viewer's line is draining
                 // (idle = nothing sent).
-                if r.has_state_clients() {
+                let mut held = r.snapshot.lock().unwrap_or_else(|e| e.into_inner());
+                snap.ui = match drawn_moved {
+                    true => shell.last_drawn().cloned(),
+                    false => held.ui.take(),
+                };
+                if r.has_state_clients() && (drawn_moved || last_remote_ui.is_none()) {
                     let ui_json = serde_json::to_string(&snap.ui).unwrap_or_default();
                     if last_remote_ui.as_deref() != Some(ui_json.as_str()) {
                         r.push_state(format!("{{\"ui\":{ui_json}}}"));
                         last_remote_ui = Some(ui_json);
                     }
+                }
+                if r.has_state_clients() {
                     // The heartbeat. Carries nothing the page needs -- it reads
                     // it as "the line is alive" and drops it -- and exists so
                     // that a viewer that has gone is found to be gone.
@@ -5386,7 +5436,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         last_beat = Instant::now();
                     }
                 }
-                *r.snapshot.lock().unwrap() = snap;
+                *held = snap;
             }
 
             // The AIs of the servers this desk has folders on, asked ahead of
@@ -5418,7 +5468,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             }
             while let Ok(route) = far_back_rx.try_recv() {
                 far_wanted.lock().unwrap_or_else(|e| e.into_inner()).remove(&route);
-                let alone: Vec<bool> = (0..tabs.len()).map(|i| only_one_here(&tabs, i)).collect();
+                let alone: Vec<bool> = alone_each(&tabs);
                 for (i, t) in tabs.iter_mut().enumerate() {
                     if !(t.state == TabState::Exited && t.connection_lost() && t.server().is_some_and(|s| s.route() == route)) {
                         continue;
@@ -5435,7 +5485,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             }
 
             // auto_restart: automatically bring exited tabs back
-            let alone: Vec<bool> = (0..tabs.len()).map(|i| only_one_here(&tabs, i)).collect();
+            let alone: Vec<bool> = alone_each(&tabs);
             for (i, t) in tabs.iter_mut().enumerate() {
                 if t.state == TabState::Exited && t.auto_restart {
                     let (plan, _) = resume_plan(t, alone.get(i).copied().unwrap_or(false), true);
@@ -7676,8 +7726,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 .unwrap_or_default(),
             server_marks: cfg.as_ref().map(|c| c.server_marks.clone()).unwrap_or_default(),
             self_cost: self_cost.clone(),
+            // From the settings this loop holds -- read again whenever they are
+            // saved -- not from the file: this is built on every pass
             confer: {
-                let spec = config::confer();
+                let spec = cfg.as_ref().map(|c| c.confer.clone()).unwrap_or_default();
                 crate::uistate::ConferState {
                     rev: convo_log.confer_rev,
                     open: confer_open.0,
@@ -7685,7 +7737,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     open_thread: confer_open.2,
                     auto_open: spec.open,
                     line_max: spec.line_max,
-                    max_rounds: config::operate().max_rounds,
+                    max_rounds: cfg.as_ref().map_or_else(|| config::operate().max_rounds, |c| c.operate.max_rounds),
                 }
             },
             // With a stand-in laid out there is a link to show even when
@@ -7791,7 +7843,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             .get(&e.key)
                             .filter(|seen| &seen.path == rel)
                             .map(|seen| seen.stamp.clone()),
-                        (None, Some(d), Some(rel)) => local_under(d, rel).map(|at| crate::files::stamp_of(&at)),
+                        (None, Some(d), Some(rel)) => local_under(d, rel).map(|at| crate::files::stamps().look(&at)),
                         _ => None,
                     }
                     .filter(|s| !s.is_empty()) };
@@ -10047,7 +10099,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     else {
                         continue;
                     };
-                    let Some(file) = sessionfind::locate(verify, &session.id) else { continue };
+                    let Some(file) = sessionfind::locate_lately(verify, &session.id) else { continue };
                     let from = *read_asks
                         .entry(file.clone())
                         .or_insert_with(|| crate::asks::begin_at(&file));
@@ -14406,7 +14458,23 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             };
             sizes_watch = None;
             let offers = repo.as_deref().map(|main| {
-                let mut carry = crate::worktree::carryables(main, &rules);
+                let kept = dialog_offers
+                    .as_ref()
+                    .filter(|o| !opening && o.seq == ask.seq && o.main == main && o.rules == rules);
+                let (found_bases, mut carry) = match kept {
+                    Some(o) => (o.bases.clone(), o.carry.clone()),
+                    None => {
+                        let found = (crate::worktree::bases(main), crate::worktree::carryables(main, &rules));
+                        dialog_offers = Some(DialogOffers {
+                            seq: ask.seq,
+                            main: main.to_path_buf(),
+                            rules: rules.clone(),
+                            bases: found.0.clone(),
+                            carry: found.1.clone(),
+                        });
+                        found
+                    }
+                };
                 // Before this folder's own changes: a line says what the project says
                 let lines = crate::worktree::carry_lines(&carry);
                 for c in carry.iter_mut() {
@@ -14419,7 +14487,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // Counted on threads; the dialog is given each count when it is in
                 let (sizes, looks, done) = dialog_counts(main, &carry, &ask.look, opening);
                 sizes_watch = (!done).then(|| (main.to_path_buf(), carry.clone(), ask.look.clone()));
-                (crate::worktree::bases(main), carry, lines, sizes, looks)
+                (found_bases, carry, lines, sizes, looks)
             });
             let (mut bases, carryable, carry_lines, carry_sizes, looks) = offers.unwrap_or_default();
             // A folder on another machine: its branches are git's there, asked
@@ -16812,8 +16880,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         }
                         KeyCode::Char('r') => {
                             let mut msgs = Vec::new();
-                            let alone: Vec<bool> =
-                                (0..tabs.len()).map(|i| only_one_here(&tabs, i)).collect();
+                            let alone: Vec<bool> = alone_each(&tabs);
                             for (i, t) in tabs.iter_mut().enumerate() {
                                 if t.state != TabState::Exited {
                                     continue;
@@ -18480,7 +18547,11 @@ fn files_here(panel: &str, act: &str, args: &serde_json::Value, root: &std::path
                 ));
             }
             match std::fs::read(&at) {
-                Ok(bytes) => read_reply(panel, &str_of("path"), &bytes, args, crate::files::stamp_of(&at)),
+                Ok(bytes) => read_reply(panel, &str_of("path"), &bytes, args, {
+                    let stamp = crate::files::stamp_of(&at);
+                    crate::files::stamps().put(&at, &stamp);
+                    stamp
+                }),
                 Err(e) => fail(format!("{e}")),
             }
         }
@@ -18502,7 +18573,11 @@ fn files_here(panel: &str, act: &str, args: &serde_json::Value, root: &std::path
                 Err(refused) => return refused,
             };
             match std::fs::write(&at, &bytes) {
-                Ok(()) => write_reply(panel, &str_of("path"), &bytes, args, crate::files::stamp_of(&at)),
+                Ok(()) => write_reply(panel, &str_of("path"), &bytes, args, {
+                    let stamp = crate::files::stamp_of(&at);
+                    crate::files::stamps().put(&at, &stamp);
+                    stamp
+                }),
                 Err(e) => fail(format!("{e}")),
             }
         }
@@ -24979,6 +25054,15 @@ mod tests {
         };
         tabs[0].resume = Some(only_newest.clone());
         assert!(!only_one_here(&tabs, 0), "there is a partner with the same CLI in the same folder");
+        // Every tab at once says what each one alone says, a tab of its own
+        // folder among them
+        let other = std::env::temp_dir().join("shikisha-alone-elsewhere");
+        std::fs::create_dir_all(&other).unwrap();
+        let elsewhere = tab::TabOptions { cwd: Some(other), ..Default::default() };
+        tabs.push(Tab::spawn("C".into(), &argv, None, 10, 40, elsewhere).unwrap());
+        assert_eq!(alone_each(&tabs), (0..tabs.len()).map(|i| only_one_here(&tabs, i)).collect::<Vec<_>>());
+        assert_eq!(alone_each(&tabs), vec![false, false, true]);
+        tabs.pop();
         let (plan, why) = resume_plan(&tabs[0], only_one_here(&tabs, 0), true);
         assert_eq!(plan, tab::Resume::Fresh);
         assert_eq!(why, Some("msg.resume.ambiguous"), "it starts fresh and says why");

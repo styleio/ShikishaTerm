@@ -1000,7 +1000,7 @@ impl HostSpec {
     }
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct Config {
     // The projects are not here: each desk keeps its own (`DeskConfig::projects`)
     /// Machines that are not this one. Empty on every install until somebody
@@ -2968,7 +2968,7 @@ pub fn delete_secret(
 }
 
 /// A desk entry inside config.json. Either inline tabs or a reference to a definition file
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct DeskSpec {
     pub name: String,
     /// What this desk is called by everything that is not a person: the
@@ -8563,15 +8563,67 @@ pub enum MachineUse {
 
 pub fn load() -> Option<Config> {
     for path in config_candidates() {
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        match serde_json::from_str::<Config>(without_bom(&text)) {
-            Ok(c) if !c.folders.is_empty() || !c.desks.is_empty() => return Some(c),
-            _ => continue,
+        if let Some(c) = load_at(&path) {
+            return Some(c);
         }
     }
     None
+}
+
+/// The settings in one file, read again only when the file has changed.
+///
+/// Asked for from all over the app -- some of it on every pass of the loop
+/// that runs the tabs, to build what the window shows -- and a large desk's
+/// settings are a hundred kilobytes and more to read and take apart, in a
+/// folder a cloud drive may be watching. What was read is kept with the
+/// file's length and the moment it was last written, and handed back while
+/// both are what they were: a save, by the app or by hand, changes them
+/// The longest the settings read are handed back without reading them again
+const LOAD_KEPT: std::time::Duration = std::time::Duration::from_secs(5);
+
+fn load_at(path: &std::path::Path) -> Option<Config> {
+    type Read = (std::path::PathBuf, u64, Option<std::time::SystemTime>, std::time::Instant, Config);
+    static LAST: std::sync::Mutex<Option<Read>> = std::sync::Mutex::new(None);
+    let meta = std::fs::metadata(path).ok()?;
+    let (len, written) = (meta.len(), meta.modified().ok());
+    if written.is_some()
+        && let Some((p, l, w, at, c)) = LAST.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+        && (p.as_path(), *l, *w) == (path, len, written)
+        // And never for long: a disk that keeps times only to the second or
+        // two can be written twice at the same length within one of them
+        && at.elapsed() < LOAD_KEPT
+    {
+        return Some(c.clone());
+    }
+    let text = std::fs::read_to_string(path).ok()?;
+    let c = serde_json::from_str::<Config>(without_bom(&text)).ok().filter(|c| !c.folders.is_empty() || !c.desks.is_empty())?;
+    // Kept only when what was read is what the length and time were taken of:
+    // a file written between the two is read again next time
+    if text.len() as u64 == len {
+        *LAST.lock().unwrap_or_else(|e| e.into_inner()) = Some((path.to_path_buf(), len, written, std::time::Instant::now(), c.clone()));
+    }
+    Some(c)
+}
+
+#[cfg(test)]
+mod load_tests {
+    /// The settings read again are the ones last read while the file has not
+    /// changed, and what was written since as soon as it has
+    #[test]
+    fn the_settings_are_read_again_only_when_the_file_changed() {
+        let path = std::env::temp_dir().join(format!("sk-load-{}.json", std::process::id()));
+        let write = |name: &str| std::fs::write(&path, format!(r#"{{"desks":[{{"name":"{name}","folders":[]}}]}}"#)).unwrap();
+        let name = || super::load_at(&path).map(|c| c.desks[0].name.clone());
+        write("First");
+        assert_eq!(name().as_deref(), Some("First"));
+        assert_eq!(name().as_deref(), Some("First"), "read the same while it stands");
+        // Longer, so it is a change even where the disk keeps the time coarsely
+        write("Second one");
+        assert_eq!(name().as_deref(), Some("Second one"), "a change was not read");
+        std::fs::write(&path, "not settings").unwrap();
+        assert_eq!(name(), None, "what is not settings is no settings");
+        let _ = std::fs::remove_file(&path);
+    }
 }
 
 #[cfg(test)]

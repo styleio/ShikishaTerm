@@ -904,8 +904,15 @@ pub fn status(dir: &Path) -> Result<Vec<Change>> {
         &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
     )?;
     let mut changes = read_status(&out);
+    let conflicted: Vec<String> = changes.iter().filter(|c| c.conflicted()).map(|c| c.path.clone()).collect();
+    let tangled: std::collections::HashSet<String> = conflicted
+        .iter()
+        .zip(markers_in(dir, &conflicted))
+        .filter(|(_, tangled)| *tangled)
+        .map(|(p, _)| p.clone())
+        .collect();
     for change in &mut changes {
-        change.tangled = change.conflicted() && has_markers_in(dir, &change.path);
+        change.tangled = tangled.contains(&change.path);
     }
     Ok(changes)
 }
@@ -931,27 +938,32 @@ pub(crate) fn read_status(out: &str) -> Vec<Change> {
     changes
 }
 
-/// Whether git's conflict markers are still in `rel`, a file of the tree at
-/// `dir` -- read where the tree is. On another machine the file is asked
-/// about over there; one that cannot be asked about is called tangled, for
-/// the same reason a file too large to read is
-fn has_markers_in(dir: &Path, rel: &str) -> bool {
-    match far_of(dir) {
-        None => has_markers(&dir.join(rel)),
-        Some(at) => {
-            let line = format!(
-                "cd {} && grep -q '<<<<<<<' -- {} && grep -q '>>>>>>>' -- {}",
-                sh_word(&dir.to_string_lossy().replace('\\', "/")),
-                sh_word(rel),
-                sh_word(rel)
-            );
-            match crate::elsewhere::exec(&at, &line, 30_000) {
-                // grep: 0 is found, 1 is not found, anything else is trouble
-                Ok(ran) => ran.code != 1,
-                Err(_) => true,
-            }
-        }
+/// Whether git's conflict markers are still in each of `rels`, files of the
+/// tree at `dir` -- read where the tree is. On another machine the files are
+/// asked about over there, as many to a command as a command line holds: a
+/// merge with a thousand conflicts is a few commands, not a thousand. One that
+/// cannot be asked about is called tangled, for the same reason a file too
+/// large to read is
+fn markers_in(dir: &Path, rels: &[String]) -> Vec<bool> {
+    let Some(at) = far_of(dir) else {
+        return rels.iter().map(|rel| has_markers(&dir.join(rel))).collect();
+    };
+    let mut out = Vec::with_capacity(rels.len());
+    for batch in crate::ssh::batches(rels, PATHS_MOST) {
+        // One line of grep's answer for each file, in order: 0 is both markers
+        // found, 1 is not, anything else is trouble
+        let line = format!(
+            "cd {} && for f in {}; do grep -q '<<<<<<<' -- \"$f\" && grep -q '>>>>>>>' -- \"$f\"; echo $?; done",
+            sh_word(&dir.to_string_lossy().replace('\\', "/")),
+            batch.iter().map(|rel| sh_word(rel)).collect::<Vec<_>>().join(" ")
+        );
+        let codes: Vec<String> = match crate::elsewhere::exec(&at, &line, 30_000) {
+            Ok(ran) => ran.out.lines().map(|l| l.trim().to_string()).collect(),
+            Err(_) => Vec::new(),
+        };
+        out.extend((0..batch.len()).map(|i| codes.get(i).is_none_or(|c| c != "1")));
     }
+    out
 }
 
 /// Whether git's conflict markers are still in this file.
@@ -977,10 +989,9 @@ pub fn conflicts(dir: &Path) -> Result<Vec<String>> {
 /// The ones that still have both sides in them. What is left after somebody --
 /// or the AI -- has been through is waiting to be staged, not to be untangled
 pub fn tangled(dir: &Path) -> Result<Vec<String>> {
-    Ok(conflicts(dir)?
-        .into_iter()
-        .filter(|f| has_markers_in(dir, f))
-        .collect())
+    let all = conflicts(dir)?;
+    let tangled = markers_in(dir, &all);
+    Ok(all.into_iter().zip(tangled).filter(|(_, t)| *t).map(|(f, _)| f).collect())
 }
 
 /// The diff, as text. `staged` reads the staged side instead of the working
@@ -2172,11 +2183,14 @@ pub fn commit(
     // Amend rewrites the commit that is already there. On a branch nobody else
     // has, that is tidying; on a shared one it is rewriting what other people
     // have -- which is why it goes through the same refusal as a plain commit
-    let mut args = vec!["commit", "-m", message];
+    // The message goes in on git's input, not on its command line: a message
+    // that lists every file of a large change is longer than Windows lets a
+    // command line be, and git would never be started
+    let mut args = vec!["commit", "-F", "-"];
     if amend {
         args.push("--amend");
     }
-    run_as(dir, &args, "", WORK_LIMIT, who)?;
+    run_as(dir, &args, message, WORK_LIMIT, who)?;
     Ok(run(dir, &["rev-parse", "--short", "HEAD"])?.trim().to_string())
 }
 
@@ -3259,6 +3273,22 @@ fatal: repository 'https://github.com/te0ai/helloworld.git/' not found";
         commit(&dir, "first", &[], false, false, &who).unwrap();
         let by = run(&dir, &["log", "-1", "--format=%an <%ae>"]).unwrap();
         assert_eq!(by.trim(), "Work Name <work@example.invalid>");
+    }
+
+    /// A message longer than a command line can be -- one that lists every
+    /// file of a large change -- is committed, word for word
+    #[test]
+    fn a_message_longer_than_a_command_line_is_committed() {
+        let Some(dir) = scratch_repo("long-message") else { return };
+        std::fs::write(dir.join("a.txt"), "hello").unwrap();
+        stage(&dir, &["a.txt".to_string()]).unwrap();
+        let body: Vec<String> = (0..2000).map(|i| format!("- changed src/generated/file-number-{i:05}.txt")).collect();
+        let message = format!("Regenerate every file\n\n{}", body.join("\n"));
+        assert!(message.len() > 32_767, "the message fits on a command line, which checks nothing");
+        commit(&dir, &message, &[], false, false, &As::default()).unwrap();
+        let said = run(&dir, &["log", "-1", "--format=%B"]).unwrap();
+        assert_eq!(said.trim_end(), message);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

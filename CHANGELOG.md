@@ -43,6 +43,44 @@ once it reaches its first tagged release.
   there.
 
 ### Fixed
+- **The app stays light on a large desk.** Measured with forty terminals
+  printing at once, the loop that runs the tabs now spends a fifth of its
+  time working instead of over a quarter, and the parts that grew with the
+  square of the number of tabs or folders now grow with the number itself:
+  - Nothing the board shows on every pass reads the disk any more: how far
+    each folder is from the remote and whether an open file was changed by
+    somebody else are read on threads of their own, a few folders at a time,
+    so a share that stops answering no longer stops every tab. The settings
+    file is read again only when it has changed, not several times a pass.
+  - Which tabs share a folder, which folder each row is under and which
+    project each folder belongs to are worked out once a pass, not by
+    comparing every tab or folder with every other.
+  - A terminal that is printing moves only its bars of output: the window is
+    handed those and draws only them, rather than the whole desk five times
+    a second. The copy kept for a phone is taken only when the board changed.
+  - An AI CLI's record of the conversation is not looked for again at every
+    look while it has not been written yet (a Codex tab walked every day's
+    folder of every conversation every two seconds), and a record lying still
+    between turns is not read again.
+  - The worktree dialog reads the branches and what can be carried once as it
+    opens, not at every letter typed, and a repository of tens of thousands of
+    branches offers the first 200.
+  - Searching every conversation reads each record a few megabytes at a time
+    and stops in the middle of one when the search is typed over, instead of
+    holding a record of hundreds of megabytes whole.
+  - Worktrees nobody works in, and how far folders are from the remote, are
+    looked at two at a time: two hundred worktrees no longer start eight
+    hundred gits at once.
+  - Long lists are made a part at a time with a button for the next: the Git
+    panel's branches, a GitHub Project's columns and table (100 cards each),
+    and the decisions (ADR) list. The decisions' search folds each record's
+    words once, not at every letter; the conversation's search is drawn once
+    a word rather than once a letter; and the Ideas panel, the issue page, the
+    folder manager, the AI conference and the tab list stop redoing work for
+    every item against every other.
+  - A commit message longer than a command line can be is committed, and a
+    folder on another machine with many conflicted files is asked about in a
+    few commands, not one per file.
 - **The time at the master password lock is no longer taken for the window
   not answering.** The window was timed from when it opened, but asked to
   answer only once the lock was open, so the seconds spent typing the

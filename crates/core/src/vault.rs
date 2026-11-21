@@ -217,6 +217,49 @@ pub fn search_until(query: &str, limit: usize, stop: &dyn Fn() -> bool) -> Found
     search_in(&sources(), query, limit, stop)
 }
 
+/// How much of a record is read at a time while it is searched. A record can
+/// be hundreds of megabytes; it is never held whole, and a search stopped --
+/// a word typed further, the panel closed -- stops between two of these
+const SEARCH_BLOCK: usize = 4 * 1024 * 1024;
+
+/// `needle` in the record at `path`, read a block at a time, with the head of
+/// the record (what its folder and id are read from). Where the line it is
+/// on starts is counted from the start of the file, as a reader opened on it
+/// counts. A line is never cut in two: a block ends at the last line it ends
+fn mention_in(path: &Path, needle: &str, stop: &dyn Fn() -> bool) -> Option<(crate::reader::Mention, String)> {
+    use std::io::Read as _;
+    let mut file = std::fs::File::open(path).ok()?;
+    // The lines read and not yet searched, and where in the file they start
+    let mut held: Vec<u8> = Vec::new();
+    let mut held_at: u64 = 0;
+    let mut block = vec![0u8; SEARCH_BLOCK];
+    loop {
+        if stop() {
+            return None;
+        }
+        let n = file.read(&mut block).ok()?;
+        held.extend_from_slice(&block[..n]);
+        // The whole lines, up to the last newline; all of it at the end
+        let whole = match n {
+            0 => held.len(),
+            _ => held.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1),
+        };
+        if whole > 0 {
+            if let Some(mut found) = crate::reader::mention(&held[..whole], needle) {
+                found.line += held_at;
+                // The head read for the few records found, not kept for
+                // every one searched
+                return Some((found, read_head(path).unwrap_or_default()));
+            }
+            held.drain(..whole);
+            held_at += whole as u64;
+        }
+        if n == 0 {
+            return None;
+        }
+    }
+}
+
 /// The same search over the records of these CLIs, so a test can supply its own
 fn search_in(sources: &[Source], query: &str, limit: usize, stop: &dyn Fn() -> bool) -> Found {
     let needle = query.trim().to_lowercase();
@@ -224,12 +267,8 @@ fn search_in(sources: &[Source], query: &str, limit: usize, stop: &dyn Fn() -> b
     // oldest rather than on whichever CLI happens to be listed last
     let mut files: Vec<(SystemTime, &Source, PathBuf)> = Vec::new();
     for src in sources {
-        for path in list(&src.verify) {
-            let when = path
-                .metadata()
-                .and_then(|m| m.modified())
-                .unwrap_or(SystemTime::UNIX_EPOCH);
-            files.push((when, src, path));
+        for (path, when) in listed(&src.verify) {
+            files.push((when.unwrap_or(SystemTime::UNIX_EPOCH), src, path));
         }
     }
     files.sort_by_key(|(when, ..)| std::cmp::Reverse(*when));
@@ -250,9 +289,7 @@ fn search_in(sources: &[Source], query: &str, limit: usize, stop: &dyn Fn() -> b
                 None => continue,
             },
             false => {
-                let Ok(bytes) = std::fs::read(path) else { continue };
-                let Some(found) = crate::reader::mention(&bytes, &needle) else { continue };
-                let head = String::from_utf8_lossy(&bytes[..bytes.len().min(READ_CAP)]).into_owned();
+                let Some((found, head)) = mention_in(path, &needle, stop) else { continue };
                 line = Some(found.line);
                 said = Said::of(&found);
                 (head, snippet(&found.words, found.at, needle.len()))
@@ -609,12 +646,9 @@ pub(crate) fn record_folder(glob: &str, id: &str, field: Option<&str>) -> Option
 
 /// The same question asked of one CLI's records, so a test can supply its own.
 fn here_in(src: &Source, cwd: &Path, most: usize) -> Vec<Hit> {
-    let mut files: Vec<(SystemTime, PathBuf)> = list(&src.verify)
+    let mut files: Vec<(SystemTime, PathBuf)> = listed(&src.verify)
         .into_iter()
-        .filter_map(|path| {
-            let when = path.metadata().ok()?.modified().ok()?;
-            Some((when, path))
-        })
+        .filter_map(|(path, when)| Some((when?, path)))
         .collect();
     files.sort_by_key(|(when, _)| std::cmp::Reverse(*when));
     files.truncate(LOOK_CAP);
@@ -1170,12 +1204,20 @@ fn read_some(path: &Path, cap: usize) -> Option<String> {
 /// The pattern locates records with the id spelled out; here the id is what we
 /// are trying to find, so it becomes a wildcard like `*`. Both live only in
 /// file and folder names, never spanning a separator
+#[cfg(test)]
 fn list(pattern: &str) -> Vec<PathBuf> {
+    listed(pattern).into_iter().map(|(path, _)| path).collect()
+}
+
+/// The same files with when each was last written, as the listing of its
+/// folder already says: a past of twenty thousand records is that many
+/// names read, not that many files asked about one by one
+fn listed(pattern: &str) -> Vec<(PathBuf, Option<SystemTime>)> {
     // The CLI's own folder and every account's of it (`crate::accounts`)
     crate::accounts::patterns(pattern).iter().flat_map(|p| list_one(p)).collect()
 }
 
-fn list_one(pattern: &str) -> Vec<PathBuf> {
+fn list_one(pattern: &str) -> Vec<(PathBuf, Option<SystemTime>)> {
     // A pattern is written by whoever wrote the profile, with whichever
     // separator they had in mind. Windows takes either, so both are folded
     // to one there; everywhere else a backslash is an ordinary character in
@@ -1191,12 +1233,33 @@ fn list_one(pattern: &str) -> Vec<PathBuf> {
         Some(first) => vec![PathBuf::from(format!("{first}{sep}"))],
         None => return Vec::new(),
     };
-    for seg in parts {
-        if seg.is_empty() {
-            continue;
+    let segs: Vec<&str> = parts.filter(|s| !s.is_empty()).collect();
+    for (i, seg) in segs.iter().enumerate() {
+        let leaf = !seg.contains('*');
+        // The files at the end are told by the listing itself: whether each
+        // is a file and when it was written come with its name
+        if i + 1 == segs.len() && !leaf {
+            let mut files = Vec::new();
+            for root in &roots {
+                let Ok(entries) = std::fs::read_dir(root) else { continue };
+                for e in entries.flatten() {
+                    let name = e.file_name().to_string_lossy().to_string();
+                    if !glob_seg(seg, &name) {
+                        continue;
+                    }
+                    // A link is followed, as asking the path would
+                    match e.file_type() {
+                        Ok(kind) if kind.is_file() => files.push((e.path(), e.metadata().ok().and_then(|m| m.modified().ok()))),
+                        Ok(kind) if kind.is_symlink() && e.path().is_file() => {
+                            files.push((e.path(), e.path().metadata().ok().and_then(|m| m.modified().ok())))
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            return files;
         }
         let mut next = Vec::new();
-        let leaf = !seg.contains('*');
         for root in &roots {
             if leaf {
                 next.push(root.join(seg));
@@ -1213,7 +1276,13 @@ fn list_one(pattern: &str) -> Vec<PathBuf> {
         }
         roots = next;
     }
-    roots.into_iter().filter(|p| p.is_file()).collect()
+    roots
+        .into_iter()
+        .filter_map(|p| {
+            let meta = p.metadata().ok().filter(|m| m.is_file())?;
+            Some((p, meta.modified().ok()))
+        })
+        .collect()
 }
 
 /// One name against one `*`-glob segment (the pieces between the stars must
@@ -1700,6 +1769,35 @@ mod whole_tests {
         // A search typed over by a newer one stops reading
         let stopped = search_in(&src, "refund", 10, &|| true);
         assert!(stopped.hits.is_empty());
+    }
+
+    /// A record larger than one block is read a block at a time: words past
+    /// the first block, and on a line that two blocks cut across, are found,
+    /// with where their line starts counted from the start of the file
+    #[test]
+    fn a_record_larger_than_a_block_is_searched_a_block_at_a_time() {
+        let root = tmp("blocks");
+        // Two long lines: the second crosses the end of the first block
+        let filler = |n: usize| {
+            format!(
+                r#"{{"type":"user","cwd":"D:/w","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"t1","content":"{}"}}]}}}}"#,
+                "y".repeat(n)
+            )
+        };
+        let answer = said("assistant", "D:/w", "the ledger is off by one");
+        let record = [said("user", "D:/w", "why"), filler(SEARCH_BLOCK - 100), filler(SEARCH_BLOCK / 2), answer.clone()].join("\n");
+        std::fs::write(root.join("proj").join("cccc-big.jsonl"), &record).unwrap();
+        let src = [source(&root)];
+        let found = search_in(&src, "ledger is off", 10, &|| false);
+        assert_eq!(found.hits.len(), 1, "words past the first block were not found");
+        let at = found.hits[0].at.expect("where the words are") as usize;
+        assert!(record.as_bytes()[at..].starts_with(answer.as_bytes()), "the line was placed at {at}");
+        assert_eq!(found.hits[0].id, "cccc-big", "the head was read for the record found");
+        // A word on the line cut across by the end of the first block
+        let cut = [said("user", "D:/w", "why"), filler(SEARCH_BLOCK - 10).replace("yyyyyyyyyyyyyyyyyyyy\"}]", "the marker word yy\"}]")].join("\n");
+        std::fs::write(root.join("proj").join("dddd-cut.jsonl"), &cut).unwrap();
+        let cut_found = search_in(&src, "marker word", 10, &|| false);
+        assert_eq!(cut_found.hits.iter().map(|h| h.id.as_str()).collect::<Vec<_>>(), vec!["dddd-cut"]);
     }
 
     /// Stopping at enough says there may be more; reading everything does not
