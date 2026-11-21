@@ -245,9 +245,33 @@ pub(super) fn account() -> Option<String> {
         Some(d) => std::path::PathBuf::from(d).join(".claude.json"),
         None => super::home()?.join(".claude.json"),
     };
-    let v = super::read_json(&state)?;
-    let id = v.get("oauthAccount")?.get("accountUuid")?.as_str()?.trim();
-    (!id.is_empty()).then(|| id.to_string())
+    account_in(&state)
+}
+
+/// The account id in that settings file, read again only when the file has
+/// changed: Claude Code keeps every project's history in it too, megabytes
+/// of it, and the meter asks every minute
+fn account_in(state: &std::path::Path) -> Option<String> {
+    type Known = (std::path::PathBuf, Option<std::time::SystemTime>, u64, Option<String>);
+    static KNOWN: std::sync::Mutex<Option<Known>> = std::sync::Mutex::new(None);
+    let meta = std::fs::metadata(state).ok()?;
+    let (at, len) = (meta.modified().ok(), meta.len());
+    if let Ok(k) = KNOWN.lock()
+        && let Some((path, was_at, was_len, id)) = k.as_ref()
+        && path == state
+        && *was_at == at
+        && *was_len == len
+    {
+        return id.clone();
+    }
+    let id = super::read_json(state).and_then(|v| {
+        let id = v.get("oauthAccount")?.get("accountUuid")?.as_str()?.trim().to_string();
+        (!id.is_empty()).then_some(id)
+    });
+    if let Ok(mut k) = KNOWN.lock() {
+        *k = Some((state.to_path_buf(), at, len, id.clone()));
+    }
+    id
 }
 
 /// Keep the reading, with the mark of the account it is of (`who`)
@@ -315,6 +339,23 @@ fn book_of(v: &serde_json::Value) -> Option<(Limits, i64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The account is read off the settings file, and read again once the
+    /// file has changed
+    #[test]
+    fn the_account_is_read_again_only_when_its_file_changes() {
+        let dir = std::env::temp_dir().join(format!("shikisha-claude-account-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let state = dir.join(".claude.json");
+        std::fs::write(&state, r#"{"oauthAccount":{"accountUuid":"aaaa"},"projects":{}}"#).unwrap();
+        assert_eq!(account_in(&state).as_deref(), Some("aaaa"));
+        assert_eq!(account_in(&state).as_deref(), Some("aaaa"), "asked again, the same");
+        std::fs::write(&state, r#"{"oauthAccount":{"accountUuid":"bbbbbb"},"projects":{"x":1}}"#).unwrap();
+        assert_eq!(account_in(&state).as_deref(), Some("bbbbbb"), "a changed file is read again");
+        std::fs::write(&state, r#"{"projects":{}}"#).unwrap();
+        assert_eq!(account_in(&state), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// Pointed at a folder, Claude Code keeps its sign-in under an item of
     /// its own: the usual name, a dash, and eight hex digits of the folder's

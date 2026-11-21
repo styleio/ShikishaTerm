@@ -3281,6 +3281,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // Where the window's drawing stood when the phone's copy of it was taken
     // (`Shell::drawn_gen`)
     let mut remote_drawn_gen: Option<u64> = None;
+    // Each tab's screen as the phone's copy has it, with what it was made
+    // from and when: made again when the tab printed, scrolled or was
+    // resized, and at least every PHONE_SCREEN_AGAIN -- not for every tab
+    // five times a second
+    let mut phone_screens: std::collections::HashMap<String, (PhoneScreenMark, Instant, String)> = std::collections::HashMap::new();
     let mut last_remote_rows: Vec<String> = Vec::new();
     let mut last_remote_push = Instant::now() - Duration::from_secs(1);
     // The panes, for the viewers from afar that lay the board out in them
@@ -5454,15 +5459,25 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             name: t.title.clone(),
                             state: t.state.label().to_string(),
                             locked: t.locked,
-                            output: trim_for_phone(
-                                &t.last_response.clone().unwrap_or_default(),
-                                200,
-                            ),
+                            // Read where it is: the whole answer is not
+                            // copied to keep its last lines
+                            output: trim_for_phone(t.last_response.as_deref().unwrap_or_default(), 200),
                             // Carries appearance, so read line by line rather than via contents()
-                            screen: trim_for_phone(
-                                &tab::visible_text(t.parser.lock().unwrap_or_else(|e| e.into_inner()).screen()),
-                                200,
-                            ),
+                            screen: {
+                                let p = t.parser.lock().unwrap_or_else(|e| e.into_inner());
+                                let mark: PhoneScreenMark = (t.output_count(), p.screen().scrollback(), p.screen().size());
+                                // The count goes up as output is read, a moment
+                                // before the screen takes it in: a copy made in
+                                // between is made again within the second
+                                match phone_screens.get(t.uid()) {
+                                    Some((was, at, text)) if *was == mark && at.elapsed() < PHONE_SCREEN_AGAIN => text.clone(),
+                                    _ => {
+                                        let text = trim_for_phone(&tab::visible_text(p.screen()), 200);
+                                        phone_screens.insert(t.uid().to_string(), (mark, Instant::now(), text.clone()));
+                                        text
+                                    }
+                                }
+                            },
                             cwd: tab_cwd_abs(t),
                             machine: t.machine(),
                             remote_cwd: t.remote_cwd().unwrap_or_default().to_string(),
@@ -5495,6 +5510,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     }
                 }
                 *held = snap;
+                // A tab that has gone takes its copy with it
+                if phone_screens.len() > tabs.len() {
+                    phone_screens.retain(|uid, _| tabs.iter().any(|t| t.uid() == uid));
+                }
             }
 
             // The AIs of the servers this desk has folders on, asked ahead of
@@ -19945,20 +19964,27 @@ pub fn session_mut<'a>(tabs: &'a mut [Tab], surfaces: &[Surface], active: usize)
 /// Trims the screen text sent to the phone.
 /// Trailing blank lines from the terminal would otherwise hide the content, so
 /// those are dropped from the end; line count is also capped to save bandwidth.
+///
+/// Read from the end: only the lines kept are looked at, however long the
+/// answer they end is
 pub fn trim_for_phone(s: &str, max_lines: usize) -> String {
-    let lines: Vec<&str> = s.lines().collect();
-    let end = lines
-        .iter()
-        .rposition(|l| !l.trim().is_empty())
-        .map(|i| i + 1)
-        .unwrap_or(0);
-    let start = end.saturating_sub(max_lines);
-    lines[start..end]
-        .iter()
-        .map(|l| l.trim_end())
-        .collect::<Vec<_>>()
-        .join("\n")
+    let mut kept: Vec<&str> = s
+        .lines()
+        .rev()
+        .skip_while(|l| l.trim().is_empty())
+        .take(max_lines)
+        .map(str::trim_end)
+        .collect();
+    kept.reverse();
+    kept.join("\n")
 }
+
+/// What a tab's screen as the phone has it is made from: how much the tab
+/// has printed, how far back it is scrolled, and its size
+type PhoneScreenMark = (u64, usize, (u16, u16));
+
+/// How long a tab's screen as the phone has it stands, unchanged as its mark is
+const PHONE_SCREEN_AGAIN: Duration = Duration::from_secs(1);
 /// Starts the remote UI according to config (None if disabled)
 /// Start the remote server WITHOUT making the caller wait for the bind (a
 /// lingering earlier instance can hold the port for up to a second, and the
@@ -26694,6 +26720,9 @@ mod tests {
         assert_eq!(out.lines().count(), 10);
         assert!(out.ends_with("line300"));
         assert_eq!(trim_for_phone("   \n\n", 200), "");
+        // Blank lines inside what is kept stay; only the trailing ones go
+        assert_eq!(trim_for_phone("a\n\nb  \n \n", 2), "\nb");
+        assert_eq!(trim_for_phone("a\r\nb\r\n", 200), "a\nb");
     }
 
     #[test]

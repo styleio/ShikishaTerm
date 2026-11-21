@@ -451,17 +451,52 @@ fn kind_from_json(v: &Value) -> FailKind {
 /// no further than [`TURN_READ_MAX`] bytes: a turn is found near its start,
 /// and a record that has grown past that since is read as "not known", which
 /// leaves the screen to judge
+///
+/// Asked again about the same turn while it goes on -- every few seconds by a
+/// tab waiting on another -- it reads on from where the last look stopped,
+/// not from the turn's start: a long turn is megabytes of tool output
 pub fn turn_end_after(path: &Path, from: u64) -> Option<TurnEnd> {
     let mut file = File::open(path).ok()?;
     let len = file.metadata().ok()?.len();
-    turn_end_by(len, from, from, &mut |start, n| {
+    let key = (path.to_path_buf(), from);
+    let resume = TURN_LOOKS
+        .lock()
+        .ok()
+        .and_then(|m| m.get(&key).copied())
+        // A record shorter than it was then was written again
+        .filter(|(_, was)| len >= *was)
+        .map_or(from, |(at, _)| at);
+    let (end, to) = turn_end_by(len, from, resume, &mut |start, n| {
         let mut buf = vec![0u8; n];
         file.seek(SeekFrom::Start(start))?;
         file.read_exact(&mut buf)?;
         Ok(buf)
-    })
-    .0
+    });
+    if let Ok(mut m) = TURN_LOOKS.lock() {
+        match end {
+            Some(_) => {
+                m.remove(&key);
+            }
+            None => {
+                if m.len() >= TURN_LOOKS_KEPT {
+                    m.clear();
+                }
+                m.insert(key, (to, len));
+            }
+        }
+    }
+    end
 }
+
+/// Where the last look at a turn still going on stopped, by record and the
+/// turn's start: that place, and how long the record was then
+static TURN_LOOKS: std::sync::LazyLock<std::sync::Mutex<TurnLooks>> = std::sync::LazyLock::new(Default::default);
+
+/// (record, turn's start) -> (where the look stopped, the record's length then)
+type TurnLooks = std::collections::HashMap<(std::path::PathBuf, u64), (u64, u64)>;
+
+/// How many turns' places are kept: one for each tab being waited on
+const TURN_LOOKS_KEPT: usize = 256;
 
 /// [`turn_end_after`] over a record `len` long read a piece at a time by
 /// `read_at`, starting at `resume`: the start of a line at or after `from`
@@ -1039,6 +1074,7 @@ impl Record {
     /// so it is for a thread of its own
     pub fn turn_end_after(&self, from: u64, resume: u64) -> (Option<TurnEnd>, u64) {
         match self {
+            // Read on from where it last stopped, which this side keeps
             Record::Here { glob, id } => match crate::sessionfind::locate(glob, id) {
                 Some(path) => (turn_end_after(&path, from), from),
                 None => (None, from),
@@ -2719,6 +2755,20 @@ mod tests {
         let shorter = format!("{began}\n{failed}\n");
         let (end, _) = turn_end_by(shorter.len() as u64, 0, to, &mut read(&shorter));
         assert_eq!(end.map(|e| e.mark), Some(TurnMark::Failed), "the end before the old stopping place is found");
+        // A record on this PC asked about again keeps its place too
+        let f = std::env::temp_dir().join(format!("reader-going-{}.jsonl", std::process::id()));
+        std::fs::write(&f, &going).unwrap();
+        assert_eq!(turn_end_after(&f, 0), None);
+        let kept = TURN_LOOKS.lock().unwrap().get(&(f.clone(), 0)).copied();
+        assert_eq!(kept, Some((going.len() as u64, going.len() as u64)), "where the look stopped is kept");
+        std::fs::write(&f, &ended).unwrap();
+        assert_eq!(turn_end_after(&f, 0).map(|e| (e.mark, e.at)), Some((TurnMark::Failed, going.len() as u64)));
+        assert!(!TURN_LOOKS.lock().unwrap().contains_key(&(f.clone(), 0)), "an ended turn's place is let go");
+        std::fs::write(&f, &going).unwrap();
+        assert_eq!(turn_end_after(&f, 0), None);
+        std::fs::write(&f, &shorter).unwrap();
+        assert_eq!(turn_end_after(&f, 0).map(|e| e.mark), Some(TurnMark::Failed), "written again shorter, read anew");
+        let _ = std::fs::remove_file(&f);
         // A Codex at its usage limit says so in the kind of its error
         let limited = r#"{"type":"event_msg","payload":{"type":"task_complete","error":{"message":"You've hit your usage limit.","codex_error_info":"usage_limit_exceeded"}}}"#;
         assert_eq!(
