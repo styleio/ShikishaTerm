@@ -39,6 +39,13 @@ const NEAR_MS: i64 = 10 * 60 * 1000;
 const FIND_MOST: usize = 200;
 const FIND_PAGES: usize = 400;
 const FIND_PAGE: usize = 100;
+/// The things said a page holds when the record is on another machine. Each
+/// page there is a call to the bridge, or with none several remote commands
+/// that find and measure the record again: a page as long as the most a
+/// page reads in bytes allows cuts a search of a long conversation from
+/// hundreds of round trips to a few. What comes back is still only what was
+/// read, so a page is no larger in bytes than one here
+const FIND_PAGE_FAR: usize = 2000;
 
 /// What the panel is looking at
 #[derive(Clone, Debug)]
@@ -98,6 +105,39 @@ pub fn answer(target: &Target, act: &str, args: &Value, db_path: &std::path::Pat
     Found { answer, forget: ctx.forget }
 }
 
+/// How many things said a page of a search asks for from `record`
+fn find_page(record: &Record) -> usize {
+    match record {
+        Record::Far { .. } => FIND_PAGE_FAR,
+        Record::Here { .. } => FIND_PAGE,
+    }
+}
+
+/// The folder a record of this PC was had in, as the record's own head says
+/// it ([`crate::vault::record_folder`]). A record says it once, near its
+/// start, and never says another: found once, it is kept. Every page of the
+/// panel settles the tab's whole chain of records, and each of them was
+/// otherwise opened and its head read again for every page. One not found
+/// yet -- a record whose first exchange is still being written -- is asked
+/// again next time
+fn folder_of_record(glob: &str, id: &str, field: Option<&str>) -> Option<String> {
+    type Key = (String, String, Option<String>);
+    static FOUND: std::sync::LazyLock<std::sync::Mutex<HashMap<Key, String>>> = std::sync::LazyLock::new(Default::default);
+    /// More than any tab's chain of records over the months they are kept
+    const KEPT: usize = 4096;
+    let key: Key = (glob.to_string(), id.to_string(), field.map(str::to_string));
+    if let Some(at) = FOUND.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+        return Some(at.clone());
+    }
+    let at = crate::vault::record_folder(glob, id, field)?;
+    let mut found = FOUND.lock().unwrap_or_else(|e| e.into_inner());
+    if found.len() >= KEPT {
+        found.clear();
+    }
+    found.insert(key, at.clone());
+    Some(at)
+}
+
 /// The conversations to read, the newest first, and whether each ran without
 /// asking
 struct Chain {
@@ -135,7 +175,7 @@ impl Ctx<'_> {
                 continue;
             }
             if t.machine.is_none()
-                && let Some(at) = crate::vault::record_folder(&t.glob, &c.record_id, t.cwd_field.as_deref())
+                && let Some(at) = folder_of_record(&t.glob, &c.record_id, t.cwd_field.as_deref())
             {
                 let at = std::path::Path::new(&at);
                 let matches = |p: &std::path::Path| crate::uistate::same_folder(at, p);
@@ -342,6 +382,7 @@ impl Ctx<'_> {
             }
             let (mut here, mut here_work) = (Vec::new(), Vec::new());
             let mut from = 0u64;
+            let page = find_page(record);
             loop {
                 if !turn.current() {
                     return Ok(json!({"stale": true}));
@@ -351,7 +392,7 @@ impl Ctx<'_> {
                     break;
                 }
                 pages += 1;
-                let later = match record.after(from, FIND_PAGE, &q) {
+                let later = match record.after(from, page, &q) {
                     Some(Ok(l)) => l,
                     Some(Err(e)) => return Err(e.to_string()),
                     None => break,
@@ -544,13 +585,31 @@ impl Ctx<'_> {
 /// each line (its time and words, as the reader read them), where it came
 /// from -- `{by, device, via, sender, job}` -- or `None` for a line no send
 /// matches, which a person typed straight at the CLI. For the search of every
-/// conversation, which reads the records itself
-pub fn origins(record_id: &str, lines: &[(Option<i64>, &str)]) -> Vec<Option<Value>> {
-    let Ok(store) = Store::open_read(&super::path()) else { return vec![None; lines.len()] };
+/// conversation, which reads the records itself and asks this for each hit
+/// through the one connection it has open.
+///
+/// Only the sends near enough in time to be one of the lines are read: a
+/// tab sends thousands in the months the record keeps, and every hit read
+/// them all. A line with no time can be any send, and reads them all
+pub fn origins(store: &Store, record_id: &str, lines: &[(Option<i64>, &str)]) -> Vec<Option<Value>> {
     let Some(tab) = store.tab_of(record_id).ok().flatten() else { return vec![None; lines.len()] };
-    let sends = store.sends(&tab, i64::MIN, i64::MAX).unwrap_or_default();
+    let (from, to) = near_window(lines);
+    let sends = store.sends(&tab, from, to).unwrap_or_default();
     let lines: Vec<_> = lines.iter().map(|(when, text)| (record_id, *when, *text)).collect();
     attribute(&lines, &sends).into_iter().map(|m| m.map(|i| origin_json(&sends[i]))).collect()
+}
+
+/// The times a send can have been at and still be one of `lines`
+fn near_window(lines: &[(Option<i64>, &str)]) -> (i64, i64) {
+    let times: Option<Vec<i64>> = lines.iter().map(|(when, _)| *when).collect();
+    match times.filter(|t| !t.is_empty()) {
+        Some(t) => {
+            let lo = t.iter().min().copied().unwrap_or(i64::MIN);
+            let hi = t.iter().max().copied().unwrap_or(i64::MAX);
+            (lo.saturating_sub(NEAR_MS), hi.saturating_add(NEAR_MS))
+        }
+        None => (i64::MIN, i64::MAX),
+    }
 }
 
 fn origin_json(s: &Send) -> Value {
@@ -940,5 +999,28 @@ mod tests {
         let last = answer(&t, "newer", &json!({"newer": on["newer"]}), &p.db(), &p.marks()).answer;
         assert_eq!(shown(&last).first().unwrap(), "line 99");
         assert_eq!(last["newer"]["end"], json!(true));
+    }
+}
+
+#[cfg(test)]
+mod near_tests {
+    use super::*;
+
+    /// The sends read for some lines are those near enough to one of them in
+    /// time; a line with no time can be any send
+    #[test]
+    fn only_the_sends_near_the_lines_are_read() {
+        assert_eq!(near_window(&[(Some(1_000_000), "a"), (Some(4_000_000), "b")]), (1_000_000 - NEAR_MS, 4_000_000 + NEAR_MS));
+        assert_eq!(near_window(&[(Some(5), "a"), (None, "b")]), (i64::MIN, i64::MAX));
+        assert_eq!(near_window(&[]), (i64::MIN, i64::MAX));
+    }
+
+    /// A search reads a record on another machine in far longer pages
+    #[test]
+    fn a_far_record_is_searched_in_longer_pages() {
+        let here = Record::Here { glob: "g".into(), id: "i".into() };
+        let far = Record::Far { at: crate::elsewhere::Elsewhere::Cloud(Default::default()), glob: "g".into(), id: "i".into() };
+        assert_eq!(find_page(&far), FIND_PAGE_FAR);
+        assert_eq!(find_page(&here), FIND_PAGE);
     }
 }

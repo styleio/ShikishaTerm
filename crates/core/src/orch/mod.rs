@@ -273,7 +273,23 @@ pub struct Orchestra {
     telling: HashMap<String, std::collections::VecDeque<String>>,
     /// Bumped whenever something a person would see changes
     pub revision: u64,
+    /// The open jobs as last read for the board, with the record's stamp
+    /// then ([`Store::stamp`]): the board is drawn four times a second, and
+    /// the record changes far less often than that
+    board_read: std::sync::Mutex<Option<BoardRead>>,
+    /// When what is past its keeping was last let go
+    forgot: Instant,
 }
+
+/// One open job and what is its: tasks, tries, decisions
+type JobRows = (db::Job, Vec<db::Task>, Vec<Assignment>, Vec<db::Decision>);
+
+/// The open jobs as read, with the record's stamp when they were
+type BoardRead = ((u64, i64), std::sync::Arc<Vec<JobRows>>);
+
+/// How often a running app lets go of what is past its keeping: a record
+/// opened once and left running for weeks was otherwise never tidied
+const FORGET_EVERY: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// `t3`, `3`, `"t3"` -- a number written the way people and AIs write it
 fn number(v: &Value, prefix: char) -> Option<i64> {
@@ -470,6 +486,8 @@ impl Orchestra {
             names: HashMap::new(),
             telling: HashMap::new(),
             revision: 0,
+            board_read: std::sync::Mutex::new(None),
+            forgot: Instant::now(),
         }
     }
 
@@ -490,6 +508,16 @@ impl Orchestra {
     /// What every tab on the screen is called now, written down where it
     /// changed: what is said about a tab says the name it goes by
     fn name_tabs(&mut self, scene: &Scene) {
+        if self.forgot.elapsed() >= FORGET_EVERY {
+            self.forgot = Instant::now();
+            if let Ok(store) = self.store.as_mut() {
+                match store.forget_old_now() {
+                    // A name it let go of is written again below
+                    Ok(()) => self.names.clear(),
+                    Err(e) => crate::append_hook_log(&format!("orchestration: what is past its keeping could not be let go: {e:#}")),
+                }
+            }
+        }
         let at = db::now_ms();
         for t in &scene.tabs {
             if self.names.get(&t.uid) == Some(&t.id) {
@@ -2444,13 +2472,9 @@ impl Orchestra {
     /// Every open job, as the screen draws it: what each task is doing, who is
     /// on it, and what waits for the person
     pub fn board(&self, scene: &Scene) -> Value {
-        let Ok(store) = self.store.as_ref() else { return json!([]) };
-        let Ok(jobs) = store.open_jobs() else { return json!([]) };
+        let Some(jobs) = self.open_job_rows() else { return json!([]) };
         let mut out = Vec::new();
-        for j in jobs {
-            let tasks = store.tasks(j.id).unwrap_or_default();
-            let assignments = store.assignments(j.id).unwrap_or_default();
-            let decisions = store.decisions(j.id).unwrap_or_default();
+        for (j, tasks, assignments, decisions) in jobs.iter() {
             let rows: Vec<Value> = tasks
                 .iter()
                 .map(|t| {
@@ -2494,17 +2518,41 @@ impl Orchestra {
         json!(out)
     }
 
+    /// Every open job with its tasks, tries and decisions, read again only
+    /// when the record has changed since the last read
+    fn open_job_rows(&self) -> Option<std::sync::Arc<Vec<JobRows>>> {
+        let store = self.store.as_ref().ok()?;
+        let stamp = store.stamp();
+        let mut kept = self.board_read.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((at, rows)) = kept.as_ref()
+            && *at == stamp
+        {
+            return Some(std::sync::Arc::clone(rows));
+        }
+        let jobs = store.open_jobs().ok()?;
+        let rows: Vec<JobRows> = jobs
+            .into_iter()
+            .map(|j| {
+                let tasks = store.tasks(j.id).unwrap_or_default();
+                let assignments = store.assignments(j.id).unwrap_or_default();
+                let decisions = store.decisions(j.id).unwrap_or_default();
+                (j, tasks, assignments, decisions)
+            })
+            .collect();
+        let rows = std::sync::Arc::new(rows);
+        *kept = Some((stamp, std::sync::Arc::clone(&rows)));
+        Some(rows)
+    }
+
     /// The jobs a tab leads, and the tabs working for them, all by uid: for
     /// the tab bar, which draws a lead's workers beside it
     pub fn workers_of(&self) -> Vec<(String, Vec<String>)> {
-        let Ok(store) = self.store.as_ref() else { return Vec::new() };
+        let Some(jobs) = self.open_job_rows() else { return Vec::new() };
         let mut out: Vec<(String, Vec<String>)> = Vec::new();
-        for j in store.open_jobs().unwrap_or_default() {
-            let tabs: Vec<String> = store
-                .assignments(j.id)
-                .unwrap_or_default()
-                .into_iter()
-                .map(|a| a.tab)
+        for (j, _, assignments, _) in jobs.iter() {
+            let tabs: Vec<String> = assignments
+                .iter()
+                .map(|a| a.tab.clone())
                 .fold(Vec::new(), |mut v, t| {
                     if !v.contains(&t) {
                         v.push(t);
@@ -2513,7 +2561,7 @@ impl Orchestra {
                 });
             match out.iter_mut().find(|(l, _)| *l == j.lead) {
                 Some((_, v)) => v.extend(tabs.into_iter().filter(|t| !v.contains(t)).collect::<Vec<_>>()),
-                None => out.push((j.lead, tabs)),
+                None => out.push((j.lead.clone(), tabs)),
             }
         }
         out

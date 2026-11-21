@@ -220,6 +220,70 @@ impl Note {
     }
 }
 
+/// The most of the review comments or failed checks put into one prompt, in
+/// characters. A pull request a bot reviewed every push of holds hundreds of
+/// threads, and every one of them was pasted into the AI's terminal; what is
+/// past this is named by how many, for the AI to read on GitHub
+pub const PROMPT_ROOM: usize = 40_000;
+
+/// The most of one comment shown, in characters
+const SAID_MOST: usize = 4_000;
+
+/// How many comments of one thread are shown: its first, which says what
+/// the thread is about, and the latest after it, which say where it stands
+const SAID_KEPT: usize = 5;
+
+/// What goes into the prompt in place of `{comments}` or `{checks}`: the
+/// items as one line of JSON each, review threads shortened ([`for_prompt`],
+/// then [`shortened`]), as many as [`PROMPT_ROOM`] holds -- and how many
+/// were left out for want of room
+pub fn prompt_items(items: &[Value], review: bool) -> (String, usize) {
+    let shown: Vec<Value> = match review {
+        true => for_prompt(items).iter().map(shortened).collect(),
+        false => items.to_vec(),
+    };
+    let mut lines: Vec<String> = Vec::new();
+    let mut used = 0;
+    for item in &shown {
+        let line = serde_json::to_string(item).unwrap_or_default();
+        // The first is always shown, cut or not: a prompt that says only
+        // that everything was left out gives the AI nothing to start on
+        if !lines.is_empty() && used + line.len() > PROMPT_ROOM {
+            break;
+        }
+        used += line.len() + 1;
+        lines.push(line);
+    }
+    let left_out = shown.len() - lines.len();
+    (format!("[\n{}\n]", lines.join(",\n")), left_out)
+}
+
+/// One review thread with its long comments cut, and only its first and
+/// latest comments when it has many: `left_out` says how many in between
+/// are not shown
+fn shortened(thread: &Value) -> Value {
+    let mut t = thread.clone();
+    let Some(said) = t.get_mut("said").and_then(Value::as_array_mut) else { return t };
+    let between = said.len().saturating_sub(SAID_KEPT);
+    if between > 0 {
+        said.drain(1..1 + between);
+    }
+    for s in said.iter_mut() {
+        if let Some(text) = s.get("said").and_then(Value::as_str)
+            && text.chars().count() > SAID_MOST
+        {
+            let cut: String = text.chars().take(SAID_MOST).collect();
+            s["said"] = Value::String(format!("{cut} [...]"));
+        }
+    }
+    if between > 0
+        && let Some(o) = t.as_object_mut()
+    {
+        o.insert("left_out".into(), json!(between));
+    }
+    t
+}
+
 /// The threads as the prompt shows them: without the ids, which mean nothing
 /// to the AI
 pub fn for_prompt(threads: &[Value]) -> Vec<Value> {
@@ -295,5 +359,49 @@ mod tests {
         assert!(ci_is_new(&file, &k, "aaa", &[json!({"name": "lint"}), json!({"name": "test"})], &[]));
         assert!(ci_is_new(&file, &k, "bbb", &lint, &[]));
         let _ = std::fs::remove_dir_all(file.parent().unwrap());
+    }
+}
+
+#[cfg(test)]
+mod prompt_tests {
+    use super::*;
+
+    fn thread(n: usize, said: usize, long: usize) -> Value {
+        json!({
+            "path": format!("src/f{n}.rs"), "line": 3, "ids": ["x"],
+            "said": (0..said).map(|i| json!({"who": "rev", "said": format!("{i}:{}", "w".repeat(long))})).collect::<Vec<_>>(),
+        })
+    }
+
+    /// A long thread keeps its first comment and its latest, says how many
+    /// in between it leaves out, and a long comment is cut
+    #[test]
+    fn a_long_thread_keeps_its_first_and_latest_comments() {
+        let (text, left_out) = prompt_items(&[thread(1, 12, SAID_MOST + 50)], true);
+        assert_eq!(left_out, 0);
+        let shown: Vec<Value> = serde_json::from_str(&text).unwrap();
+        let said = shown[0]["said"].as_array().unwrap();
+        assert_eq!(said.len(), SAID_KEPT);
+        assert!(said[0]["said"].as_str().unwrap().starts_with("0:"));
+        assert!(said[SAID_KEPT - 1]["said"].as_str().unwrap().starts_with("11:"));
+        assert!(said[0]["said"].as_str().unwrap().ends_with("[...]"));
+        assert_eq!(shown[0]["left_out"], json!(12 - SAID_KEPT));
+        assert!(shown[0].get("ids").is_none(), "ids mean nothing to the AI");
+    }
+
+    /// What does not fit is left out and counted; the first always goes in
+    #[test]
+    fn what_does_not_fit_is_counted_and_the_first_always_goes() {
+        let many: Vec<Value> = (0..400).map(|n| thread(n, 2, 300)).collect();
+        let (text, left_out) = prompt_items(&many, true);
+        assert!(text.len() <= PROMPT_ROOM + 1000, "{}", text.len());
+        assert!(left_out > 0 && left_out < 400);
+        let shown: Vec<Value> = serde_json::from_str(&text).unwrap();
+        assert_eq!(shown.len() + left_out, 400);
+        assert_eq!(shown[0]["path"], "src/f0.rs", "in the order given");
+        let huge = vec![json!({"name": "build", "log_tail": "x".repeat(PROMPT_ROOM * 2)})];
+        let (text, left_out) = prompt_items(&huge, false);
+        assert_eq!(left_out, 0);
+        assert!(text.contains("build"));
     }
 }
