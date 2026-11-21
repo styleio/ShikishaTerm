@@ -280,22 +280,6 @@ pub fn own_git_dir(cwd: &Path) -> Option<PathBuf> {
     git_dir(cwd)
 }
 
-/// Whether the folder's repository has any remote, read from its `config`
-/// rather than by asking git
-pub fn has_remote(cwd: &Path) -> bool {
-    let Some(text) = family_of(cwd).and_then(|f| std::fs::read_to_string(f.join("config")).ok()) else {
-        return false;
-    };
-    let section = |l: &str, name: &str| l.trim().replace(char::is_whitespace, "").to_ascii_lowercase().starts_with(name);
-    if text.lines().any(|l| section(l, "[remote\"")) {
-        return true;
-    }
-    // Settings kept in another file are git's to read: asked of git only
-    // then, which is rare
-    text.lines().any(|l| section(l, "[include"))
-        && crate::git::run(cwd, &["remote"]).is_ok_and(|r| !r.trim().is_empty())
-}
-
 /// What changes whenever what git would say about a worktree's changes and
 /// commits could: its HEAD, its index, its reflog, the refs the servers were
 /// last heard at, and its top folder. Only the times and sizes of files, so
@@ -312,6 +296,7 @@ pub fn quiet_mark(cwd: &Path) -> Option<Vec<(Option<std::time::SystemTime>, u64)
         at(own.join("logs").join("HEAD")),
         at(common.join("packed-refs")),
         at(common.join("FETCH_HEAD")),
+        at(common.join("config")),
         at(common.join("refs").join("remotes")),
         at(cwd.to_path_buf()),
     ])

@@ -2756,8 +2756,11 @@ pub fn left_in(folder: &Path) -> Option<crate::folders::Left> {
     let unsaved = review::changes(folder, true).ok()?.len() as u32;
     // With no remote there is nowhere to push to, and every commit would be
     // counted as one never pushed
-    // Read from the repository's config, not asked of git
-    let unpushed = match !crate::repo::has_remote(folder) {
+    // Asked of git, which reads every setting it is given wherever it is
+    // kept (an include, the person's own settings): this look runs only when
+    // something in the folder changed
+    let remotes = crate::git::run(folder, &["remote"]).unwrap_or_default();
+    let unpushed = match remotes.trim().is_empty() {
         true => 0,
         false => crate::git::run(folder, &["rev-list", "--count", "HEAD", "--not", "--remotes"])
             .ok()

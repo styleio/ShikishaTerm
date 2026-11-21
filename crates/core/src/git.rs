@@ -1671,7 +1671,19 @@ pub fn integrated_into(dir: &Path, branch: &str) -> Option<String> {
     let repo = far_of(dir).map(|at| format!("{}\u{1f}{}", at.machine_key(), dir.display()))
         .or_else(|| crate::repo::family_of(dir).map(|f| f.display().to_string()))
         .unwrap_or_else(|| dir.display().to_string());
-    let key = (repo, head.to_string(), target.to_string());
+    // ...and of the settings as they are now: a merge driver set or taken
+    // away changes what merging gives, with the same two commits
+    let settings = crate::repo::family_of(dir)
+        .map(|f| f.join("config"))
+        .into_iter()
+        .chain(std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(|h| std::path::PathBuf::from(h).join(".gitconfig")))
+        .map(|p| match std::fs::metadata(p) {
+            Ok(m) => format!("{:?}/{}", m.modified().ok(), m.len()),
+            Err(_) => "-".to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let key = (format!("{repo}\u{1f}{settings}"), head.to_string(), target.to_string());
     if let Some(went) = INTEGRATED.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
         return went.then_some(base);
     }

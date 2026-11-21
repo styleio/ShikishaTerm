@@ -766,8 +766,21 @@ pub fn records(disk: &dyn Disk, dir: &str, fields: &[Field]) -> Result<Option<Ve
     let mut out = Vec::new();
     for some in names.chunks(RECORDS_TO_A_QUESTION) {
         let paths: Vec<String> = some.iter().map(|n| join(dir, n)).collect();
-        for (name, bytes) in some.iter().zip(disk.read_all(&paths, RECORD_LIMIT)?) {
-            let Some(bytes) = bytes else { continue };
+        for ((name, path), bytes) in some.iter().zip(&paths).zip(disk.read_all(&paths, RECORD_LIMIT)?) {
+            // Left unread: gone since it was listed, or too large -- both
+            // passed over -- or it would not read, which is said rather than
+            // left out of the list without a word
+            let bytes = match bytes {
+                Some(b) => b,
+                None => match disk.size(path)? {
+                    Some(n) if (n as usize) <= RECORD_LIMIT => match disk.read(path) {
+                        Ok(Some(b)) if b.len() <= RECORD_LIMIT => b,
+                        Ok(_) => continue,
+                        Err(e) => return Err(format!("{name}: {e}")),
+                    },
+                    _ => continue,
+                },
+            };
             if bytes.contains(&0) {
                 continue;
             }
@@ -1066,6 +1079,10 @@ mod tests {
             self.asks.set(self.asks.get() + 1);
             self.mem.read_all(paths, most)
         }
+        fn size(&self, path: &str) -> Result<Option<u64>, String> {
+            self.asks.set(self.asks.get() + 1);
+            Ok(self.mem.0.borrow().get(path).map(|b| b.len() as u64))
+        }
         fn write(&self, path: &str, bytes: &[u8], fresh: bool) -> Result<(), String> {
             self.mem.write(path, bytes, fresh)
         }
@@ -1090,9 +1107,57 @@ mod tests {
         assert_eq!(records[0]["title"], "Pick 1");
         assert_eq!(records[119]["title"], "Pick 120");
         // The templates, the listing, and the records a few dozen at a
-        // time: six questions for a hundred and twenty-two files, not two
-        // hundred and forty-four
-        assert_eq!(far.asks.get(), 2 + 122_usize.div_ceil(RECORDS_TO_A_QUESTION), "a question for a few dozen files, not one for each");
+        // time: a few questions for a hundred and twenty-two files, not two
+        // hundred and forty-four -- and one more, the size of the one left
+        // unread, to tell too large from would not read
+        assert_eq!(far.asks.get(), 2 + 122_usize.div_ceil(RECORDS_TO_A_QUESTION) + 1, "a question for a few dozen files, not one for each");
+    }
+
+    /// A far folder where one record is there and will not read: the others
+    /// are read together, and that one is not left out without a word
+    struct Unreadable {
+        mem: Mem,
+    }
+
+    impl Disk for Unreadable {
+        fn files(&self, dir: &str) -> Result<Option<Vec<String>>, String> {
+            self.mem.files(dir)
+        }
+        fn folders(&self, dir: &str) -> Result<Vec<String>, String> {
+            self.mem.folders(dir)
+        }
+        fn read(&self, path: &str) -> Result<Option<Vec<u8>>, String> {
+            if path.ends_with("0002-locked.md") { Err("permission denied".into()) } else { self.mem.read(path) }
+        }
+        fn read_all(&self, paths: &[String], most: usize) -> Result<Vec<Option<Vec<u8>>>, String> {
+            let mut out = self.mem.read_all(paths, most)?;
+            for (p, b) in paths.iter().zip(out.iter_mut()) {
+                if p.ends_with("0002-locked.md") {
+                    *b = None;
+                }
+            }
+            Ok(out)
+        }
+        fn size(&self, path: &str) -> Result<Option<u64>, String> {
+            Ok(self.mem.0.borrow().get(path).map(|b| b.len() as u64))
+        }
+        fn write(&self, path: &str, bytes: &[u8], fresh: bool) -> Result<(), String> {
+            self.mem.write(path, bytes, fresh)
+        }
+        fn make_dirs(&self, dir: &str) -> Result<(), String> {
+            self.mem.make_dirs(dir)
+        }
+    }
+
+    #[test]
+    fn a_record_that_will_not_read_is_said_not_left_out() {
+        let d = Unreadable { mem: Mem::default() };
+        d.mem.put("docs/decisions/0001-fine.md", "# Fine\n");
+        d.mem.put("docs/decisions/0002-locked.md", "# Locked\n");
+        let said = answer(&d, "list", &json!({"dir": "docs/decisions"}));
+        assert_eq!(said["ok"], false, "{said}");
+        let why = said["error"].as_str().unwrap_or_default();
+        assert!(why.contains("0002-locked.md") && why.contains("permission denied"), "{why}");
     }
 
     /// A far folder where one file is there and will not read: asking for it

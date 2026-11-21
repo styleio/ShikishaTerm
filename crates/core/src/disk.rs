@@ -26,6 +26,11 @@ pub trait Disk {
     }
     /// A file's bytes, `None` when there is no file
     fn read(&self, path: &str) -> Result<Option<Vec<u8>>, String>;
+    /// How large a file is, `None` when there is no file: what tells one
+    /// [`Disk::read_all`] left unread for its size from one that would not read
+    fn size(&self, path: &str) -> Result<Option<u64>, String> {
+        Ok(self.read(path)?.map(|b| b.len() as u64))
+    }
     /// Several files' bytes, each in the place it was asked in: `None` for
     /// one that is not there, or is over `most` bytes (left unread). One
     /// question for all of them where the machine is far, so a folder of a

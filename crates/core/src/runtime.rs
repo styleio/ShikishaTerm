@@ -17738,6 +17738,13 @@ impl FolderHere {
 }
 
 impl crate::disk::Disk for FolderHere {
+    fn size(&self, path: &str) -> std::result::Result<Option<u64>, String> {
+        match std::fs::metadata(self.at(path)?) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.to_string()),
+            Ok(m) => Ok(m.is_file().then_some(m.len())),
+        }
+    }
     fn files(&self, dir: &str) -> std::result::Result<Option<Vec<String>>, String> {
         match std::fs::read_dir(self.at(dir)?) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -17831,6 +17838,9 @@ impl FolderThere {
 }
 
 impl crate::disk::Disk for FolderThere {
+    fn size(&self, path: &str) -> std::result::Result<Option<u64>, String> {
+        Ok(self.there(path).filter(|e| !e.dir).map(|e| e.size))
+    }
     // One listing, asked straight away: one that is not a folder there
     // fails, and that is no folder
     fn entries(&self, dir: &str) -> std::result::Result<Option<crate::disk::Entries>, String> {

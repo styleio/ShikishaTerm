@@ -264,10 +264,16 @@ fn account_in(state: &std::path::Path) -> Option<String> {
     {
         return id.clone();
     }
-    let id = super::read_json(state).and_then(|v| {
-        let id = v.get("oauthAccount")?.get("accountUuid")?.as_str()?.trim().to_string();
-        (!id.is_empty()).then_some(id)
-    });
+    // A file that would not read (held by the program writing it) is no
+    // answer and is not kept as one: it is read again next time. One that
+    // read and names no account is an answer
+    let read = super::read_json(state)?;
+    let id = read
+        .get("oauthAccount")
+        .and_then(|a| a.get("accountUuid"))
+        .and_then(|u| u.as_str())
+        .map(|u| u.trim().to_string())
+        .filter(|u| !u.is_empty());
     if let Ok(mut k) = KNOWN.lock() {
         *k = Some((state.to_path_buf(), at, len, id.clone()));
     }

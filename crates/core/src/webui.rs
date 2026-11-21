@@ -4620,20 +4620,22 @@ fn handle(
             // As many of the newest as fit in SNAPSHOTS_ROOM of pictures: a
             // page snapshot of a long page is megabytes, and every one of
             // them goes in the one answer
+            // them goes in the one answer. Every one is still listed, by its
+            // name, so one too large to show can still be deleted from here
             let mut room = SNAPSHOTS_ROOM;
             let rows: Vec<serde_json::Value> = crate::browserstate::snapshots()
                 .into_iter()
                 .take(24)
-                .take_while(|(_, path)| {
-                    let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-                    let fits = size <= room;
-                    room = room.saturating_sub(size);
-                    fits
-                })
-                .filter_map(|(label, path)| {
-                    let bytes = std::fs::read(&path).ok()?;
-                    let data = format!("data:image/png;base64,{}", b64.encode(&bytes));
-                    Some(serde_json::json!({ "label": label, "data": data }))
+                .map(|(label, path)| {
+                    let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                    let data = match size <= room {
+                        true => std::fs::read(&path).ok().map(|bytes| {
+                            room = room.saturating_sub(bytes.len() as u64);
+                            format!("data:image/png;base64,{}", b64.encode(&bytes))
+                        }),
+                        false => None,
+                    };
+                    serde_json::json!({ "label": label, "data": data.unwrap_or_default() })
                 })
                 .collect();
             req.respond(json_resp(serde_json::json!(rows)))?;
