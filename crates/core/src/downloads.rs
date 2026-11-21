@@ -160,9 +160,10 @@ pub fn send_away(at: &crate::elsewhere::Elsewhere, from: &std::path::Path) -> an
     };
     // A file of that name can still arrive in between, or be one the disk
     // there takes for the same name (another case, another way of writing
-    // an accent): the send refuses to write over it, the name is asked
-    // after, and one that is there is passed over. Only a send that failed
-    // with nothing there counts against the few tries
+    // an accent): the send refuses to write over it before writing anything,
+    // in words of its own, and that name is passed over. Any other failure
+    // -- one part way through, which leaves what it wrote -- counts against
+    // the few tries
     let mut tries = 0;
     let mut last = None;
     for n in 0..1000 {
@@ -177,7 +178,8 @@ pub fn send_away(at: &crate::elsewhere::Elsewhere, from: &std::path::Path) -> an
                 return Ok(to);
             }
             Err(e) => {
-                if crate::elsewhere::files(at, FileJob::Stat { path: to.clone() }, 60_000).is_ok() {
+                let refused = crate::i18n::tp("err.ssh.file_exists", &[("path", &to)]);
+                if format!("{e:#}").contains(&refused) {
                     continue;
                 }
                 tries += 1;
