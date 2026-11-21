@@ -2087,6 +2087,23 @@ fn far_cut(at: &std::path::Path, home: Option<&str>) -> bool {
     home.is_some_and(|h| h.trim_end_matches('/') != at.to_string_lossy().replace('\\', "/").trim_end_matches('/'))
 }
 
+/// How much of the top of a rally's transcript and record the history list reads
+const RALLY_HEAD: u64 = 64 * 1024;
+
+/// How many bytes of page snapshots one listing of them carries
+const SNAPSHOTS_ROOM: u64 = 16 * 1024 * 1024;
+
+/// The first `most` bytes of a text file, as text; empty when it cannot be
+/// read. A character the end cuts in two reads as a replacement mark
+fn head_text(path: &std::path::Path, most: u64) -> String {
+    use std::io::Read as _;
+    let mut bytes = Vec::new();
+    if let Ok(f) = std::fs::File::open(path) {
+        let _ = f.take(most).read_to_end(&mut bytes);
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
 fn json_resp(v: serde_json::Value) -> Response<Cursor<Vec<u8>>> {
     secure(Response::from_string(v.to_string()).with_header(
         Header::from_bytes(&b"Content-Type"[..], &b"application/json; charset=utf-8"[..]).unwrap(),
@@ -3864,8 +3881,10 @@ fn handle(
                     .and_then(|s| s.to_str())
                     .unwrap_or("")
                     .to_string();
-                let t = std::fs::read_to_string(dir.join("transcript.md")).unwrap_or_default();
-                let record = std::fs::read_to_string(dir.join("record.lua")).unwrap_or_default();
+                // Only their beginnings: what is shown is read off the top,
+                // and a long rally's transcript is a whole conversation
+                let t = head_text(&dir.join("transcript.md"), RALLY_HEAD);
+                let record = head_text(&dir.join("record.lua"), RALLY_HEAD);
                 // Use the first line that isn't a heading (#) or blank as an identifying excerpt
                 let title = t
                     .lines()
@@ -4598,9 +4617,19 @@ fn handle(
         ("GET", "/api/snapshots") => {
             use base64::Engine as _;
             let b64 = base64::engine::general_purpose::STANDARD;
+            // As many of the newest as fit in SNAPSHOTS_ROOM of pictures: a
+            // page snapshot of a long page is megabytes, and every one of
+            // them goes in the one answer
+            let mut room = SNAPSHOTS_ROOM;
             let rows: Vec<serde_json::Value> = crate::browserstate::snapshots()
                 .into_iter()
                 .take(24)
+                .take_while(|(_, path)| {
+                    let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+                    let fits = size <= room;
+                    room = room.saturating_sub(size);
+                    fits
+                })
                 .filter_map(|(label, path)| {
                     let bytes = std::fs::read(&path).ok()?;
                     let data = format!("data:image/png;base64,{}", b64.encode(&bytes));

@@ -1929,6 +1929,7 @@ pub fn capture_range(rows: u16, cursor_row: u16, since: usize) -> (usize, usize)
 /// Reading history means moving the screen's own viewport, which is why this
 /// and `extract_text` both put it back afterwards: the viewport is what the
 /// person is looking at, not a cursor we own
+#[cfg(test)]
 fn line_at<CB: vt100::Callbacks>(p: &mut vt100::Parser<CB>, d: usize, cols: u16) -> String {
     let max = furthest_back(p);
     let s = d.min(max);
@@ -1937,6 +1938,9 @@ fn line_at<CB: vt100::Callbacks>(p: &mut vt100::Parser<CB>, d: usize, cols: u16)
     let r = (rows as usize).saturating_sub(1).saturating_sub(d - s);
     p.screen().rows(0, cols).nth(r).unwrap_or_default()
 }
+
+/// How many lines back a search across every tab looks
+const SEARCH_BACK: usize = 3000;
 
 /// How far back the history goes, in lines
 fn furthest_back<CB: vt100::Callbacks>(p: &mut vt100::Parser<CB>) -> usize {
@@ -2056,22 +2060,61 @@ pub fn find_line<CB: vt100::Callbacks>(
     if needle.is_empty() {
         return None;
     }
+    // Every line holding it, read a screen at a time: a line at a time laid
+    // out a whole screen for each line of a history thousands long
+    let mut hits = Vec::new();
+    each_line(p, 0, usize::MAX, cols, |d, text, _| {
+        if text.to_lowercase().contains(&needle) {
+            hits.push(d);
+        }
+        true
+    });
+    // Newest first. Looking up (further back) begins just past where we are;
+    // looking down begins where we are; either carries on past the end once
+    match up {
+        true => hits.iter().copied().find(|d| *d > from).or_else(|| hits.first().copied()),
+        false => hits.iter().rev().copied().find(|d| *d <= from).or_else(|| hits.last().copied()),
+    }
+}
+
+/// Each line from `lo` to `hi` lines back (0 = newest), newest first, with
+/// whether it runs on into the line after it; `see` answers false to stop.
+///
+/// Read a screen at a time, the way [`lines_with`] reads, and the view put
+/// back where it stood: the view is what the person is looking at
+fn each_line<CB: vt100::Callbacks>(
+    p: &mut vt100::Parser<CB>,
+    lo: usize,
+    hi: usize,
+    cols: u16,
+    mut see: impl FnMut(usize, String, bool) -> bool,
+) {
     let saved = p.screen().scrollback();
-    let (rows, _) = p.screen().size();
-    let top = furthest_back(p) + (rows as usize).saturating_sub(1);
-    // Every line exactly once, starting next to where we are and carrying on
-    // past either end
-    let order: Vec<usize> = match up {
-        true => (0..=top).map(|i| (from + 1 + i) % (top + 1)).collect(),
-        false => (0..=top)
-            .map(|i| (from + top + 1 - (i % (top + 1))) % (top + 1))
-            .collect(),
-    };
-    let hit = order
-        .into_iter()
-        .find(|d| line_at(p, *d, cols).to_lowercase().contains(&needle));
+    let max = furthest_back(p);
+    let rows = p.screen().size().0.max(1) as usize;
+    let hi = hi.min(max + rows - 1);
+    let mut next = lo;
+    'screens: while next <= hi {
+        p.screen_mut().set_scrollback(next.min(max));
+        let at = p.screen().scrollback();
+        let view: Vec<String> = p.screen().rows(0, cols).collect();
+        // The bottom row is the newest of the view
+        for r in (0..rows).rev() {
+            let d = at + rows - 1 - r;
+            if d < next {
+                continue;
+            }
+            if d > hi {
+                break 'screens;
+            }
+            let wrapped = p.screen().row_wrapped(r as u16);
+            if !see(d, view.get(r).cloned().unwrap_or_default(), wrapped) {
+                break 'screens;
+            }
+        }
+        next = at + rows;
+    }
     p.screen_mut().set_scrollback(saved);
-    hit
 }
 
 pub fn extract_text<CB: vt100::Callbacks>(
@@ -2080,30 +2123,22 @@ pub fn extract_text<CB: vt100::Callbacks>(
     hi: usize,
     cols: u16,
 ) -> String {
-    let saved = p.screen().scrollback();
-    p.screen_mut().set_scrollback(usize::MAX / 2);
-    let max = p.screen().scrollback();
-    let (rows, _) = p.screen().size();
-    let top = max + rows.saturating_sub(1) as usize;
+    // A screen at a time, newest first, then written out oldest first: a long
+    // answer is thousands of lines, and each read alone laid out a screen
+    let mut lines: Vec<(String, bool)> = Vec::new();
+    each_line(p, lo, hi, cols, |_, line, wrapped| {
+        lines.push((line, wrapped));
+        true
+    });
     let mut out = String::new();
-    for d in (lo..=hi.min(top)).rev() {
-        let s = d.min(max);
-        p.screen_mut().set_scrollback(s);
-        let r = (rows as usize - 1 - (d - s)) as u16;
-        // rows(start_col, width) is an iterator returning a horizontal slice of each visible row
-        let line = p
-            .screen()
-            .rows(0, cols)
-            .nth(r as usize)
-            .unwrap_or_default();
-        if p.screen().row_wrapped(r) {
+    for (line, wrapped) in lines.into_iter().rev() {
+        if wrapped {
             out.push_str(&line);
         } else {
             out.push_str(line.trim_end());
             out.push('\n');
         }
     }
-    p.screen_mut().set_scrollback(saved);
     out
 }
 
@@ -2379,6 +2414,57 @@ mod tests {
         let some = super::recent_text(&mut p, 30, 20);
         assert!(some.ends_with("line 29") && !some.contains("line 20"), "only the newest: {some}");
         assert!(some.starts_with("line 2"), "{some}");
+    }
+
+    /// Read a screen at a time, the text and the searches say what reading
+    /// one line at a time said -- wrapped lines joined, every start and both
+    /// ways round -- and the view is left where the person had it
+    #[test]
+    fn reading_a_screen_at_a_time_says_what_a_line_at_a_time_said() {
+        let mut p = vt100::Parser::new(4, 10, 200);
+        for i in 0..23 {
+            let long = if i % 5 == 0 { " and a line too long for one row" } else { "" };
+            p.process(format!("row {i}{long}{}\r\n", if i % 3 == 0 { " x" } else { "" }).as_bytes());
+        }
+        p.screen_mut().set_scrollback(3);
+        let max = super::furthest_back(&mut p);
+        let top = max + 3;
+        // The old way, one line at a time
+        let one = |p: &mut vt100::Parser, lo: usize, hi: usize| {
+            let mut out = String::new();
+            for d in (lo..=hi.min(top)).rev() {
+                let s = d.min(max);
+                p.screen_mut().set_scrollback(s);
+                let r = (3 - (d - s)) as u16;
+                let line = p.screen().rows(0, 10).nth(r as usize).unwrap_or_default();
+                match p.screen().row_wrapped(r) {
+                    true => out.push_str(&line),
+                    false => {
+                        out.push_str(line.trim_end());
+                        out.push('\n');
+                    }
+                }
+            }
+            p.screen_mut().set_scrollback(3);
+            out
+        };
+        for (lo, hi) in [(0, 0), (0, 3), (2, 9), (0, top), (5, usize::MAX / 2), (top, top)] {
+            assert_eq!(super::extract_text(&mut p, lo, hi, 10), one(&mut p, lo, hi), "{lo}..={hi}");
+            assert_eq!(p.screen().scrollback(), 3, "reading moved the view");
+        }
+        let lines: Vec<String> = (0..=top).map(|d| super::line_at(&mut p, d, 10).to_lowercase()).collect();
+        p.screen_mut().set_scrollback(3);
+        for from in 0..=top {
+            for up in [true, false] {
+                let order: Vec<usize> = match up {
+                    true => (0..=top).map(|i| (from + 1 + i) % (top + 1)).collect(),
+                    false => (0..=top).map(|i| (from + top + 1 - (i % (top + 1))) % (top + 1)).collect(),
+                };
+                let was = order.into_iter().find(|d| lines[*d].contains(" x"));
+                assert_eq!(super::find_line(&mut p, " X", from, up, 10), was, "from {from}, up {up}");
+                assert_eq!(p.screen().scrollback(), 3, "searching moved the view");
+            }
+        }
     }
 
     #[test]
@@ -4967,7 +5053,7 @@ impl Tab {
             && opts.cwd.as_deref().is_some_and(|at| {
                 let prog = argv.first().map(String::as_str).unwrap_or_default();
                 !carrying.as_deref().is_some_and(|id| crate::vault::belongs(prog, at, id))
-                    && !crate::vault::here(prog, at, 1).is_empty()
+                    && crate::vault::has_past(prog, at)
             });
         // A terminal on another machine is told its command by typing it
         // there, with the conversation's arguments the same as here. A plain
@@ -6013,25 +6099,23 @@ impl Tab {
             return Vec::new();
         }
         let mut p = self.parser.lock().unwrap_or_else(|e| e.into_inner());
-        let (rows, cols) = p.screen().size();
-        let back = furthest_back(&mut p);
-        let top = back + (rows as usize).saturating_sub(1);
-        // Only the recent stretch -- far enough to cover what is on screen and
-        // a good deal above it, not the whole kept history
-        let scan = top.min(3000);
+        let cols = p.screen().size().1;
         let mut out = Vec::new();
-        for d in 0..=scan {
-            if out.len() >= max_hits {
-                break;
-            }
-            let line = line_at(&mut p, d, cols);
+        if max_hits == 0 {
+            return out;
+        }
+        // Only the recent stretch -- far enough to cover what is on screen and
+        // a good deal above it, not the whole kept history. Read a screen at
+        // a time, and the view left where the person had it
+        each_line(&mut p, 0, SEARCH_BACK, cols, |d, line, _| {
             if line.to_lowercase().contains(&needle) {
                 let text = line.trim().to_string();
                 if !text.is_empty() {
                     out.push((d, text));
                 }
             }
-        }
+            out.len() < max_hits
+        });
         out
     }
 

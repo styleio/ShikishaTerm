@@ -232,13 +232,38 @@ fn mention_in(path: &Path, needle: &str, stop: &dyn Fn() -> bool) -> Option<(cra
     // The lines read and not yet searched, and where in the file they start
     let mut held: Vec<u8> = Vec::new();
     let mut held_at: u64 = 0;
+    // Passing over a line too long to hold, until its end
+    let mut skipping = false;
     let mut block = vec![0u8; SEARCH_BLOCK];
     loop {
         if stop() {
             return None;
         }
         let n = file.read(&mut block).ok()?;
-        held.extend_from_slice(&block[..n]);
+        let mut fresh = &block[..n];
+        if skipping {
+            match fresh.iter().position(|b| *b == b'\n') {
+                Some(i) => {
+                    held_at += i as u64 + 1;
+                    fresh = &fresh[i + 1..];
+                    skipping = false;
+                }
+                None => {
+                    held_at += n as u64;
+                    fresh = &[];
+                }
+            }
+        }
+        held.extend_from_slice(fresh);
+        // One line longer than LINE_MOST -- a picture written into the record
+        // whole -- is not held to be searched: what is held of it is let go,
+        // and the rest of it read past
+        if n > 0 && held.len() > LINE_MOST && !held.contains(&b'\n') {
+            held_at += held.len() as u64;
+            held.clear();
+            skipping = true;
+            continue;
+        }
         // The whole lines, up to the last newline; all of it at the end
         let whole = match n {
             0 => held.len(),
@@ -260,6 +285,9 @@ fn mention_in(path: &Path, needle: &str, stop: &dyn Fn() -> bool) -> Option<(cra
     }
 }
 
+/// The longest line of a record held whole to be searched
+const LINE_MOST: usize = 4 * SEARCH_BLOCK;
+
 /// The same search over the records of these CLIs, so a test can supply its own
 fn search_in(sources: &[Source], query: &str, limit: usize, stop: &dyn Fn() -> bool) -> Found {
     let needle = query.trim().to_lowercase();
@@ -267,6 +295,10 @@ fn search_in(sources: &[Source], query: &str, limit: usize, stop: &dyn Fn() -> b
     // oldest rather than on whichever CLI happens to be listed last
     let mut files: Vec<(SystemTime, &Source, PathBuf)> = Vec::new();
     for src in sources {
+        // A search typed over by the next is given up between two listings
+        if stop() {
+            return Found { hits: Vec::new(), capped: false };
+        }
         for (path, when) in listed(&src.verify) {
             files.push((when.unwrap_or(SystemTime::UNIX_EPOCH), src, path));
         }
@@ -613,6 +645,38 @@ pub fn here(program: &str, cwd: &Path, most: usize) -> Vec<Hit> {
     };
     here_in(&src, cwd, most)
 }
+
+/// Whether the folder has any conversation of `program` in its past
+/// ([`here`] with one wanted), kept: asked as every tab of that CLI comes
+/// up, and a desk restored at start brings many up in the same few folders.
+/// A folder found to have one keeps it; one found to have none is asked
+/// again after `NO_PAST_AGAIN`, since a conversation may be had there since
+pub fn has_past(program: &str, cwd: &Path) -> bool {
+    type Pasts = std::collections::HashMap<(String, PathBuf), (bool, std::time::Instant)>;
+    static PASTS: std::sync::Mutex<Option<Pasts>> = std::sync::Mutex::new(None);
+    let key = (program.to_string(), cwd.to_path_buf());
+    let known = PASTS.lock().ok().and_then(|m| m.as_ref()?.get(&key).copied());
+    if let Some((has, at)) = known
+        && (has || at.elapsed() < NO_PAST_AGAIN)
+    {
+        return has;
+    }
+    let has = !here(program, cwd, 1).is_empty();
+    if let Ok(mut m) = PASTS.lock() {
+        let m = m.get_or_insert_with(Default::default);
+        if m.len() >= PASTS_KEPT {
+            m.clear();
+        }
+        m.insert(key, (has, std::time::Instant::now()));
+    }
+    has
+}
+
+/// How long a folder found to have no past is taken at that
+const NO_PAST_AGAIN: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How many folders' answers are kept
+const PASTS_KEPT: usize = 512;
 
 /// Whether that conversation is one this folder's own.
 ///
@@ -1212,10 +1276,41 @@ fn list(pattern: &str) -> Vec<PathBuf> {
 /// The same files with when each was last written, as the listing of its
 /// folder already says: a past of twenty thousand records is that many
 /// names read, not that many files asked about one by one
+///
+/// The same listing is handed out again for `LISTED_FRESH`: a search is
+/// asked again at every key typed, and a past of thousands of records was
+/// listed and sorted again for each
 fn listed(pattern: &str) -> Vec<(PathBuf, Option<SystemTime>)> {
-    // The CLI's own folder and every account's of it (`crate::accounts`)
-    crate::accounts::patterns(pattern).iter().flat_map(|p| list_one(p)).collect()
+    listed_within(pattern, LISTED_FRESH)
 }
+
+/// [`listed`], handing out a listing made less than `fresh` ago
+fn listed_within(pattern: &str, fresh: std::time::Duration) -> Vec<(PathBuf, Option<SystemTime>)> {
+    type Listings = std::collections::HashMap<String, (std::time::Instant, std::sync::Arc<Vec<(PathBuf, Option<SystemTime>)>>)>;
+    static LISTED: std::sync::Mutex<Option<Listings>> = std::sync::Mutex::new(None);
+    let kept = LISTED
+        .lock()
+        .ok()
+        .and_then(|m| m.as_ref()?.get(pattern).filter(|(at, _)| at.elapsed() < fresh).map(|(_, l)| std::sync::Arc::clone(l)));
+    if let Some(list) = kept {
+        return list.as_ref().clone();
+    }
+    // The CLI's own folder and every account's of it (`crate::accounts`)
+    let list: Vec<(PathBuf, Option<SystemTime>)> = crate::accounts::patterns(pattern).iter().flat_map(|p| list_one(p)).collect();
+    if let Ok(mut m) = LISTED.lock() {
+        let m = m.get_or_insert_with(Default::default);
+        m.retain(|_, (at, _)| at.elapsed() < LISTED_FRESH.max(fresh));
+        m.insert(pattern.to_string(), (std::time::Instant::now(), std::sync::Arc::new(list.clone())));
+    }
+    list
+}
+
+/// How long one listing of a CLI's records is handed out again. Not at all
+/// in tests, which write records and list them straight after
+const LISTED_FRESH: std::time::Duration = match cfg!(test) {
+    true => std::time::Duration::ZERO,
+    false => std::time::Duration::from_secs(3),
+};
 
 fn list_one(pattern: &str) -> Vec<(PathBuf, Option<SystemTime>)> {
     // A pattern is written by whoever wrote the profile, with whichever
@@ -1798,6 +1893,34 @@ mod whole_tests {
         std::fs::write(root.join("proj").join("dddd-cut.jsonl"), &cut).unwrap();
         let cut_found = search_in(&src, "marker word", 10, &|| false);
         assert_eq!(cut_found.hits.iter().map(|h| h.id.as_str()).collect::<Vec<_>>(), vec!["dddd-cut"]);
+    }
+
+    /// A line too long to hold -- a picture written into the record -- is
+    /// read past, and the lines after it are searched and placed as before
+    #[test]
+    fn a_line_too_long_to_hold_is_read_past() {
+        let root = tmp("giant");
+        let giant = format!(r#"{{"type":"user","cwd":"D:/w","message":{{"role":"user","content":"{} giant word"}}}}"#, "z".repeat(LINE_MOST + SEARCH_BLOCK));
+        let after = said("assistant", "D:/w", "the word after the picture");
+        let record = [said("user", "D:/w", "why"), giant, after.clone()].join("\n");
+        let path = root.join("proj").join("eeee-giant.jsonl");
+        std::fs::write(&path, &record).unwrap();
+        let (found, _) = mention_in(&path, "word after the picture", &|| false).expect("the line after it is searched");
+        assert!(record.as_bytes()[found.line as usize..].starts_with(after.as_bytes()), "placed at {}", found.line);
+        assert!(mention_in(&path, "giant word", &|| false).is_none(), "the line too long is not held to be searched");
+    }
+
+    /// One listing of a CLI's records is handed out again while it is fresh,
+    /// and made again once it is not
+    #[test]
+    fn a_listing_is_handed_out_again_while_fresh() {
+        let root = tmp("listing");
+        let pattern = format!("{}/*/{{id}}.jsonl", root.display()).replace('/', std::path::MAIN_SEPARATOR_STR);
+        std::fs::write(root.join("proj").join("one.jsonl"), "{}").unwrap();
+        assert_eq!(listed_within(&pattern, std::time::Duration::from_secs(60)).len(), 1);
+        std::fs::write(root.join("proj").join("two.jsonl"), "{}").unwrap();
+        assert_eq!(listed_within(&pattern, std::time::Duration::from_secs(60)).len(), 1, "the fresh listing is handed out");
+        assert_eq!(listed_within(&pattern, std::time::Duration::ZERO).len(), 2, "a stale one is made again");
     }
 
     /// Stopping at enough says there may be more; reading everything does not

@@ -87,13 +87,27 @@ pub fn read_from(file: &Path, spec: &AskSpec, from: u64) -> (Vec<String>, u64) {
     let mut line = Vec::new();
     while read < end {
         line.clear();
-        let Ok(n) = f.read_until(b'\n', &mut line) else { break };
+        // No more of a line is held than the longest one read: a picture
+        // written into the record is megabytes on one line
+        let Ok(n) = std::io::Read::take(&mut f, LONGEST_LINE as u64 + 1).read_until(b'\n', &mut line) else { break };
         if n == 0 {
             break;
         }
-        // A line with no newline on the end is one still being written. Left
-        // where it is, so the next look reads it whole
         if !line.ends_with(b"\n") {
+            // Longer than any line read: passed over to its end without
+            // being held. One whose end is not written yet is left where it
+            // is, for the next look
+            if n > LONGEST_LINE {
+                match pass_line(&mut f) {
+                    Some(rest) => {
+                        read += (n + rest) as u64;
+                        continue;
+                    }
+                    None => break,
+                }
+            }
+            // A line with no newline on the end is one still being written.
+            // Left where it is, so the next look reads it whole
             break;
         }
         read += n as u64;
@@ -105,6 +119,29 @@ pub fn read_from(file: &Path, spec: &AskSpec, from: u64) -> (Vec<String>, u64) {
         }
     }
     (said, read)
+}
+
+/// Read past the rest of a line, holding none of it: how much that was,
+/// newline and all, or nothing when the line has no end written yet
+fn pass_line(f: &mut impl std::io::BufRead) -> Option<usize> {
+    let mut passed = 0usize;
+    loop {
+        let (done, used) = {
+            let buf = f.fill_buf().ok()?;
+            if buf.is_empty() {
+                return None;
+            }
+            match buf.iter().position(|b| *b == b'\n') {
+                Some(i) => (true, i + 1),
+                None => (false, buf.len()),
+            }
+        };
+        f.consume(used);
+        passed += used;
+        if done {
+            return Some(passed);
+        }
+    }
 }
 
 /// A person's words on one line of a record, when that is what it is.
@@ -256,6 +293,28 @@ mod tests {
             one(r#"{"type":"response_item","payload":{"role":"user","content":[{"type":"input_image","image_url":"data:..."}]}}"#, &spec),
             None
         );
+    }
+
+    /// A line longer than any read is passed over without being held, the
+    /// words after it are read, and one whose end is not written yet waits
+    #[test]
+    fn a_line_too_long_is_passed_over_and_one_unfinished_waits() {
+        let dir = std::env::temp_dir().join(format!("shikisha-asks-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("r.jsonl");
+        let said = |t: &str| format!("{}\n", serde_json::json!({"type": "user", "message": {"role": "user", "content": t}}));
+        let picture = format!("{}\n", "p".repeat(LONGEST_LINE * 3));
+        let text = said("first") + &picture + &said("after the picture");
+        std::fs::write(&file, &text).unwrap();
+        let (got, to) = read_from(&file, &claude(), 0);
+        assert_eq!(got, ["first", "after the picture"]);
+        assert_eq!(to, text.len() as u64, "read to the end");
+        // Its end not written yet: left at its start for the next look
+        let going = said("before") + &"q".repeat(LONGEST_LINE * 2);
+        std::fs::write(&file, &going).unwrap();
+        let (got, to) = read_from(&file, &claude(), 0);
+        assert_eq!((got, to), (vec!["before".to_string()], said("before").len() as u64));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

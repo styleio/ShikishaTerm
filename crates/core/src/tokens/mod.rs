@@ -169,11 +169,18 @@ fn records() -> Vec<(&'static str, PathBuf)> {
     let mut out = Vec::new();
     for (cli, place, ending) in PLACES {
         for dir in crate::accounts::patterns(place) {
-            for file in crate::sessionfind::walk(&crate::with_home(&dir), 0, std::time::UNIX_EPOCH) {
+            // The folder's own true name, asked once: asked of every one of
+            // ten thousand records, it was ten thousand opens on Windows
+            let root = crate::with_home(&dir);
+            let real_root = std::fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
+            for file in crate::sessionfind::walk(&root, 0, std::time::UNIX_EPOCH) {
                 if !file.to_string_lossy().ends_with(ending) {
                     continue;
                 }
-                let real = std::fs::canonicalize(&file).unwrap_or_else(|_| file.clone());
+                let real = match file.strip_prefix(&root) {
+                    Ok(rest) => real_root.join(rest),
+                    Err(_) => file.clone(),
+                };
                 if seen.insert(real) {
                     out.push((*cli, file));
                 }
@@ -219,8 +226,6 @@ fn sample(file: &mut std::fs::File, from: u64, len: u64) -> Result<String> {
 /// when it is new or was written anew -- and keep its calls
 fn read_one(conn: &mut Connection, cli: &'static str, path: &Path) -> Result<()> {
     let key = path.display().to_string();
-    let mut file = std::fs::File::open(path)?;
-    let size = file.metadata()?.len();
     let was: Option<(u64, u64, String, String, String)> = conn
         .query_row(
             "SELECT size, read_to, head, edge, carry FROM read_files WHERE path = ?1",
@@ -228,6 +233,16 @@ fn read_one(conn: &mut Connection, cli: &'static str, path: &Path) -> Result<()>
             |r| Ok((r.get::<_, i64>(0)? as u64, r.get::<_, i64>(1)? as u64, r.get(2)?, r.get(3)?, r.get(4)?)),
         )
         .optional()?;
+    // Read to its end at the last look and no longer since: these records
+    // are only ever written on to, so nothing is opened for it -- most of
+    // ten thousand records are this, every look
+    if let Some((was_size, read_to, ..)) = &was
+        && std::fs::metadata(path).is_ok_and(|m| m.len() == *was_size && *read_to == *was_size)
+    {
+        return Ok(());
+    }
+    let mut file = std::fs::File::open(path)?;
+    let size = file.metadata()?.len();
     let head = sample(&mut file, 0, size.min(SAMPLE))?;
     let mut from = 0u64;
     let mut carry = read::CodexCarry::default();
@@ -619,6 +634,17 @@ mod tests {
         std::fs::write(&copy, claude_call("m1", &at, 50)).unwrap();
         read_one(&mut conn, "claude", &copy).unwrap();
         assert_eq!(report(&db, 7, None).unwrap().total.calls, 3);
+        // Read to its end and the same length since: passed over without
+        // being opened. These records are only written on to; one written
+        // anew to the very same length is the one thing that is not seen
+        let same = claude_call("m4", &at, 1);
+        assert_eq!(same.len(), claude_call("m3", &at, 1).len());
+        std::fs::write(&rec, &same).unwrap();
+        read_one(&mut conn, "claude", &rec).unwrap();
+        assert_eq!(report(&db, 7, None).unwrap().total.calls, 3, "an unchanged length is not read again");
+        std::fs::write(&rec, same.clone() + &same).unwrap();
+        read_one(&mut conn, "claude", &rec).unwrap();
+        assert_eq!(report(&db, 7, None).unwrap().total.calls, 4, "grown, it is read");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
