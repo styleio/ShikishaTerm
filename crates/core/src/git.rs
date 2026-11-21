@@ -1692,7 +1692,10 @@ pub fn integrated_into(dir: &Path, branch: &str) -> Option<String> {
     .collect::<Vec<_>>()
     .join(",");
     let key = (format!("{repo}\u{1f}{settings}\u{1f}{attributes}"), head.to_string(), target.to_string());
-    if let Some(went) = INTEGRATED.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+    // Kept a short while at most as well: what else a merge can be made to
+    // read (an attributes file the settings name, a folder's own deeper down,
+    // a far machine's) is not watched, and is picked up when this runs out
+    if let Some((went, _)) = INTEGRATED.lock().unwrap_or_else(|e| e.into_inner()).get(&key).filter(|(_, at)| at.elapsed() < INTEGRATED_FOR) {
         return went.then_some(base);
     }
     let went = match run(dir, &["merge-base", "--is-ancestor", head, target]).is_ok() {
@@ -1705,13 +1708,18 @@ pub fn integrated_into(dir: &Path, branch: &str) -> Option<String> {
     if known.len() >= INTEGRATED_KEPT {
         known.clear();
     }
-    known.insert(key, went);
+    known.insert(key, (went, std::time::Instant::now()));
     went.then_some(base)
 }
 
 /// What [`integrated_into`] worked out, by (repository, HEAD, base) commit
-static INTEGRATED: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<(String, String, String), bool>>> =
+type IntegratedKey = (String, String, String);
+static INTEGRATED: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<IntegratedKey, (bool, std::time::Instant)>>> =
     std::sync::LazyLock::new(Default::default);
+
+/// How long an answer is kept even when nothing watched has changed: a
+/// merge worked out at most this often, not on every look at the panel
+const INTEGRATED_FOR: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// How many pairs are kept: a few for each worktree, which moves rarely
 const INTEGRATED_KEPT: usize = 512;

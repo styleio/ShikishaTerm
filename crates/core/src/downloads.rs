@@ -152,7 +152,10 @@ pub fn send_away(at: &crate::elsewhere::Elsewhere, from: &std::path::Path) -> an
     // What is there already, asked once: the twentieth copy of a name was
     // twenty questions to the machine, one a name tried
     let taken: std::collections::HashSet<String> = match crate::elsewhere::files(at, FileJob::List { path: dir.clone() }, 60_000) {
-        Ok(crate::ssh::FileAnswer::Listing(rows)) => rows.into_iter().map(|r| r.name).collect(),
+        // Without case: on a machine whose disk does not tell `Report.pdf`
+        // from `report.pdf`, either is taken. Where it does, a name passed
+        // over is only a number more
+        Ok(crate::ssh::FileAnswer::Listing(rows)) => rows.into_iter().map(|r| r.name.to_lowercase()).collect(),
         _ => Default::default(),
     };
     // A file of that name can still arrive in between: the send refuses to
@@ -161,7 +164,7 @@ pub fn send_away(at: &crate::elsewhere::Elsewhere, from: &std::path::Path) -> an
     let mut last = None;
     for n in 0..1000 {
         let file = if n == 0 { name.clone() } else { format!("{stem} ({n}){ext}") };
-        if taken.contains(&file) {
+        if taken.contains(&file.to_lowercase()) {
             continue;
         }
         let to = format!("{dir}/{file}");
