@@ -1675,8 +1675,23 @@ pub fn integrated_into(dir: &Path, branch: &str) -> Option<String> {
     // are kept (the repository's, the person's, an included file): a merge
     // driver set or taken away changes what merging gives, with the same two
     // commits. One quick question, against a merge worked out each time
-    let settings = run(dir, &["config", "--get-regexp", "^merge\\."]).unwrap_or_default();
-    let key = (format!("{repo}\u{1f}{settings}"), head.to_string(), target.to_string());
+    let settings = run(dir, &["config", "--get-regexp", "^(merge\\.|core\\.attributesfile)"]).unwrap_or_default();
+    // ...and of the attributes that say which driver a file merges with,
+    // where they can change without a commit: the folder's own, and the
+    // repository's `info/attributes`
+    let attributes = [
+        Some(dir.join(".gitattributes")),
+        crate::repo::family_of(dir).map(|f| f.join("info").join("attributes")),
+    ]
+    .into_iter()
+    .flatten()
+    .map(|p| match std::fs::metadata(p) {
+        Ok(m) => format!("{:?}/{}", m.modified().ok(), m.len()),
+        Err(_) => "-".to_string(),
+    })
+    .collect::<Vec<_>>()
+    .join(",");
+    let key = (format!("{repo}\u{1f}{settings}\u{1f}{attributes}"), head.to_string(), target.to_string());
     if let Some(went) = INTEGRATED.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
         return went.then_some(base);
     }
@@ -2944,6 +2959,36 @@ mod tests {
         let before = objects();
         assert_eq!(integrated_into(&near, "work"), None);
         assert_eq!(objects(), before, "asking wrote into the repository");
+    }
+
+    /// What is kept of whether a branch went in follows the merge settings
+    /// and the attributes that choose a file's merge driver: changed, the
+    /// question is worked out again
+    #[test]
+    fn whether_a_branch_went_in_is_asked_again_when_its_merge_settings_change() {
+        let Some((seed, _far, near)) = catch_up_setup("drivers") else { return };
+        std::fs::write(near.join("b.txt"), "mine\n").unwrap();
+        run(&near, &["add", "."]).unwrap();
+        run(&near, &["commit", "-qm", "mine"]).unwrap();
+        std::fs::write(seed.join("b.txt"), "theirs\n").unwrap();
+        run(&seed, &["add", "."]).unwrap();
+        run(&seed, &["commit", "-qm", "theirs"]).unwrap();
+        run(&seed, &["push", "-q", "far", "main"]).unwrap();
+        run(&near, &["fetch", "-q"]).unwrap();
+        assert_eq!(integrated_into(&near, "work"), None, "two sides of one line went in");
+        // A driver that keeps the base's side: merging gives the base
+        run(&near, &["config", "merge.keep.driver", "true"]).unwrap();
+        std::fs::write(near.join(".gitattributes"), "b.txt merge=keep\n").unwrap();
+        let with_driver = integrated_into(&near, "work");
+        // Taken away again: the conflict is back, whatever was kept
+        std::fs::remove_file(near.join(".gitattributes")).unwrap();
+        run(&near, &["config", "--unset", "merge.keep.driver"]).unwrap();
+        assert_eq!(integrated_into(&near, "work"), None, "the answer under the driver was kept after it went");
+        // Where git reads the attributes for this merge, the driver made it
+        // the base's; where it does not, it was never kept as anything else
+        if with_driver.is_some() {
+            assert_eq!(with_driver.as_deref(), Some("origin/main"));
+        }
     }
 
     /// A checkout that cut a branch and saw it merged goes home: onto the
