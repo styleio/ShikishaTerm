@@ -286,7 +286,14 @@ pub fn has_remote(cwd: &Path) -> bool {
     let Some(text) = family_of(cwd).and_then(|f| std::fs::read_to_string(f.join("config")).ok()) else {
         return false;
     };
-    text.lines().any(|l| l.trim().replace(char::is_whitespace, "").starts_with("[remote\""))
+    let section = |l: &str, name: &str| l.trim().replace(char::is_whitespace, "").to_ascii_lowercase().starts_with(name);
+    if text.lines().any(|l| section(l, "[remote\"")) {
+        return true;
+    }
+    // Settings kept in another file are git's to read: asked of git only
+    // then, which is rare
+    text.lines().any(|l| section(l, "[include"))
+        && crate::git::run(cwd, &["remote"]).is_ok_and(|r| !r.trim().is_empty())
 }
 
 /// What changes whenever what git would say about a worktree's changes and

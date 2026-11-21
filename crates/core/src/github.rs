@@ -1715,8 +1715,9 @@ pub fn far_head_folder(s: &Source, head: &str) -> Option<(std::path::PathBuf, St
     for (dir, at, host) in first {
         crate::git::there(dir, Some(at));
         let on = crate::git::run(dir, &["branch", "--show-current"]).ok();
+        // Found: left told that it is far, as whoever asked goes on to run
+        // git in it -- run here, it would be some other folder of that name
         if on.as_deref().map(str::trim) == Some(head) {
-            crate::git::there(&s.dir, None);
             return Some((dir.clone(), host.clone()));
         }
     }
@@ -1735,7 +1736,8 @@ pub fn far_head_folder(s: &Source, head: &str) -> Option<(std::path::PathBuf, St
     for (at, folders) in machines {
         let dirs: Vec<&std::path::Path> = folders.iter().map(|(d, _, _)| d.as_path()).collect();
         let on = crate::git::far_branches(at, &dirs);
-        if let Some(((dir, _, host), _)) = folders.into_iter().zip(on).find(|(_, b)| b.as_deref() == Some(head)) {
+        if let Some(((dir, at, host), _)) = folders.into_iter().zip(on).find(|(_, b)| b.as_deref() == Some(head)) {
+            crate::git::there(dir, Some(at));
             return Some((dir.clone(), host.clone()));
         }
     }

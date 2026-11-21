@@ -1666,7 +1666,12 @@ pub fn integrated_into(dir: &Path, branch: &str) -> Option<String> {
     // The answer is the two commits' alone: asked once for each pair. The
     // panel asks every time it looks, and a merge worked out in a large
     // repository takes seconds
-    let key = (head.to_string(), target.to_string());
+    // ...and of the repository's: two clones of the same commits can merge
+    // them differently, by the merge drivers each is set up with
+    let repo = far_of(dir).map(|at| format!("{}\u{1f}{}", at.machine_key(), dir.display()))
+        .or_else(|| crate::repo::family_of(dir).map(|f| f.display().to_string()))
+        .unwrap_or_else(|| dir.display().to_string());
+    let key = (repo, head.to_string(), target.to_string());
     if let Some(went) = INTEGRATED.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
         return went.then_some(base);
     }
@@ -1684,8 +1689,8 @@ pub fn integrated_into(dir: &Path, branch: &str) -> Option<String> {
     went.then_some(base)
 }
 
-/// What [`integrated_into`] worked out, by (HEAD, base) commit
-static INTEGRATED: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<(String, String), bool>>> =
+/// What [`integrated_into`] worked out, by (repository, HEAD, base) commit
+static INTEGRATED: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<(String, String, String), bool>>> =
     std::sync::LazyLock::new(Default::default);
 
 /// How many pairs are kept: a few for each worktree, which moves rarely

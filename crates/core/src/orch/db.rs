@@ -325,9 +325,11 @@ impl Store {
         let tx = self.conn.transaction()?;
         tx.execute("DELETE FROM jobs WHERE state = 'closed' AND closed_at < ?1", params![before])?;
         // Unread too: mail of no job that was pointed out every time it is
-        // pointed out, and still not come for in a month, is not coming
+        // pointed out, and still not come for in a month, is not coming.
+        // Never mail a handover not yet dealt with carries: its tab has it
+        // in hand, and asking for it again has to find every word
         tx.execute(
-            "DELETE FROM mail WHERE job_id IS NULL AND sent_at < ?1 AND (is_read = 1 OR told_times >= ?2)",
+            "DELETE FROM mail WHERE job_id IS NULL AND sent_at < ?1 AND (is_read = 1 OR told_times >= ?2) \n             AND NOT EXISTS (SELECT 1 FROM handovers h, json_each(h.mail) m WHERE h.state = 'given' AND m.value = mail.seq)",
             params![before, TOLD_TIMES],
         )?;
         // The latest of each box stays: it is what says whether new mail
@@ -1950,6 +1952,18 @@ mod keeping_tests {
         s.conn
             .execute("UPDATE mail SET sent_at = ?1, is_told = 1, told_times = 1 WHERE seq = ?2", params![OLD, waiting])
             .unwrap();
+        // Handed over and not dealt with yet: kept, however old and however
+        // often it was pointed out
+        let held = s.post(None, "tab:uid-held", "x", "note", "n", "in hand", &json!({})).unwrap();
+        s.conn
+            .execute("UPDATE mail SET sent_at = ?1, is_told = 1, is_read = 1, told_times = ?2 WHERE seq = ?3", params![OLD, TOLD_TIMES, held])
+            .unwrap();
+        s.conn
+            .execute(
+                "INSERT INTO handovers (box, mail, state, given_at) VALUES ('tab:uid-held', ?1, 'given', ?2)",
+                params![format!("[{held}]"), OLD],
+            )
+            .unwrap();
         s.named("uid-lead", "lead", OLD).unwrap();
         s.named("uid-nobody", "nobody", OLD).unwrap();
         s.named("uid-new", "new", now_ms()).unwrap();
@@ -1980,8 +1994,10 @@ mod keeping_tests {
             .unwrap()
             .collect::<rusqlite::Result<_>>()
             .unwrap();
-        assert_eq!(handed.len(), 2, "{handed:?}");
+        assert_eq!(handed.len(), 3, "{handed:?}");
         assert_eq!(handed[1], ("job:2".to_string(), Some(OLD)), "each box keeps its latest");
+        let still: i64 = s.conn.query_row("SELECT COUNT(*) FROM mail WHERE seq = ?1", params![held], |r| r.get(0)).unwrap();
+        assert_eq!(still, 1, "mail a handover still carries was let go");
         assert!(s.unread("tab:uid-gone").unwrap().is_empty());
         assert_eq!(s.unread("tab:uid-lead").unwrap().len(), 1, "told fewer times than the most: kept");
         assert_eq!(s.name_of("uid-lead").unwrap(), "lead", "it leads a job");

@@ -2565,6 +2565,7 @@ pub fn files(
                 }
             }
             let mut out: Vec<Option<Vec<u8>>> = Vec::with_capacity(paths.len());
+            let mut failed: Option<anyhow::Error> = None;
             for some in paths.chunks(crate::ssh::READS_AT_ONCE) {
                 let read: Vec<Result<Option<Vec<u8>>>> = std::thread::scope(|s| {
                     let going: Vec<_> = some
@@ -2595,8 +2596,20 @@ pub fn files(
                 // One that will not read is left unread, as one too large is,
                 // and the rest are still answered
                 for r in read {
-                    out.push(r.unwrap_or(None));
+                    match r {
+                        Ok(b) => out.push(b),
+                        Err(e) => {
+                            failed = failed.or(Some(e));
+                            out.push(None);
+                        }
+                    }
                 }
+            }
+            // Every one that was there failed: the machine, not the files
+            if let Some(e) = failed
+                && out.iter().all(Option::is_none)
+            {
+                return Err(e);
             }
             Ok(FileAnswer::Several(out))
         }

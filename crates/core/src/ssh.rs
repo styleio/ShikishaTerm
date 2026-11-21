@@ -1257,6 +1257,7 @@ async fn read_all(
     most: u64,
 ) -> Result<Vec<Option<Vec<u8>>>> {
     let mut out: Vec<Option<Vec<u8>>> = vec![None; paths.len()];
+    let mut failed: Option<anyhow::Error> = None;
     // Dropped with the job when it runs out of time: the reads still going
     // are stopped, not left running on a server that has stopped answering
     let mut going = tokio::task::JoinSet::new();
@@ -1281,7 +1282,17 @@ async fn read_all(
         // One that will not read is left unread, as one too large is: the
         // rest are still answered, and whoever asked reads that one alone to
         // be told why
-        out[i] = read.unwrap_or(None);
+        match read {
+            Ok(b) => out[i] = b,
+            Err(e) => failed = failed.or(Some(e)),
+        }
+    }
+    // Every one that was there failed: the connection, not the files, and
+    // said so rather than answered as a folder with nothing in it
+    if let Some(e) = failed
+        && out.iter().all(Option::is_none)
+    {
+        return Err(e);
     }
     Ok(out)
 }
