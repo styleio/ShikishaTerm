@@ -126,6 +126,18 @@ once it reaches its first tagged release.
   - A failed CI run fetches the logs of its first few failed jobs together
     and names the rest; a pull request's or issue's page asks GitHub for its
     parts together rather than one after another.
+  - Naming folders and servers starts the assistant AI for two of them at a
+    time, not for every folder on the desk at once. Review threads and
+    failed checks handed to an AI fit in forty thousand characters, long
+    comments and long threads shortened and what was left out counted; a
+    pull request's draft lists its newest two hundred commits and how many
+    more there are.
+  - The orchestration board is read from its record only when the record
+    changed, through indexes, not four times a second through whole tables;
+    the conversation search, the folder view of conversations and the
+    reading of a tab's conversations stop reading what they do not need.
+    Both records let go of what is past keeping once a day while the app
+    runs, not only when it starts.
 - **The time at the master password lock is no longer taken for the window
   not answering.** The window was timed from when it opened, but asked to
   answer only once the lock was open, so the seconds spent typing the
