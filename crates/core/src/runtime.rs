@@ -2254,6 +2254,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     let start = Instant::now();
     let _ = LOOP_START.set(start);
     crate::keeps_the_log();
+    // Something watches that this loop and the window keep going
+    // (`crate::watchdog`), from the start: the window is open already, and
+    // is to be asked to answer while a master password is waited for. This
+    // loop is watched from its first pass; nothing before it says it is alive
+    crate::watchdog::start();
     // Width comes from config if given; otherwise it's auto-computed from tab names
     // (finalized once tabs are launched).
     let (mut rows, mut cols) = pty_dims(shell.size()?);
@@ -3392,9 +3397,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         }};
     }
 
-    // Something watches that this loop keeps going (`crate::watchdog`)
-    crate::watchdog::start();
-    // ...and something writes down how the machine is doing as it does (`crate::health`)
+    // Something writes down how the machine is doing as it does (`crate::health`);
+    // the watching of this loop and the window began as the app did
     crate::health::start();
     loop {
         crate::watchdog::beat(crate::watchdog::Part::Work);

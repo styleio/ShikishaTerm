@@ -40,7 +40,7 @@ const BUSY: f32 = 85.0;
 /// The share of the memory left, in hundredths, under which a look is
 const SHORT: u64 = 10;
 /// How late a part of the app answers, in milliseconds, before a look is
-const LATE: u64 = 3_000;
+const LATE: u64 = crate::watchdog::LATE_AFTER.as_millis() as u64;
 /// How busy the disks are, in hundredths of the time, from which a look is
 const DISK_BUSY: f32 = 90.0;
 /// How many pages of memory a second, over the minute, are read back from

@@ -38,6 +38,18 @@ pub const HUNG_AFTER: Duration = Duration::from_secs(20);
 /// How often the watching thread looks, and asks the window to answer
 const LOOK_EVERY: Duration = Duration::from_secs(2);
 
+/// How long a part may go quiet before it is late: a person notices a window
+/// that takes this long to answer. Where it is then is written down once, in
+/// the log -- what was holding it up, which the minute's account of how the
+/// machine is doing (`crate::health`) cannot say
+pub const LATE_AFTER: Duration = Duration::from_secs(3);
+
+/// How much longer than [`LOOK_EVERY`] the watching thread may take to come
+/// round before it is taken to have been held itself -- the program frozen
+/// whole, or the machine put to sleep where its clock goes on counting. What
+/// it did not see over that time it cannot judge, and it starts again
+const WATCHER_HELD: Duration = Duration::from_secs(5);
+
 /// How many dumps are kept, and how much room they may take together: the
 /// newest are kept, so a crash that repeats at every start cannot fill a disk
 const DUMPS_KEPT: usize = 8;
@@ -169,6 +181,19 @@ impl Drop for Doing {
 /// answer from here on has stopped, even if it never answered at all
 fn arm(part: Part) {
     LAST[part.index()].store(awake_ms(), Ordering::SeqCst);
+}
+
+/// A part already watched is counted from `now`, as if it had just answered:
+/// it has not been asked anything over the time before. Never earlier than
+/// a beat it gave, and nothing for a part not watched yet
+fn arm_again(i: usize, now: u64) {
+    counted_from(&LAST[i], now);
+}
+
+fn counted_from(last: &AtomicU64, now: u64) {
+    if last.load(Ordering::SeqCst) != 0 {
+        last.fetch_max(now, Ordering::SeqCst);
+    }
 }
 
 /// Wait for a person to answer a dialog of the system's own: the part on
@@ -305,7 +330,13 @@ pub fn start() {
     if STARTED.swap(true, Ordering::SeqCst) {
         return;
     }
-    let _ = awake_ms();
+    // The window is armed as it opens, which can be well before this: it has
+    // been asked nothing since, so the time until now -- a master password
+    // being typed, or the night it waited for one -- is not its being late
+    let now = awake_ms();
+    for i in 0..PARTS.len() {
+        arm_again(i, now);
+    }
     #[cfg(windows)]
     native::catch_crashes();
     let _ = std::thread::Builder::new().name("shikisha-watchdog".into()).spawn(watch);
@@ -381,6 +412,9 @@ fn debug_sample() {
 struct DumpAsk {
     part: Part,
     time: u64,
+    /// Only where it is, for a part late but not stopped: said in the log
+    /// with how long it had been quiet, and no dump
+    late: Option<u64>,
 }
 
 /// What came of asking: where the part's thread was, which is read at
@@ -409,6 +443,16 @@ fn watch() {
             // Where it is first, while it is still there: a part that comes
             // back a moment later is somewhere else by the time a dump is written
             let stack = crate::stack::of(THREADS[ask.part.index()].load(Ordering::SeqCst));
+            if let Some(secs) = ask.late {
+                if !stack.is_empty() {
+                    crate::append_hook_log(&format!(
+                        "watchdog: the {} part has been quiet for {secs} s, in: {}",
+                        ask.part.name(),
+                        stack.iter().take(12).cloned().collect::<Vec<_>>().join(" < ")
+                    ));
+                }
+                continue;
+            }
             if got_tx.send((ask, Got::Stack(stack))).is_err() {
                 return;
             }
@@ -426,8 +470,15 @@ fn watch() {
     let mut open_time = [0u64; 2];
     let mut stopped: [Option<Stopped>; 2] = [None, None];
     let mut times = 0u64;
+    // Whether where each part is has been written down for the time it is
+    // late now: once a time, not at every look
+    let mut late_said = [false; 2];
+    let mut looked = awake_ms();
     loop {
         std::thread::sleep(LOOK_EVERY);
+        let woke = awake_ms();
+        let held = watcher_was_held(looked, woke);
+        looked = woke;
         if let Some(ping) = PING.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
             ping();
         }
@@ -458,12 +509,29 @@ fn watch() {
             if HELD[i].load(Ordering::SeqCst) > 0 {
                 continue;
             }
+            // This thread was held as long as the parts: what it did not see
+            // it cannot say was a part stopped, and a part that answers from
+            // here on is counted from here. One already stopped is left to say
+            // whether it comes back
+            if held && stopped[i].is_none() {
+                arm_again(i, now);
+                continue;
+            }
             let last = LAST[i].load(Ordering::SeqCst);
             if last == 0 {
                 continue;
             }
             let quiet = Duration::from_millis(now.saturating_sub(last));
             LATE[i].fetch_max(quiet.as_millis() as u64, Ordering::SeqCst);
+            // Late, short of stopped: where it is, once
+            match (quiet >= LATE_AFTER, late_said[i]) {
+                (true, false) if quiet < HUNG_AFTER => {
+                    late_said[i] = true;
+                    let _ = ask_tx.send(DumpAsk { part, time: 0, late: Some(quiet.as_secs()) });
+                }
+                (false, true) => late_said[i] = false,
+                _ => {}
+            }
             match (&stopped[i], quiet >= HUNG_AFTER) {
                 (None, true) => {
                     // And looked at once more: a dialog opened, or a beat
@@ -489,7 +557,7 @@ fn watch() {
                     write_hangs(&open);
                     changed = false;
                     note(&format!("the {} part has not answered for {} s", part.name(), quiet.as_secs()));
-                    let _ = ask_tx.send(DumpAsk { part, time: times });
+                    let _ = ask_tx.send(DumpAsk { part, time: times, late: None });
                 }
                 (Some(_), true) => {
                     // Still gone: how long is kept up to date, so a run ended
@@ -520,6 +588,13 @@ fn watch() {
             write_hangs(&open);
         }
     }
+}
+
+/// Whether the watching thread came round so much later than it slept for
+/// -- awake times in milliseconds, of the look before and this one -- that
+/// it was held itself
+fn watcher_was_held(looked: u64, woke: u64) -> bool {
+    woke.saturating_sub(looked) > (LOOK_EVERY + WATCHER_HELD).as_millis() as u64
 }
 
 /// For checking this module on a real window (`tools/debug/watchdog.win.mjs`),
@@ -970,6 +1045,27 @@ mod tests {
         assert_eq!(still_stopped(&[window], 7, 90), None, "back is not stopped");
         assert_eq!(still_stopped(&both, 8, 90), None, "another run's");
         assert_eq!(still_stopped(&both, 7, 200), None, "from before this run started");
+    }
+
+    #[test]
+    fn a_part_watched_before_the_watching_began_is_counted_from_then() {
+        // Armed as the window opened, at 500; the watching begins at 13 hours
+        let window = AtomicU64::new(500);
+        counted_from(&window, 47_325_000);
+        assert_eq!(window.load(Ordering::SeqCst), 47_325_000, "the wait for a password was counted as the window being late");
+        // A beat given after is kept, and a part not watched yet stays so
+        counted_from(&window, 1_000);
+        assert_eq!(window.load(Ordering::SeqCst), 47_325_000);
+        let work = AtomicU64::new(0);
+        counted_from(&work, 47_325_000);
+        assert_eq!(work.load(Ordering::SeqCst), 0, "the loop is watched from its first pass, not before");
+    }
+
+    #[test]
+    fn the_watcher_coming_round_late_is_said_to_have_been_held() {
+        assert!(!watcher_was_held(10_000, 12_000), "a look on time");
+        assert!(!watcher_was_held(10_000, 16_000), "a look a few seconds late on a busy machine");
+        assert!(watcher_was_held(10_000, 10_000 + 47_325_000), "the whole program held");
     }
 
     #[test]

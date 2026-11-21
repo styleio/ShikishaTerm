@@ -271,12 +271,25 @@ try {
   console.log('3. the window opens it');
   ({ port, board } = await start());
   await until(async () => (await lockState(board)).up, 'the lock on the window', 30000);
+  // Left at the lock for longer than a part may go quiet before it is taken
+  // to have stopped: the window answers all along, and is not said to have
+  // stopped, nor to have been late, once the lock is open
+  const logs = path.join(APP, 'logs');
+  const logText = (name) => { try { return fs.readFileSync(path.join(logs, name), 'utf8'); } catch { return ''; } };
+  const crashBefore = logText('crash.log').length;
+  await sleep(25000);
   await typeIn(board, PASSWORD);
   await until(async () => { const t = await lockState(board); return !t.up && t.tabs > 0; }, 'opened', 20000).catch(() => {});
   s = await lockState(board);
   check(!s.up && s.tabs > 0, 'the right password typed on the window opens it: ' + JSON.stringify(s));
   a = await pipeCall('state', 'sh');
   check(a.ok, 'the pipe answers');
+  // A few of the watchdog's looks after the lock opened
+  await sleep(7000);
+  const watched = logText('hooks.log').split(/\r?\n/).filter((l) => l.includes('watchdog: the window part'));
+  check(watched.length === 0, 'the time at the lock is not the window stopped or late: ' + JSON.stringify(watched));
+  const crashed = logText('crash.log').slice(crashBefore);
+  check(!crashed.includes('has not answered'), 'nothing in the crash log: ' + crashed.trim());
 
   console.log('4. quit at the lock');
   ({ port, board } = await start());

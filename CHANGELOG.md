@@ -43,6 +43,15 @@ once it reaches its first tagged release.
   there.
 
 ### Fixed
+- **The time at the master password lock is no longer taken for the window
+  not answering.** The window was timed from when it opened, but asked to
+  answer only once the lock was open, so the seconds spent typing the
+  password -- or a whole night the app waited at the lock -- were written
+  down as the window being late, and past twenty seconds as the window
+  having stopped, with a message on the board saying so. The window is now
+  asked to answer from the start, the lock included. When a part of the app
+  is three seconds late, short of stopping, where it was is written in the
+  log once, so a real hold-up says what held it.
 - **The window no longer stutters over a folder with thousands of changed
   files.** A folder whose build output git does not ignore lists every one
   of those files as new, and the Git panel made a row for each of them again
