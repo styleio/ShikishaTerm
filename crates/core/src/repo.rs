@@ -222,12 +222,92 @@ pub fn pushed_head(cwd: &Path, branch: &str) -> Option<String> {
     {
         return Some(t.trim().to_string());
     }
-    // Packed away: one line each, `<commit> <ref>`
-    let packed = std::fs::read_to_string(common.join("packed-refs")).ok()?;
-    packed.lines().find_map(|l| {
-        let (s, r) = l.split_once(' ')?;
-        (r.trim() == name && sha(s)).then(|| s.to_string())
-    })
+    packed_ref(&common, &name).filter(|s| sha(s))
+}
+
+/// One ref out of a repository's `packed-refs`, the file git packs refs
+/// away into: a repository with many branches has megabytes of it. Read and
+/// sorted into a table once for each time the file changes, so asking about
+/// every tab's branch every two seconds is a lookup each, not a read of the
+/// whole file each. `common` is the shared git folder
+pub fn packed_ref(common: &Path, name: &str) -> Option<String> {
+    type Packed = HashMap<PathBuf, (Option<std::time::SystemTime>, u64, std::sync::Arc<HashMap<String, String>>)>;
+    static PACKED: std::sync::Mutex<Option<Packed>> = std::sync::Mutex::new(None);
+    let file = common.join("packed-refs");
+    let meta = std::fs::metadata(&file).ok()?;
+    let mark = (meta.modified().ok(), meta.len());
+    let table = {
+        let guard = PACKED.lock().unwrap_or_else(|e| e.into_inner());
+        guard.as_ref().and_then(|m| m.get(&file)).filter(|(at, len, _)| (*at, *len) == mark).map(|(_, _, t)| std::sync::Arc::clone(t))
+    };
+    let table = match table {
+        Some(t) => t,
+        None => {
+            let text = std::fs::read_to_string(&file).ok()?;
+            let t = std::sync::Arc::new(packed_table(&text));
+            let mut guard = PACKED.lock().unwrap_or_else(|e| e.into_inner());
+            let map = guard.get_or_insert_with(HashMap::new);
+            // A table for each repository there is a tab in, not for every
+            // one ever asked about
+            if map.len() >= PACKED_KEPT {
+                map.clear();
+            }
+            map.insert(file, (mark.0, mark.1, std::sync::Arc::clone(&t)));
+            t
+        }
+    };
+    table.get(name).cloned()
+}
+
+/// How many repositories' packed refs are kept at once
+const PACKED_KEPT: usize = 64;
+
+/// `packed-refs` as ref -> commit: one line each, `<commit> <ref>`, with the
+/// commit a tag points at on a `^` line of its own, which is not a ref
+fn packed_table(text: &str) -> HashMap<String, String> {
+    text.lines()
+        .filter(|l| !l.starts_with('#') && !l.starts_with('^'))
+        .filter_map(|l| {
+            let (s, r) = l.split_once(' ')?;
+            Some((r.trim().to_string(), s.trim().to_string()))
+        })
+        .collect()
+}
+
+/// A folder's own git folder: for a worktree, the one under the repository's
+/// `worktrees`, which holds its HEAD, index and reflog
+pub fn own_git_dir(cwd: &Path) -> Option<PathBuf> {
+    git_dir(cwd)
+}
+
+/// Whether the folder's repository has any remote, read from its `config`
+/// rather than by asking git
+pub fn has_remote(cwd: &Path) -> bool {
+    let Some(text) = family_of(cwd).and_then(|f| std::fs::read_to_string(f.join("config")).ok()) else {
+        return false;
+    };
+    text.lines().any(|l| l.trim().replace(char::is_whitespace, "").starts_with("[remote\""))
+}
+
+/// What changes whenever what git would say about a worktree's changes and
+/// commits could: its HEAD, its index, its reflog, the refs the servers were
+/// last heard at, and its top folder. Only the times and sizes of files, so
+/// it is cheap to take; equal twice means nothing worth starting git for has
+/// happened in between -- except a file changed below the top folder without
+/// git being told, which a look on a long timer catches
+pub fn quiet_mark(cwd: &Path) -> Option<Vec<(Option<std::time::SystemTime>, u64)>> {
+    let own = git_dir(cwd)?;
+    let common = family_of(cwd)?;
+    let at = |p: PathBuf| std::fs::metadata(p).map(|m| (m.modified().ok(), m.len())).unwrap_or((None, 0));
+    Some(vec![
+        at(own.join("HEAD")),
+        at(own.join("index")),
+        at(own.join("logs").join("HEAD")),
+        at(common.join("packed-refs")),
+        at(common.join("FETCH_HEAD")),
+        at(common.join("refs").join("remotes")),
+        at(cwd.to_path_buf()),
+    ])
 }
 
 /// What two folders share when they are the same repository.
@@ -815,6 +895,24 @@ fn listening() -> Vec<(u32, u16, std::net::IpAddr)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Packed refs are read into a table: a tag's peeled line is not a ref,
+    /// and the table is read again when the file changes
+    #[test]
+    fn packed_refs_are_read_once_and_again_when_they_change() {
+        let t = packed_table("# pack-refs with: peeled fully-peeled sorted\naaaa refs/remotes/origin/main\nbbbb refs/tags/v1\n^cccc\n");
+        assert_eq!(t.get("refs/remotes/origin/main").map(String::as_str), Some("aaaa"));
+        assert_eq!(t.get("refs/tags/v1").map(String::as_str), Some("bbbb"));
+        assert_eq!(t.len(), 2, "the peeled line was taken as a ref");
+        let d = tmp("packed");
+        std::fs::write(d.join("packed-refs"), "1111 refs/remotes/origin/a\n").unwrap();
+        assert_eq!(packed_ref(&d, "refs/remotes/origin/a").as_deref(), Some("1111"));
+        assert_eq!(packed_ref(&d, "refs/remotes/origin/b"), None);
+        // Longer, so changed even where the clock does not move between writes
+        std::fs::write(d.join("packed-refs"), "2222 refs/remotes/origin/a\n3333 refs/remotes/origin/b\n").unwrap();
+        assert_eq!(packed_ref(&d, "refs/remotes/origin/a").as_deref(), Some("2222"));
+        assert_eq!(packed_ref(&d, "refs/remotes/origin/b").as_deref(), Some("3333"));
+    }
 
     fn tmp(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("shikisha-repo-{name}"));

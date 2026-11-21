@@ -318,6 +318,12 @@ pub enum FileJob {
     /// one wrong path would take everything under it, and there is no undo on
     /// the far end
     Remove { path: String },
+    /// Several of the jobs above, one after another in the order given, over
+    /// one file session rather than one each: a folder of a thousand files
+    /// sent one job at a time was a thousand sessions opened and closed. One
+    /// that fails does not stop the rest; each says how it went, in its place
+    /// ([`FileAnswer::Each`]). Never one of these inside another
+    Each { jobs: Vec<FileJob> },
 }
 
 /// What came back. `Nothing` is a job that either worked or said why
@@ -332,6 +338,8 @@ pub enum FileAnswer {
     Bytes(Vec<u8>),
     /// What a [`FileJob::ReadAll`] read, in the order it was asked
     Several(Vec<Option<Vec<u8>>>),
+    /// How each job of a [`FileJob::Each`] went, in the order it was asked
+    Each(Vec<std::result::Result<FileAnswer, String>>),
 }
 
 /// What the connection thread is asked to do: each one a piece of work that
@@ -1270,7 +1278,10 @@ async fn read_all(
         }
         let Some(done) = going.join_next().await else { break };
         let (i, read) = done?;
-        out[i] = read?;
+        // One that will not read is left unread, as one too large is: the
+        // rest are still answered, and whoever asked reads that one alone to
+        // be told why
+        out[i] = read.unwrap_or(None);
     }
     Ok(out)
 }
@@ -1280,6 +1291,16 @@ async fn run_file_job(
     job: FileJob,
 ) -> Result<FileAnswer> {
     match job {
+        FileJob::Each { jobs } => {
+            let mut out = Vec::with_capacity(jobs.len());
+            for job in jobs {
+                out.push(match job {
+                    FileJob::Each { .. } => Err(crate::i18n::t("err.files.far_odd")),
+                    job => Box::pin(run_file_job(sftp, job)).await.map_err(|e| format!("{e:#}")),
+                });
+            }
+            Ok(FileAnswer::Each(out))
+        }
         FileJob::ReadAll { paths, most } => Ok(FileAnswer::Several(read_all(sftp, paths, most).await?)),
         FileJob::List { path } => {
             let mut out = Vec::new();

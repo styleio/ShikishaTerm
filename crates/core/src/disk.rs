@@ -13,6 +13,14 @@ pub trait Disk {
     fn files(&self, dir: &str) -> Result<Option<Vec<String>>, String>;
     /// The names of the folders in a folder (empty when there is no folder)
     fn folders(&self, dir: &str) -> Result<Vec<String>, String>;
+    /// Both at once -- the files, then the folders -- `None` when there is no
+    /// folder. One question where the machine is far, not two
+    fn entries(&self, dir: &str) -> Result<Option<(Vec<String>, Vec<String>)>, String> {
+        Ok(match self.files(dir)? {
+            None => None,
+            Some(files) => Some((files, self.folders(dir)?)),
+        })
+    }
     /// A file's bytes, `None` when there is no file
     fn read(&self, path: &str) -> Result<Option<Vec<u8>>, String>;
     /// Several files' bytes, each in the place it was asked in: `None` for

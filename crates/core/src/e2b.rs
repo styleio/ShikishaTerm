@@ -2465,6 +2465,21 @@ pub fn files(
 ) -> Result<crate::ssh::FileAnswer> {
     use crate::ssh::{FileAnswer, FileJob};
     match job {
+        // Each its own request here as it is anyway, one after another, all
+        // within the one wait the whole was given
+        FileJob::Each { jobs } => {
+            let until = std::time::Instant::now() + std::time::Duration::from_millis(wait_ms);
+            let mut out = Vec::with_capacity(jobs.len());
+            for job in jobs {
+                let left = until.saturating_duration_since(std::time::Instant::now()).as_millis() as u64;
+                out.push(match job {
+                    FileJob::Each { .. } => Err(crate::i18n::t("err.files.far_odd")),
+                    _ if left == 0 => Err(crate::i18n::t("err.files.far_late")),
+                    job => files(sandbox, job, left).map_err(|e| format!("{e:#}")),
+                });
+            }
+            Ok(FileAnswer::Each(out))
+        }
         FileJob::List { path } => {
             // One level. A listing is a folder being looked at, not a search:
             // asking for everything underneath would pull a whole source tree
@@ -2526,19 +2541,49 @@ pub fn files(
         // folder of a hundred records is then a few waits rather than a
         // hundred and one
         FileJob::ReadAll { paths, most } => {
+            // Sized by listing each folder they are in, once: asked file by
+            // file, every file was two requests, its size and then itself.
+            // A folder that will not list is sized file by file, as before
+            let mut sizes: std::collections::HashMap<String, Option<(bool, u64)>> = Default::default();
+            let mut listed: std::collections::HashMap<String, bool> = Default::default();
+            for path in &paths {
+                let (dir, name) = path.rsplit_once('/').unwrap_or((".", path.as_str()));
+                let dir = if dir.is_empty() { "/" } else { dir };
+                let ok = *listed.entry(dir.to_string()).or_insert_with(|| {
+                    match files(sandbox, FileJob::List { path: dir.to_string() }, wait_ms) {
+                        Ok(FileAnswer::Listing(rows)) => {
+                            for r in rows {
+                                sizes.insert(format!("{dir}/{}", r.name), Some((r.dir, r.size)));
+                            }
+                            true
+                        }
+                        _ => false,
+                    }
+                });
+                if ok {
+                    sizes.entry(format!("{dir}/{name}")).or_insert(None);
+                }
+            }
             let mut out: Vec<Option<Vec<u8>>> = Vec::with_capacity(paths.len());
             for some in paths.chunks(crate::ssh::READS_AT_ONCE) {
                 let read: Vec<Result<Option<Vec<u8>>>> = std::thread::scope(|s| {
                     let going: Vec<_> = some
                         .iter()
                         .map(|path| {
+                            let (dir, name) = path.rsplit_once('/').unwrap_or((".", path.as_str()));
+                            let known = sizes.get(&format!("{}/{name}", if dir.is_empty() { "/" } else { dir })).copied();
                             s.spawn(move || {
                                 // Not there is said as not there, the way a
                                 // single read finds it
-                                let Ok(FileAnswer::One(e)) = files(sandbox, FileJob::Stat { path: path.clone() }, wait_ms) else {
-                                    return Ok(None);
+                                let (is_dir, size) = match known {
+                                    Some(Some(seen)) => seen,
+                                    Some(None) => return Ok(None),
+                                    None => match files(sandbox, FileJob::Stat { path: path.clone() }, wait_ms) {
+                                        Ok(FileAnswer::One(e)) => (e.dir, e.size),
+                                        _ => return Ok(None),
+                                    },
                                 };
-                                if e.dir || e.size > most {
+                                if is_dir || size > most {
                                     return Ok(None);
                                 }
                                 download(sandbox, path, wait_ms).map(|b| (b.len() as u64 <= most).then_some(b))
@@ -2547,8 +2592,10 @@ pub fn files(
                         .collect();
                     going.into_iter().map(|g| g.join().unwrap_or_else(|_| Err(anyhow!("read")))).collect()
                 });
+                // One that will not read is left unread, as one too large is,
+                // and the rest are still answered
                 for r in read {
-                    out.push(r?);
+                    out.push(r.unwrap_or(None));
                 }
             }
             Ok(FileAnswer::Several(out))

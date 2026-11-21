@@ -95,6 +95,37 @@ once it reaches its first tagged release.
     at once. A resolved file now keeps the last line break it had, and a
     file with code samples of its own (a README) is no longer cut down to
     its first sample when the answer is unwrapped.
+  - Sending or fetching a folder, or several files at once, in the transfer
+    panel hands the files over a batch to a connection (a few dozen files,
+    or a few megabytes), and lists a folder's subfolders together, instead
+    of opening a connection for every file and every folder: a build output
+    of a thousand files was a thousand connections. A script can do the
+    same with `shikisha.sftp_each`.
+  - The branch list the git panel offers to bring in asks git for the
+    servers' names once, not once for every branch: a repository with
+    thousands of branches took minutes and was given up on. The base list
+    of a pull request from a folder on another machine is cut at what a
+    picker shows, the server's default first.
+  - Worktrees nobody is working in are looked at with git only when
+    something git keeps in them has changed (or every ten minutes), not
+    every twenty seconds each. Whether a branch has already gone into its
+    base is worked out once for each pair of commits, not on every look at
+    the git panel. Every tab's branch on the server is looked up in git's
+    packed list read once each time it changes, not read whole for every
+    tab every two seconds.
+  - A folder on another machine says its branch and repository in one
+    command, not two; the folder a pull request's branch is checked out in
+    is looked for a server at a time; editors open on files there ask
+    whether the files changed in one question for each machine; pictures in
+    a Markdown preview are read in one request each, not two; Markdown
+    templates and a MicroVM's files of one folder are sized and read
+    together; and a download sent to another machine finds a free name from
+    one listing, not one question a name. A conversation on another machine
+    without the bridge is read two megabytes at a command, not a quarter of
+    one, and its record is found once rather than at every look.
+  - A failed CI run fetches the logs of its first few failed jobs together
+    and names the rest; a pull request's or issue's page asks GitHub for its
+    parts together rather than one after another.
 - **The time at the master password lock is no longer taken for the window
   not answering.** The window was timed from when it opened, but asked to
   answer only once the lock was open, so the seconds spent typing the

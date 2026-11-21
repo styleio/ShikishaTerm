@@ -452,14 +452,29 @@ pub fn far_place(at: &crate::elsewhere::Elsewhere, dir: &Path, awake: bool) -> (
         let (at, dir) = (at.clone(), dir.to_path_buf());
         std::thread::spawn(move || {
             there(&dir, Some(&at));
-            let branch = run(&dir, &["branch", "--show-current"]).ok().map(|b| b.trim().to_string()).filter(|b| !b.is_empty());
-            let repo = run(&dir, &["remote", "get-url", "origin"]).ok().and_then(|u| crate::repo::github_path(u.trim()));
+            // Both in one command there: each is a round trip to the machine,
+            // for every folder there on the desk, every half minute
+            let said = run(&dir, &["-c", FAR_PLACE_ALIAS, "shikisha-place"]).unwrap_or_default();
+            let (branch, repo) = far_place_said(&said);
             there(&dir, None);
             let mut k = kept.lock().unwrap_or_else(|e| e.into_inner());
             k.insert(key, Kept { asked: std::time::Instant::now(), busy: false, found: (branch, repo) });
         });
     }
     found
+}
+
+/// The two questions [`far_place`] asks, as one git command: an alias given
+/// for that one run, which git runs in the folder's top. A folder with no
+/// `origin` still says its branch
+const FAR_PLACE_ALIAS: &str =
+    "alias.shikisha-place=!git branch --show-current; echo __SHIKISHA_PLACE__; git remote get-url origin 2>/dev/null; true";
+
+/// The branch and the GitHub repository out of what [`FAR_PLACE_ALIAS`] said
+fn far_place_said(said: &str) -> (Option<String>, Option<String>) {
+    let (branch, url) = said.split_once("__SHIKISHA_PLACE__").unwrap_or((said, ""));
+    let branch = Some(branch.trim().to_string()).filter(|b| !b.is_empty());
+    (branch, crate::repo::github_path(url.trim()))
 }
 
 /// What [`far_place`] last found out about a folder, and when
@@ -561,6 +576,26 @@ pub fn far_line(dir: &Path, args: &[&str], input: &[u8], who: &As) -> String {
         ),
     };
     format!("cd {} && {fed}{}", sh_word(&dir.to_string_lossy().replace('\\', "/")), words.join(" "))
+}
+
+/// The branch each of several folders on one machine is on, asked in one
+/// command there: one round trip for all of them, not one each. None for a
+/// folder that is not there, not a repository, or on no branch
+pub fn far_branches(at: &crate::elsewhere::Elsewhere, dirs: &[&Path]) -> Vec<Option<String>> {
+    const CUT: &str = "__SHIKISHA_BRANCH__";
+    let line = dirs
+        .iter()
+        .map(|d| {
+            format!(
+                "GIT_OPTIONAL_LOCKS=0 git -C {} branch --show-current 2>/dev/null; echo {CUT}",
+                sh_word(&d.to_string_lossy().replace('\\', "/"))
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    let said = crate::elsewhere::exec(at, &line, 30_000).map(|r| r.out).unwrap_or_default();
+    let mut parts = said.split(CUT).map(|p| Some(p.trim().to_string()).filter(|b| !b.is_empty()));
+    dirs.iter().map(|_| parts.next().flatten()).collect()
 }
 
 /// The same run as below, on the machine the folder is on
@@ -1624,15 +1659,37 @@ pub fn integrated_into(dir: &Path, branch: &str) -> Option<String> {
         name == branch && run(dir, &["remote"]).is_ok_and(|s| s.lines().any(|r| r == remote))) {
         return None;
     }
-    let target = run(dir, &["rev-parse", "--verify", &format!("{base}^{{commit}}")]).ok()?;
-    let head = run(dir, &["rev-parse", "--verify", "HEAD"]).ok()?;
-    if run(dir, &["merge-base", "--is-ancestor", head.trim(), target.trim()]).is_ok() {
-        return Some(base);
+    // The three commits and the tree in one question
+    let said = run(dir, &["rev-parse", &format!("{base}^{{commit}}"), "HEAD", &format!("{base}^{{tree}}")]).ok()?;
+    let mut lines = said.lines().map(str::trim);
+    let (Some(target), Some(head), Some(tree)) = (lines.next(), lines.next(), lines.next()) else { return None };
+    // The answer is the two commits' alone: asked once for each pair. The
+    // panel asks every time it looks, and a merge worked out in a large
+    // repository takes seconds
+    let key = (head.to_string(), target.to_string());
+    if let Some(went) = INTEGRATED.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+        return went.then_some(base);
     }
-    let tree = run(dir, &["rev-parse", "--verify", &format!("{}^{{tree}}", target.trim())]).ok()?;
-    let merged = merged_apart(dir, target.trim(), head.trim())?;
-    (merged.lines().next()? == tree.trim()).then_some(base)
+    let went = match run(dir, &["merge-base", "--is-ancestor", head, target]).is_ok() {
+        true => true,
+        // A merge that could not be worked out this time is no answer, and
+        // is not kept as one
+        false => merged_apart(dir, target, head)?.lines().next() == Some(tree),
+    };
+    let mut known = INTEGRATED.lock().unwrap_or_else(|e| e.into_inner());
+    if known.len() >= INTEGRATED_KEPT {
+        known.clear();
+    }
+    known.insert(key, went);
+    went.then_some(base)
 }
+
+/// What [`integrated_into`] worked out, by (HEAD, base) commit
+static INTEGRATED: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<(String, String), bool>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// How many pairs are kept: a few for each worktree, which moves rarely
+const INTEGRATED_KEPT: usize = 512;
 
 /// What merging `head` into `target` would give, as `git merge-tree` says
 /// it, with nothing left behind in the repository.
@@ -1713,13 +1770,19 @@ pub fn record_base(dir: &Path, branch: &str, base: &str) -> Result<()> {
 pub fn remote_branches(dir: &Path) -> Result<Vec<String>> {
     let out = run(dir, &["for-each-ref", "--format=%(refname:short)", "refs/remotes"])?;
     let remotes = run(dir, &["remote"]).unwrap_or_default();
-    Ok(out
-        .lines()
+    Ok(remote_names(&out, &remotes))
+}
+
+/// The branch names in what `for-each-ref refs/remotes` said, without the
+/// pointer each server keeps to its default
+fn remote_names(out: &str, remotes: &str) -> Vec<String> {
+    let servers: std::collections::HashSet<&str> = remotes.lines().map(str::trim).collect();
+    out.lines()
         .map(str::trim)
         // `origin/HEAD` is written short as the remote's own name
-        .filter(|r| !r.is_empty() && !r.ends_with("/HEAD") && !remotes.lines().any(|m| m.trim() == *r))
+        .filter(|r| !r.is_empty() && !r.ends_with("/HEAD") && !servers.contains(r))
         .map(str::to_string)
-        .collect())
+        .collect()
 }
 
 /// The commands that bring the latest of a branch's base in: fetch that one
@@ -1734,8 +1797,29 @@ pub fn catch_up_steps(dir: &Path, base: &str) -> Vec<Vec<String>> {
 /// branch is fetched first, so a folder behind what was pushed is told apart
 /// before anything is merged into it. Every step but the last is a fetch
 pub fn catch_up_steps_for(dir: &Path, head: Option<&str>, base: &str) -> Vec<Vec<String>> {
-    let base = base.trim();
     let remotes = run(dir, &["remote"]).unwrap_or_default();
+    catch_up_steps_among(dir, &remotes, head, base)
+}
+
+/// The branches the servers have, each with the commands that bring it in.
+/// The servers' names are asked once for all of them: a shared repository can
+/// have thousands of branches, and a question to git for each would keep the
+/// list from coming at all
+pub fn remote_branches_with_steps(dir: &Path) -> Result<Vec<(String, Vec<Vec<String>>)>> {
+    let remotes = run(dir, &["remote"]).unwrap_or_default();
+    let out = run(dir, &["for-each-ref", "--format=%(refname:short)", "refs/remotes"])?;
+    Ok(remote_names(&out, &remotes)
+        .into_iter()
+        .map(|name| {
+            let steps = catch_up_steps_among(dir, &remotes, None, &name);
+            (name, steps)
+        })
+        .collect())
+}
+
+/// What `catch_up_steps_for` builds, with the servers' names already known
+fn catch_up_steps_among(dir: &Path, remotes: &str, head: Option<&str>, base: &str) -> Vec<Vec<String>> {
+    let base = base.trim();
     // `origin/develop` names its server; a bare `develop` is origin's
     let (remote, branch) = match base.split_once('/') {
         Some((r, b)) if remotes.lines().any(|m| m.trim() == r) => (r.to_string(), b.to_string()),
@@ -2304,6 +2388,27 @@ pub fn split_args(line: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The branches listed for bringing in are every server branch but each
+    /// server's pointer to its default, told apart with the servers' names
+    /// asked once
+    #[test]
+    fn server_branches_leave_out_each_servers_default_pointer() {
+        let out = "origin\norigin/main\norigin/HEAD\norigin/topic\nfork/main\nfork\n";
+        assert_eq!(remote_names(out, "origin\nfork\n"), vec!["origin/main", "origin/topic", "fork/main"]);
+        assert!(remote_names("", "origin\n").is_empty());
+    }
+
+    /// The branch and the repository of a folder elsewhere come back from one
+    /// command; a folder with no origin still says its branch
+    #[test]
+    fn a_far_folders_place_is_read_from_one_answer() {
+        let said = "work\n__SHIKISHA_PLACE__\ngit@github.com:acme/widgets.git\n";
+        assert_eq!(far_place_said(said), (Some("work".into()), Some("acme/widgets".into())));
+        assert_eq!(far_place_said("work\n__SHIKISHA_PLACE__\n"), (Some("work".into()), None));
+        assert_eq!(far_place_said("\n__SHIKISHA_PLACE__\n"), (None, None));
+        assert_eq!(far_place_said(""), (None, None));
+    }
 
     /// A git on another machine is one line for the shell there: into the
     /// folder, then git with each word quoted as that shell wants, what it

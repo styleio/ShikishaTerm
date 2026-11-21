@@ -567,7 +567,16 @@ impl Hub {
     /// An issue in full: what it says, who is on it, and what has happened to it
     pub fn issue(&self, repo: &Repo, number: u64) -> Result<Value> {
         let base = format!("repos/{}/issues/{number}", repo.slug());
-        let item = self.call("GET", &base, None)?;
+        // The comments and what happened to it are pages of their own, and
+        // asked for beside the issue rather than after it
+        let (item, comments, events) = std::thread::scope(|s| {
+            let comments = s.spawn(|| self.comments(repo, number));
+            let events = s.spawn(|| self.events(repo, number));
+            let item = self.call("GET", &base, None);
+            let gone = || anyhow!("issue read panicked");
+            (item, comments.join().unwrap_or_else(|_| Err(gone())), events.join().unwrap_or_else(|_| Err(gone())))
+        });
+        let item = item?;
         let mut out = row(&item, item.get("pull_request").is_some());
         out["body"] = item.get("body").cloned().unwrap_or(Value::Null);
         out["assignees"] = logins(item.get("assignees"));
@@ -583,10 +592,10 @@ impl Hub {
             out["parent"] = f["parent"].clone();
             out["subs"] = f["subs"].clone();
         }
-        out["comments"] = self.comments(repo, number)?;
+        out["comments"] = comments?;
         // What happened to it is worth having and not worth failing over: a
         // repository can refuse the timeline and still show the issue
-        out["events"] = self.events(repo, number).unwrap_or_else(|_| json!([]));
+        out["events"] = events.unwrap_or_else(|_| json!([]));
         Ok(out)
     }
 
@@ -651,12 +660,26 @@ impl Hub {
     /// A pull request in full: its branches, whether it can go in, what the
     /// reviewers said, and how its checks stand
     pub fn pull(&self, repo: &Repo, number: u64) -> Result<Value> {
-        let pr = self.call(
-            "GET",
-            &format!("repos/{}/pulls/{number}", repo.slug()),
-            None,
-        )?;
-        let mut out = self.issue(repo, number)?;
+        // Three parts that do not wait on each other, each several pages:
+        // asked for together. The checks wait on the commit the pull request
+        // itself names
+        let (pr, issue, review) = std::thread::scope(|s| {
+            let pr = s.spawn(|| -> Result<(Value, Option<Value>)> {
+                let pr = self.call("GET", &format!("repos/{}/pulls/{number}", repo.slug()), None)?;
+                let checks = pr.pointer("/head/sha").and_then(|s| s.as_str()).map(|sha| self.checks(repo, sha).unwrap_or(Value::Null));
+                Ok((pr, checks))
+            });
+            let issue = s.spawn(|| self.issue(repo, number));
+            let review = s.spawn(|| self.review_decision(repo, number).unwrap_or_default());
+            let gone = || anyhow!("pull request read panicked");
+            (
+                pr.join().unwrap_or_else(|_| Err(gone())),
+                issue.join().unwrap_or_else(|_| Err(gone())),
+                review.join().unwrap_or_default(),
+            )
+        });
+        let (pr, checks) = pr?;
+        let mut out = issue?;
         out["draft"] = pr.get("draft").cloned().unwrap_or(json!(false));
         out["merged"] = json!(pr.get("merged_at").is_some_and(|m| !m.is_null()));
         if out["merged"] == json!(true) {
@@ -676,9 +699,9 @@ impl Hub {
         out["deletions"] = pr.get("deletions").cloned().unwrap_or(Value::Null);
         out["changed_files"] = pr.get("changed_files").cloned().unwrap_or(Value::Null);
         out["reviewers"] = logins(pr.get("requested_reviewers"));
-        out["review"] = json!(self.review_decision(repo, number).unwrap_or_default());
-        if let Some(sha) = pr.pointer("/head/sha").and_then(|s| s.as_str()) {
-            out["checks"] = self.checks(repo, sha).unwrap_or(Value::Null);
+        out["review"] = json!(review);
+        if let Some(checks) = checks {
+            out["checks"] = checks;
         }
         Ok(out)
     }
@@ -748,19 +771,32 @@ impl Hub {
             &format!("repos/{}/pulls?head={}:{}&state=all&per_page=20", at.slug(), from.owner, encode(head)),
             None,
         )?;
+        let listed: Vec<&Value> = v.as_array().into_iter().flatten().filter(|p| p.get("number").and_then(|n| n.as_u64()).is_some()).collect();
+        // Whether GitHub can merge each open one is only in its own page:
+        // those are asked for together, not one after another
+        let merge_states: Vec<Value> = std::thread::scope(|s| {
+            let asks: Vec<_> = listed
+                .iter()
+                .map(|p| {
+                    let open = p.get("state").and_then(|s| s.as_str()) == Some("open");
+                    let number = p.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
+                    open.then(|| {
+                        s.spawn(move || {
+                            self.call("GET", &format!("repos/{}/pulls/{number}", repo.slug()), None)
+                                .ok()
+                                .and_then(|full| full.get("mergeable_state").cloned())
+                                .unwrap_or(Value::Null)
+                        })
+                    })
+                })
+                .collect();
+            asks.into_iter().map(|a| a.and_then(|h| h.join().ok()).unwrap_or(Value::Null)).collect()
+        });
         let mut out = Vec::new();
-        for p in v.as_array().into_iter().flatten() {
+        for (p, merge_state) in listed.into_iter().zip(merge_states) {
             let Some(number) = p.get("number").and_then(|n| n.as_u64()) else { continue };
             let merged = p.get("merged_at").is_some_and(|m| !m.is_null());
             let open = p.get("state").and_then(|s| s.as_str()) == Some("open");
-            let merge_state = match open {
-                true => self
-                    .call("GET", &format!("repos/{}/pulls/{number}", repo.slug()), None)
-                    .ok()
-                    .and_then(|full| full.get("mergeable_state").cloned())
-                    .unwrap_or(Value::Null),
-                false => Value::Null,
-            };
             out.push(json!({
                 "number": number,
                 "title": p.get("title"),
@@ -1378,19 +1414,36 @@ impl Hub {
                 Err(e) if std::ptr::eq(at, repo) => return Err(e),
                 Err(_) => continue,
             };
-            let mut files = Vec::new();
+            let mut wanted: Vec<(&str, &str)> = Vec::new();
             for entry in listing.as_array().into_iter().flatten() {
                 let name = entry.get("name").and_then(|n| n.as_str()).unwrap_or_default();
                 let lower = name.to_lowercase();
-                let wanted = entry.get("type").and_then(|t| t.as_str()) == Some("file")
+                let template = entry.get("type").and_then(|t| t.as_str()) == Some("file")
                     && [".yml", ".yaml", ".md"].iter().any(|ext| lower.ends_with(ext));
                 // A folder of a hundred files is not a folder of templates
-                if !wanted || files.len() >= 50 {
+                if !template || wanted.len() >= 50 {
                     continue;
                 }
-                let path = entry.get("path").and_then(|p| p.as_str()).unwrap_or(name);
-                let file = self.call("GET", &format!("repos/{}/contents/{}", at.slug(), path_in_url(path)), None)?;
-                files.push((name.to_string(), file_text(&file)?));
+                wanted.push((name, entry.get("path").and_then(|p| p.as_str()).unwrap_or(name)));
+            }
+            // Each file is a request of its own: asked for a few at a time,
+            // not one after another
+            let mut files = Vec::new();
+            for some in wanted.chunks(TEMPLATES_AT_ONCE) {
+                let got: Vec<Result<String>> = std::thread::scope(|s| {
+                    let asks: Vec<_> = some
+                        .iter()
+                        .map(|(_, path)| {
+                            s.spawn(move || {
+                                file_text(&self.call("GET", &format!("repos/{}/contents/{}", at.slug(), path_in_url(path)), None)?)
+                            })
+                        })
+                        .collect();
+                    asks.into_iter().map(|a| a.join().unwrap_or_else(|_| Err(anyhow!("template read panicked")))).collect()
+                });
+                for ((name, _), text) in some.iter().zip(got) {
+                    files.push((name.to_string(), text?));
+                }
             }
             if !files.is_empty() {
                 return Ok(crate::issueform::read_folder(&files));
@@ -1659,14 +1712,32 @@ pub fn far_head_folder(s: &Source, head: &str) -> Option<(std::path::PathBuf, St
         crate::git::far_place(at, dir, false).0.as_deref() == Some(head)
     };
     let (first, rest): (Vec<_>, Vec<_>) = s.far.iter().partition(|(dir, at, _)| heard(dir, at));
-    for (dir, at, host) in first.into_iter().chain(rest) {
+    for (dir, at, host) in first {
         crate::git::there(dir, Some(at));
         let on = crate::git::run(dir, &["branch", "--show-current"]).ok();
         if on.as_deref().map(str::trim) == Some(head) {
+            crate::git::there(&s.dir, None);
             return Some((dir.clone(), host.clone()));
         }
     }
     crate::git::there(&s.dir, None);
+    // The rest a machine at a time: the folders of one server are asked in
+    // one command there. Each MicroVM is a machine of its own, and is still
+    // asked alone
+    let mut machines: Vec<(&crate::elsewhere::Elsewhere, Vec<&(std::path::PathBuf, crate::elsewhere::Elsewhere, String)>)> = Vec::new();
+    for f in rest {
+        match machines.iter_mut().find(|(at, _)| at.machine_key() == f.1.machine_key()) {
+            Some((_, list)) => list.push(f),
+            None => machines.push((&f.1, vec![f])),
+        }
+    }
+    for (at, folders) in machines {
+        let dirs: Vec<&std::path::Path> = folders.iter().map(|(d, _, _)| d.as_path()).collect();
+        let on = crate::git::far_branches(at, &dirs);
+        if let Some(((dir, _, host), _)) = folders.into_iter().zip(on).find(|(_, b)| b.as_deref() == Some(head)) {
+            return Some((dir.clone(), host.clone()));
+        }
+    }
     None
 }
 
@@ -1915,16 +1986,35 @@ pub fn answer(
             }
             Some((dir, _)) => {
                 source.note_far(dir);
-                crate::git::run(dir, &["for-each-ref", "--format=%(refname:short)", "refs/remotes"])
-                    .map(|t| t.lines().map(|l| l.trim().to_string()).collect())
-                    .unwrap_or_default()
+                // The server's default first, then the most lately moved: the
+                // list is cut at what a picker shows, and in name order the
+                // cut fell wherever the alphabet put it
+                let default = crate::git::run(dir, &["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"])
+                    .ok()
+                    .map(|t| t.trim().to_string())
+                    .filter(|t| !t.is_empty());
+                default
+                    .into_iter()
+                    .chain(
+                        crate::git::run(dir, &["for-each-ref", "--sort=-committerdate", "--format=%(refname:short)", "refs/remotes"])
+                            .map(|t| t.lines().map(|l| l.trim().to_string()).collect::<Vec<_>>())
+                            .unwrap_or_default(),
+                    )
+                    .collect()
             }
             None => crate::worktree::bases(&source.dir),
         };
+        // A set beside the list: a repository with twenty thousand branches
+        // is twenty thousand looks, not four hundred million
+        let mut seen: std::collections::HashSet<String> = bases.iter().cloned().collect();
         for b in found {
+            // As many as a picker shows, as on this PC
+            if bases.len() >= crate::worktree::BASES_MOST {
+                break;
+            }
             if let Some(name) = b.strip_prefix("origin/")
                 && name != "HEAD"
-                && !bases.iter().any(|x| x == name)
+                && seen.insert(name.to_string())
             {
                 bases.push(name.to_string());
             }
@@ -2354,21 +2444,45 @@ pub fn ci_failures(
     let hub = Hub::new(token);
     let repo = hub.pull_repo(repo, upstream)?;
     let checks = hub.checks(&repo, sha)?;
+    let failed: Vec<&Value> = checks
+        .get("items")
+        .and_then(|i| i.as_array())
+        .into_iter()
+        .flatten()
+        .filter(|c| c.get("verdict").and_then(|v| v.as_str()) == Some("failed"))
+        .collect();
+    // The logs of the first few, fetched together: a build broken across a
+    // whole matrix fails forty jobs the same way, and forty logs fetched one
+    // after another said nothing the first few had not
+    let tails: Vec<Option<String>> = std::thread::scope(|s| {
+        let asks: Vec<_> = failed
+            .iter()
+            .take(CI_LOGS_MOST)
+            .map(|c| {
+                let job = c.get("job").and_then(|j| j.as_u64());
+                let (hub, repo) = (&hub, &repo);
+                s.spawn(move || job.and_then(|job| hub.job_log_tail(repo, job).ok()))
+            })
+            .collect();
+        asks.into_iter().map(|a| a.join().ok().flatten()).collect()
+    });
     let mut out = Vec::new();
-    for c in checks.get("items").and_then(|i| i.as_array()).into_iter().flatten() {
-        if c.get("verdict").and_then(|v| v.as_str()) != Some("failed") {
-            continue;
-        }
+    for (i, c) in failed.iter().enumerate() {
         let mut row = json!({"name": c.get("name"), "url": c.get("url")});
-        if let Some(job) = c.get("job").and_then(|j| j.as_u64())
-            && let Ok(tail) = hub.job_log_tail(&repo, job)
-        {
+        if let Some(Some(tail)) = tails.get(i) {
             row["log_tail"] = json!(tail);
         }
         out.push(row);
     }
     Ok(Value::Array(out))
 }
+
+/// How many failed jobs' logs are fetched; the rest are named, with where to
+/// read them
+const CI_LOGS_MOST: usize = 6;
+
+/// How many issue templates are asked for at once
+const TEMPLATES_AT_ONCE: usize = 8;
 
 /// The review threads of a pull request nobody has marked resolved: where
 /// each is (the file, and its lines in the file as the pull request has it),

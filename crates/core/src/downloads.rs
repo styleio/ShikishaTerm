@@ -149,18 +149,42 @@ pub fn send_away(at: &crate::elsewhere::Elsewhere, from: &std::path::Path) -> an
         Some(i) if i > 0 => (&name[..i], &name[i..]),
         _ => (name.as_str(), ""),
     };
+    // What is there already, asked once: the twentieth copy of a name was
+    // twenty questions to the machine, one a name tried
+    let taken: std::collections::HashSet<String> = match crate::elsewhere::files(at, FileJob::List { path: dir.clone() }, 60_000) {
+        Ok(crate::ssh::FileAnswer::Listing(rows)) => rows.into_iter().map(|r| r.name).collect(),
+        _ => Default::default(),
+    };
+    // A file of that name can still arrive in between: the send refuses to
+    // write over one, and the next name is tried, a few times at most
+    let mut tries = 0;
+    let mut last = None;
     for n in 0..1000 {
         let file = if n == 0 { name.clone() } else { format!("{stem} ({n}){ext}") };
-        let to = format!("{dir}/{file}");
-        if crate::elsewhere::files(at, FileJob::Stat { path: to.clone() }, 60_000).is_ok() {
+        if taken.contains(&file) {
             continue;
         }
-        crate::elsewhere::files(at, FileJob::Put { from: from.to_path_buf(), to: to.clone(), overwrite: false }, CROSS_MS)?;
-        let _ = std::fs::remove_file(from);
-        return Ok(to);
+        let to = format!("{dir}/{file}");
+        match crate::elsewhere::files(at, FileJob::Put { from: from.to_path_buf(), to: to.clone(), overwrite: false }, CROSS_MS) {
+            Ok(_) => {
+                let _ = std::fs::remove_file(from);
+                return Ok(to);
+            }
+            Err(e) => {
+                tries += 1;
+                last = Some(e);
+                if tries >= SEND_TRIES {
+                    break;
+                }
+            }
+        }
     }
-    anyhow::bail!(crate::i18n::t("msg.download.why.disk"))
+    Err(last.unwrap_or_else(|| anyhow::anyhow!(crate::i18n::t("msg.download.why.disk"))))
 }
+
+/// How many names a download is tried under on another machine before what
+/// the last try said is the answer
+const SEND_TRIES: usize = 3;
 
 /// Bring a file from another machine into `dir` on this one, under its own
 /// name (numbered if that is taken). Answers where it landed

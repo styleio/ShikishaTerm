@@ -2756,8 +2756,8 @@ pub fn left_in(folder: &Path) -> Option<crate::folders::Left> {
     let unsaved = review::changes(folder, true).ok()?.len() as u32;
     // With no remote there is nowhere to push to, and every commit would be
     // counted as one never pushed
-    let remotes = crate::git::run(folder, &["remote"]).unwrap_or_default();
-    let unpushed = match remotes.trim().is_empty() {
+    // Read from the repository's config, not asked of git
+    let unpushed = match !crate::repo::has_remote(folder) {
         true => 0,
         false => crate::git::run(folder, &["rev-list", "--count", "HEAD", "--not", "--remotes"])
             .ok()
@@ -2766,8 +2766,7 @@ pub fn left_in(folder: &Path) -> Option<crate::folders::Left> {
     };
     // The worktree's own reflog grows on every commit and checkout made in
     // it, and starts when it is made; nothing this app reads touches it
-    let own = crate::git::run(folder, &["rev-parse", "--absolute-git-dir"]).ok()?;
-    let own = Path::new(own.trim());
+    let own = crate::repo::own_git_dir(folder)?;
     let moved = ["logs/HEAD", "HEAD"]
         .iter()
         .find_map(|f| std::fs::metadata(own.join(f)).and_then(|m| m.modified()).ok())
@@ -3943,7 +3942,7 @@ pub fn bases(main: &Path) -> Vec<String> {
 
 /// How many branches the worktree dialog is offered to grow from: the
 /// default, then the remote's, then this machine's, as many as a picker shows
-const BASES_MOST: usize = 200;
+pub(crate) const BASES_MOST: usize = 200;
 
 /// Whether a name drawn for new work is still free: no branch of that name
 /// here, and nothing standing where this project would put its folder

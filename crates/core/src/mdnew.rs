@@ -64,23 +64,21 @@ pub fn templates(disk: &dyn Disk) -> Result<Vec<(String, String)>, String> {
     let mut walk: Vec<(String, usize)> = vec![(String::new(), 0)];
     while let Some((rel, depth)) = walk.pop() {
         let dir = if rel.is_empty() { TEMPLATE_DIR.to_string() } else { join(TEMPLATE_DIR, &rel) };
-        let Some(mut files) = disk.files(&dir)? else { continue };
+        let Some((mut files, folders)) = disk.entries(&dir)? else { continue };
         files.sort();
-        for f in files.into_iter().filter(|f| is_markdown(f)) {
-            if found.len() >= MOST {
-                break;
-            }
-            let at = join(&rel, &f);
-            let name = match disk.read(&join(TEMPLATE_DIR, &at))? {
-                Some(b) if b.len() <= TEMPLATE_ROOM && !b.contains(&0) => {
-                    front_title(&crate::charset::read(&b).text).unwrap_or_else(|| title_of(&f))
-                }
+        // The folder's templates read together: on another machine one
+        // question for all of them, not one each
+        let wanted: Vec<String> = files.into_iter().filter(|f| is_markdown(f)).take(MOST.saturating_sub(found.len())).collect();
+        let paths: Vec<String> = wanted.iter().map(|f| join(TEMPLATE_DIR, &join(&rel, f))).collect();
+        for (f, read) in wanted.iter().zip(disk.read_all(&paths, TEMPLATE_ROOM)?) {
+            let name = match read {
+                Some(b) if !b.contains(&0) => front_title(&crate::charset::read(&b).text).unwrap_or_else(|| title_of(f)),
                 _ => continue,
             };
-            found.push((at, name));
+            found.push((join(&rel, f), name));
         }
         if depth + 1 < DEPTH {
-            for d in disk.folders(&dir)? {
+            for d in folders {
                 if !d.starts_with('.') {
                     walk.push((join(&rel, &d), depth + 1));
                 }

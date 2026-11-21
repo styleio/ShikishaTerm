@@ -286,6 +286,9 @@ pub const CATALOG: &[Entry] = &[
     e("sftp_mkdir", Group::Files, true, false, false),
     e("sftp_rename", Group::Files, true, false, false),
     e("sftp_rm", Group::Files, true, false, false),
+    // Several of the above over one connection. Each job in it is still
+    // asked for under its own name; this is whether batching them is allowed
+    e("sftp_each", Group::Files, true, true, false),
     e("git_status", Group::Git, true, false, false),
     e("git_diff", Group::Git, true, false, false),
     e("git_log", Group::Git, true, false, false),

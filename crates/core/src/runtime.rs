@@ -17791,6 +17791,19 @@ impl FolderThere {
 }
 
 impl crate::disk::Disk for FolderThere {
+    // One listing, asked straight away: one that is not a folder there
+    // fails, and that is no folder
+    fn entries(&self, dir: &str) -> std::result::Result<Option<(Vec<String>, Vec<String>)>, String> {
+        match self.run(ssh::FileJob::List { path: dir.to_string() }) {
+            Ok(ssh::FileAnswer::Listing(rows)) => {
+                let (dirs, files): (Vec<_>, Vec<_>) = rows.into_iter().filter(|r| r.name != "." && r.name != "..").partition(|r| r.dir);
+                Ok(Some((files.into_iter().map(|r| r.name).collect(), dirs.into_iter().map(|r| r.name).collect())))
+            }
+            Ok(_) => Ok(Some((Vec::new(), Vec::new()))),
+            Err(_) if self.there(dir).is_none_or(|e| !e.dir) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
     fn files(&self, dir: &str) -> std::result::Result<Option<Vec<String>>, String> {
         if self.there(dir).is_none_or(|e| !e.dir) {
             return Ok(None);
@@ -18567,6 +18580,9 @@ fn far_stamp_polls(
     polls: &mut std::collections::HashMap<String, FarPoll>,
     tx: &std::sync::mpsc::Sender<FarFiles>,
 ) {
+    // The editors due, a machine at a time: every file open there is asked
+    // about in one question, not one each
+    let mut due: Vec<(crate::elsewhere::Elsewhere, Vec<(String, String, String)>)> = Vec::new();
     for e in editors {
         let (Some(at), Some(dir), Some(rel), None) = (&e.at, &e.dir, &e.showing, &e.diff) else { continue };
         if polls.get(&e.key).is_some_and(|p| p.busy || p.at.elapsed() < FAR_STAMP_EVERY) {
@@ -18584,17 +18600,32 @@ fn far_stamp_polls(
             continue;
         }
         let Some(path) = crate::transfer::under_remote(&crate::desk::far_path(dir), rel) else { continue };
-        let asked = Instant::now();
-        polls.insert(e.key.clone(), FarPoll { at: asked, busy: true });
-        let (at, key, rel, tx) = (at.clone(), e.key.clone(), rel.clone(), tx.clone());
+        polls.insert(e.key.clone(), FarPoll { at: Instant::now(), busy: true });
+        let one = (e.key.clone(), rel.clone(), path);
+        match due.iter_mut().find(|(m, _)| m == at) {
+            Some((_, list)) => list.push(one),
+            None => due.push((at.clone(), vec![one])),
+        }
+    }
+    for (at, list) in due {
+        let tx = tx.clone();
         std::thread::spawn(move || {
-            let stamp = match crate::elsewhere::files(&at, ssh::FileJob::Stat { path }, SFTP_WAIT_MS) {
-                Ok(ssh::FileAnswer::One(e)) => Some(crate::files::stamp_from(e.modified, e.size)),
-                // Gone, or not answering: nothing to follow, and nothing said.
-                // The save is what finds out, and says so
-                _ => None,
+            let asked = Instant::now();
+            let jobs = list.iter().map(|(_, _, path)| ssh::FileJob::Stat { path: path.clone() }).collect();
+            let said = match crate::elsewhere::files(&at, ssh::FileJob::Each { jobs }, SFTP_WAIT_MS) {
+                Ok(ssh::FileAnswer::Each(said)) if said.len() == list.len() => said,
+                _ => Vec::new(),
             };
-            let _ = tx.send(FarFiles { key, path: rel, js: None, stamp, asked, polled: true });
+            let mut said = said.into_iter();
+            for (key, rel, _) in list {
+                let stamp = match said.next() {
+                    Some(Ok(ssh::FileAnswer::One(e))) => Some(crate::files::stamp_from(e.modified, e.size)),
+                    // Gone, or not answering: nothing to follow, and nothing
+                    // said. The save is what finds out, and says so
+                    _ => None,
+                };
+                let _ = tx.send(FarFiles { key, path: rel, js: None, stamp, asked, polled: true });
+            }
         });
     }
 }
@@ -19135,27 +19166,42 @@ fn files_there(
             let Some(kind) = picture_kind(&path) else {
                 return fail(i18n::t("err.files.not_picture"));
             };
-            let (look, read) = match (
+            // Sized and read in one session there: a document of a hundred
+            // screenshots was two hundred sessions. Only one that does not
+            // come back is looked at again, to say why
+            let (read, look, alone) = match (
+                ready(ssh::FileJob::ReadAll { paths: vec![path.clone()], most: PICTURE_LIMIT }),
                 ready(ssh::FileJob::Stat { path: path.clone() }),
                 ready(ssh::FileJob::Read { path: path.clone() }),
             ) {
-                (Ok(l), Ok(r)) => (l, r),
-                (Err(e), _) | (_, Err(e)) => return fail(format!("{e}")),
+                (Ok(r), Ok(l), Ok(a)) => (r, l, a),
+                (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => return fail(format!("{e}")),
             };
             let panel = panel.clone();
             std::thread::spawn(move || {
-                let js = match crate::elsewhere::files(&at, look, SFTP_WAIT_MS) {
-                    Ok(ssh::FileAnswer::One(e)) if e.size > PICTURE_LIMIT => {
-                        let mb = (PICTURE_LIMIT / (1024 * 1024)).to_string();
-                        failed("image", &panel, i18n::tp("err.files.too_big", &[("mb", &mb)]))
+                let js = match crate::elsewhere::files(&at, read, SFTP_WAIT_MS) {
+                    Ok(ssh::FileAnswer::Several(mut got)) if matches!(got.first(), Some(Some(_))) => {
+                        let bytes = got.swap_remove(0).unwrap_or_default();
+                        serde_json::from_str(&picture_reply(&panel, &path, kind, &bytes)).unwrap_or_default()
                     }
-                    Ok(_) => match crate::elsewhere::files(&at, read, SFTP_WAIT_MS) {
-                        Ok(ssh::FileAnswer::Bytes(bytes)) => {
-                            serde_json::from_str(&picture_reply(&panel, &path, kind, &bytes)).unwrap_or_default()
+                    Ok(ssh::FileAnswer::Several(_)) => match crate::elsewhere::files(&at, look, SFTP_WAIT_MS) {
+                        Ok(ssh::FileAnswer::One(e)) if e.size > PICTURE_LIMIT => {
+                            let mb = (PICTURE_LIMIT / (1024 * 1024)).to_string();
+                            failed("image", &panel, i18n::tp("err.files.too_big", &[("mb", &mb)]))
                         }
+                        // There and small enough, and still not read: read
+                        // alone, so what it says is why
+                        Ok(ssh::FileAnswer::One(e)) if !e.dir => match crate::elsewhere::files(&at, alone, SFTP_WAIT_MS) {
+                            Ok(ssh::FileAnswer::Bytes(bytes)) => {
+                                serde_json::from_str(&picture_reply(&panel, &path, kind, &bytes)).unwrap_or_default()
+                            }
+                            Ok(_) => failed("image", &panel, i18n::t("err.files.not_picture")),
+                            Err(e) => failed("image", &panel, format!("{e:#}")),
+                        },
                         Ok(_) => failed("image", &panel, i18n::t("err.files.not_picture")),
                         Err(e) => failed("image", &panel, format!("{e:#}")),
                     },
+                    Ok(_) => failed("image", &panel, i18n::t("err.files.far_odd")),
                     Err(e) => failed("image", &panel, format!("{e:#}")),
                 };
                 answer(js, String::new(), None);
