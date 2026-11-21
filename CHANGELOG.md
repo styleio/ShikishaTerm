@@ -138,6 +138,19 @@ once it reaches its first tagged release.
     reading of a tab's conversations stop reading what they do not need.
     Both records let go of what is past keeping once a day while the app
     runs, not only when it starts.
+  - Searching across tabs, copying a terminal's text and taking an AI's
+    answer at the end of its turn read the history a screen at a time, not
+    a whole screen laid out for every line; a search across tabs leaves
+    each tab where it was scrolled to. A tab asked something by another
+    reads on from where it last stopped, not its whole turn again every
+    five seconds. The phone's copy of each tab is rebuilt when the tab
+    changed, not five times a second.
+  - The usage meters and the conversation search stop re-reading records
+    and settings that have not changed, and a new AI tab remembers whether
+    its folder has past conversations. `crash.log` and `memory.log` are cut
+    back to their latest part once they grow past a megabyte, and only
+    their ends are read; one very long line in a record is skipped rather
+    than held whole.
 - **The time at the master password lock is no longer taken for the window
   not answering.** The window was timed from when it opened, but asked to
   answer only once the lock was open, so the seconds spent typing the
