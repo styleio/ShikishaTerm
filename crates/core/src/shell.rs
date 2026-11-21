@@ -5536,13 +5536,18 @@ let holding = false, queued = null, holdTimer = 0;
 // The bars that moved while a press was held, in the order they came, after
 // the state held back (which carries the bars as they were when it was made)
 let heldPulses = [];
+// How many states have been taken in: what was held over a press is put in a
+// moment after it ends, and a state that came in that moment is newer than
+// all of it -- what was held is then dropped, not laid over the newer state
+let statesTaken = 0;
 const release = () => {
   holding = false;
   clearTimeout(holdTimer);
   const pulses = heldPulses;
   heldPulses = [];
+  const taken = statesTaken;
   if (queued === null) {
-    if (pulses.length) setTimeout(() => { for (const p of pulses) window.__pulse(p); }, 0);
+    if (pulses.length) setTimeout(() => { if (statesTaken === taken) for (const p of pulses) window.__pulse(p); }, 0);
     return;
   }
   const j = queued; queued = null;
@@ -5552,7 +5557,7 @@ const release = () => {
   // element the click was about to land on, and the press vanishes with it.
   // That is the same "started and ended on the same element" rule the guard
   // above exists for; it simply has to hold one step longer than the press.
-  setTimeout(() => { window.__state(j); for (const p of pulses) window.__pulse(p); }, 0);
+  setTimeout(() => { if (statesTaken !== taken) return; window.__state(j); for (const p of pulses) window.__pulse(p); }, 0);
 };
 addEventListener("pointerdown", () => {
   holding = true;
@@ -17916,6 +17921,7 @@ window.__state = function (json) {
   if (_sp && !_sp.hidden) _sp.hidden = true;
   const before = S;
   S = JSON.parse(json);
+  statesTaken++;
   drawFolderManager();
   gitAfterWork(before);
   projectFlow();
@@ -33914,7 +33920,7 @@ say(edText() === "a\nb", "an empty file did not take plain line feeds");
     #[test]
     fn a_press_outlives_the_redraw_that_ends_it() {
         assert!(
-            PAGE.contains("setTimeout(() => { window.__state(j); for (const p of pulses) window.__pulse(p); }, 0);"),
+            PAGE.contains("setTimeout(() => { if (statesTaken !== taken) return; window.__state(j); for (const p of pulses) window.__pulse(p); }, 0);"),
             "the redraws held during a press are flushed on the spot (clicks are lost)"
         );
         assert!(

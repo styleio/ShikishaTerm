@@ -2196,11 +2196,19 @@ pub fn commit(
     // The message goes in on git's input, not on its command line: a message
     // that lists every file of a large change is longer than Windows lets a
     // command line be, and git would never be started
-    let mut args = vec!["commit", "-F", "-"];
+    //
+    // Not for a folder on another machine: there git's input is written into
+    // the command itself, a third longer than the message, and a server takes
+    // the message on the command line as it always did
+    let far = far_of(dir).is_some();
+    let mut args = match far {
+        true => vec!["commit", "-m", message],
+        false => vec!["commit", "-F", "-"],
+    };
     if amend {
         args.push("--amend");
     }
-    run_as(dir, &args, message, WORK_LIMIT, who)?;
+    run_as(dir, &args, if far { "" } else { message }, WORK_LIMIT, who)?;
     Ok(run(dir, &["rev-parse", "--short", "HEAD"])?.trim().to_string())
 }
 
