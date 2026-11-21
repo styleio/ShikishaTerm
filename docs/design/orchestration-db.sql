@@ -1,5 +1,5 @@
 -- The record of work handed between AI tabs (orchestration.db), as the
--- steps in crates/core/src/orch/migrations/ leave it at version 4.
+-- steps in crates/core/src/orch/migrations/ leave it at version 5.
 --
 -- Written by a test; do not edit. Change the tables by adding a step (see
 -- orchestration-db.md), then write this again:
@@ -147,8 +147,24 @@ CREATE TABLE tasks (
   finished_at INTEGER
 );
 
+CREATE INDEX assignments_by_job ON assignments(job_id);
+
+CREATE INDEX assignments_by_state ON assignments(state);
+
 CREATE INDEX assignments_by_tab ON assignments(tab, state);
+
+CREATE INDEX decisions_by_job ON decisions(job_id);
+
+CREATE INDEX mail_by_job ON mail(job_id, seq);
 
 CREATE INDEX mail_unread ON mail(box, is_read, seq);
 
+CREATE INDEX mail_unread_anywhere ON mail(box) WHERE is_read = 0;
+
 CREATE UNIQUE INDEX one_handover_given ON handovers(box) WHERE state = 'given';
+
+CREATE INDEX questions_by_assignment ON questions(assignment_id);
+
+CREATE INDEX questions_by_job ON questions(job_id);
+
+CREATE INDEX tasks_by_job ON tasks(job_id);

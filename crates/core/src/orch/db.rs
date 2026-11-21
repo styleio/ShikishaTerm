@@ -62,6 +62,7 @@ pub const STEPS: &[(i64, &str, Step)] = &[
     (2, "table baseline", Step::Code(check_baseline)),
     (3, "tab uids", Step::Sql(include_str!("migrations/0003_tab_uids.sql"))),
     (4, "mail told again", Step::Sql(include_str!("migrations/0004_mail_told_again.sql"))),
+    (5, "job indexes", Step::Sql(include_str!("migrations/0005_job_indexes.sql"))),
 ];
 
 // Also permits a fresh record interrupted after step 1 to resume. A file
@@ -305,19 +306,66 @@ impl Store {
     }
 
     fn with(conn: Connection) -> Result<Self> {
+        // The questions the watcher and the board ask several times a
+        // second, parsed once each rather than every time
+        conn.set_prepared_statement_cache_capacity(64);
         let mut s = Self { conn };
         s.forget_old()?;
         Ok(s)
     }
 
-    /// Closed jobs past their keeping, with everything that was theirs
+    /// What is past its keeping: closed jobs, with everything that was
+    /// theirs; mail outside a job that was read, or that its tab never came
+    /// for; handovers dealt with long ago; what the watcher raised about a
+    /// job or a try that is gone; and the names of tabs nothing kept refers
+    /// to. Done when the record opens, and once a day while the app runs
+    /// ([`Self::forget_old_now`])
     fn forget_old(&mut self) -> Result<()> {
         let before = now_ms() - KEEP_CLOSED_MS;
-        self.conn
-            .execute("DELETE FROM jobs WHERE state = 'closed' AND closed_at < ?1", params![before])?;
-        self.conn
-            .execute("DELETE FROM mail WHERE job_id IS NULL AND is_read = 1 AND sent_at < ?1", params![before])?;
+        let tx = self.conn.transaction()?;
+        tx.execute("DELETE FROM jobs WHERE state = 'closed' AND closed_at < ?1", params![before])?;
+        // Unread too: mail of no job that was pointed out every time it is
+        // pointed out, and still not come for in a month, is not coming
+        tx.execute(
+            "DELETE FROM mail WHERE job_id IS NULL AND sent_at < ?1 AND (is_read = 1 OR told_times >= ?2)",
+            params![before, TOLD_TIMES],
+        )?;
+        // The latest of each box stays: it is what says whether new mail
+        // has come since it was handed ([`Self::last_handed`])
+        tx.execute(
+            "DELETE FROM handovers WHERE state = 'dealt' AND COALESCE(dealt_at, given_at) < ?1 \n             AND id NOT IN (SELECT MAX(id) FROM handovers GROUP BY box)",
+            params![before],
+        )?;
+        // A key names the try (`late:12`, `quiet:12:3`) or the job
+        // (`leaderless:4`, `worktree:4:path`) it was raised about. Numbers
+        // are never handed out twice, so one whose thing is gone is never
+        // raised again
+        tx.execute(
+            "DELETE FROM raised WHERE \n             (substr(key, 1, instr(key, ':') - 1) IN ('late', 'approval', 'limit', 'failed', 'quiet', 'undecided') \n              AND NOT EXISTS (SELECT 1 FROM assignments a WHERE a.id = CAST(substr(key, instr(key, ':') + 1) AS INTEGER))) \n             OR (substr(key, 1, instr(key, ':') - 1) IN ('leaderless', 'opened', 'worktree') \n              AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.id = CAST(substr(key, instr(key, ':') + 1) AS INTEGER)))",
+            [],
+        )?;
+        // A name is kept while anything kept is said with it. One taken away
+        // from a tab that is still open is written again the next time the
+        // tabs are named (the caller forgets what it wrote)
+        tx.execute(
+            "DELETE FROM tab_names WHERE seen_at < ?1 \n             AND NOT EXISTS (SELECT 1 FROM jobs WHERE jobs.lead = tab_names.uid) \n             AND NOT EXISTS (SELECT 1 FROM assignments a WHERE a.tab = tab_names.uid) \n             AND NOT EXISTS (SELECT 1 FROM opened_tabs o WHERE o.tab = tab_names.uid) \n             AND NOT EXISTS (SELECT 1 FROM mail m WHERE m.box = 'tab:' || tab_names.uid)",
+            params![before],
+        )?;
+        tx.commit()?;
         Ok(())
+    }
+
+    /// [`Self::forget_old`], for an app that has been running a long time
+    pub fn forget_old_now(&mut self) -> Result<()> {
+        self.forget_old()
+    }
+
+    /// Changes whenever anything in the record does, written through this
+    /// connection or any other: equal twice, nothing read from it can have
+    /// changed in between
+    pub fn stamp(&self) -> (u64, i64) {
+        let version: i64 = self.conn.query_row("PRAGMA data_version", [], |r| r.get(0)).unwrap_or(-1);
+        (self.conn.total_changes(), version)
     }
 
     /// The one way a state changes: only from a state the change expects
@@ -454,7 +502,7 @@ impl Store {
 
     /// The open jobs a tab leads, newest first
     pub fn jobs_led_by(&self, lead: &str) -> Result<Vec<Job>> {
-        let mut st = self.conn.prepare(&format!(
+        let mut st = self.conn.prepare_cached(&format!(
             "SELECT {} FROM jobs WHERE lead = ?1 AND state = 'open' ORDER BY id DESC",
             Self::JOB_COLS
         ))?;
@@ -464,7 +512,7 @@ impl Store {
     pub fn open_jobs(&self) -> Result<Vec<Job>> {
         let mut st = self
             .conn
-            .prepare(&format!("SELECT {} FROM jobs WHERE state = 'open' ORDER BY id", Self::JOB_COLS))?;
+            .prepare_cached(&format!("SELECT {} FROM jobs WHERE state = 'open' ORDER BY id", Self::JOB_COLS))?;
         Ok(st.query_map([], Self::job_row)?.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
@@ -545,7 +593,7 @@ impl Store {
     pub fn tasks(&self, job: i64) -> Result<Vec<Task>> {
         let mut st = self
             .conn
-            .prepare(&format!("SELECT {} FROM tasks WHERE job_id = ?1 ORDER BY id", Self::TASK_COLS))?;
+            .prepare_cached(&format!("SELECT {} FROM tasks WHERE job_id = ?1 ORDER BY id", Self::TASK_COLS))?;
         Ok(st.query_map(params![job], Self::task_row)?.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
@@ -631,7 +679,7 @@ impl Store {
     }
 
     pub fn assignments(&self, job: i64) -> Result<Vec<Assignment>> {
-        let mut st = self.conn.prepare(&format!(
+        let mut st = self.conn.prepare_cached(&format!(
             "SELECT {} FROM assignments WHERE job_id = ?1 ORDER BY id",
             Self::ASSIGNMENT_COLS
         ))?;
@@ -647,7 +695,7 @@ impl Store {
 
     /// Every assignment not yet over, in every job
     pub fn active_assignments(&self) -> Result<Vec<Assignment>> {
-        let mut st = self.conn.prepare(&format!(
+        let mut st = self.conn.prepare_cached(&format!(
             "SELECT {} FROM assignments WHERE state IN ('handing','working') ORDER BY id",
             Self::ASSIGNMENT_COLS
         ))?;
@@ -863,7 +911,7 @@ impl Store {
         "tab, job_id, held_by, opened_at, COALESCE((SELECT n.name FROM tab_names n WHERE n.uid = opened_tabs.tab), tab)";
 
     pub fn opened_by(&self, job: i64) -> Result<Vec<Opened>> {
-        let mut st = self.conn.prepare(&format!(
+        let mut st = self.conn.prepare_cached(&format!(
             "SELECT {} FROM opened_tabs WHERE job_id = ?1 ORDER BY opened_at",
             Self::OPENED_COLS
         ))?;
@@ -907,7 +955,7 @@ impl Store {
     }
 
     pub fn folders(&self, job: i64) -> Result<Vec<MadeFolder>> {
-        let mut st = self.conn.prepare(
+        let mut st = self.conn.prepare_cached(
             "SELECT job_id, folder, branch, made_at FROM made_folders WHERE job_id = ?1 ORDER BY made_at",
         )?;
         let rows = st
@@ -964,7 +1012,7 @@ impl Store {
 
     /// Unread mail in a box, oldest first, without handing it over
     pub fn unread(&self, box_: &str) -> Result<Vec<Mail>> {
-        let mut st = self.conn.prepare(&format!(
+        let mut st = self.conn.prepare_cached(&format!(
             "SELECT {} FROM mail WHERE box = ?1 AND is_read = 0 ORDER BY seq LIMIT 100",
             Self::MAIL_COLS
         ))?;
@@ -980,7 +1028,7 @@ impl Store {
 
     /// The last mail of a job, newest first (the person's view)
     pub fn history(&self, job: i64, most: usize) -> Result<Vec<Mail>> {
-        let mut st = self.conn.prepare(&format!(
+        let mut st = self.conn.prepare_cached(&format!(
             "SELECT {} FROM mail WHERE job_id = ?1 ORDER BY seq DESC LIMIT ?2",
             Self::MAIL_COLS
         ))?;
@@ -994,7 +1042,7 @@ impl Store {
     /// (`TOLD_AGAIN_MS`) and has still not come for -- up to `TOLD_TIMES`
     /// times in all, after which a tab that will not read it is left alone
     pub fn untold(&self) -> Result<Vec<(String, usize)>> {
-        let mut st = self.conn.prepare(
+        let mut st = self.conn.prepare_cached(
             "SELECT box, COUNT(*) FROM mail WHERE is_read = 0              AND (is_told = 0 OR (told_times < ?1 AND COALESCE(told_at, 0) <= ?2)) GROUP BY box",
         )?;
         Ok(st
@@ -1208,7 +1256,7 @@ impl Store {
     }
 
     pub fn open_questions(&self, job: i64) -> Result<Vec<Question>> {
-        let mut st = self.conn.prepare(&format!(
+        let mut st = self.conn.prepare_cached(&format!(
             "SELECT {} FROM questions WHERE job_id = ?1 AND state = 'asked' ORDER BY id",
             Self::QUESTION_COLS
         ))?;
@@ -1301,7 +1349,7 @@ impl Store {
     pub fn decisions(&self, job: i64) -> Result<Vec<Decision>> {
         let mut st = self
             .conn
-            .prepare(&format!("SELECT {} FROM decisions WHERE job_id = ?1 ORDER BY id", Self::DECISION_COLS))?;
+            .prepare_cached(&format!("SELECT {} FROM decisions WHERE job_id = ?1 ORDER BY id", Self::DECISION_COLS))?;
         Ok(st.query_map(params![job], Self::decision_row)?.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
@@ -1851,5 +1899,112 @@ mod tests {
             latest()
         );
         crate::sqlite::check_design(STEPS, WHAT, &header, "docs/design/orchestration-db.sql", "orchestration_db");
+    }
+}
+
+#[cfg(test)]
+mod keeping_tests {
+    use super::*;
+
+    const OLD: i64 = 1;
+
+    /// What is let go: what the watcher raised about a try or a job that is
+    /// gone, handovers dealt with long ago but each box's latest, job-less
+    /// mail its tab never came for, and names nothing refers to. Everything
+    /// still in use stays
+    #[test]
+    fn what_nothing_refers_to_any_more_is_let_go_and_the_rest_stays() {
+        let mut s = Store::in_memory().unwrap();
+        let j = s.job_open("uid-lead", "ship it").unwrap();
+        let t = s.task_add(j.id, "build", "build it", &[]).unwrap();
+        let a = s.assign(t.id, "uid-worker", Some(1), 1).unwrap();
+        let raised = [
+            format!("late:{}", a.id),
+            format!("quiet:{}:3", a.id),
+            "late:999".to_string(),
+            "undecided:998".to_string(),
+            format!("leaderless:{}", j.id),
+            "leaderless:888".to_string(),
+            "worktree:888:/x/y".to_string(),
+            "something".to_string(),
+        ];
+        for key in &raised {
+            assert!(s.raise_once(key).unwrap());
+        }
+        for dealt in [OLD, OLD, now_ms()] {
+            s.conn
+                .execute(
+                    "INSERT INTO handovers (box, mail, state, given_at, dealt_at) VALUES ('job:1', '[]', 'dealt', ?1, ?2)",
+                    params![OLD, dealt],
+                )
+                .unwrap();
+        }
+        s.conn
+            .execute("INSERT INTO handovers (box, mail, state, given_at, dealt_at) VALUES ('job:2', '[]', 'dealt', ?1, ?1)", params![OLD])
+            .unwrap();
+        let gone = s.post(None, "tab:uid-gone", "x", "note", "n", "never read", &json!({})).unwrap();
+        let waiting = s.post(None, "tab:uid-lead", "x", "note", "n", "told once", &json!({})).unwrap();
+        s.conn
+            .execute("UPDATE mail SET sent_at = ?1, is_told = 1, told_times = ?2 WHERE seq = ?3", params![OLD, TOLD_TIMES, gone])
+            .unwrap();
+        s.conn
+            .execute("UPDATE mail SET sent_at = ?1, is_told = 1, told_times = 1 WHERE seq = ?2", params![OLD, waiting])
+            .unwrap();
+        s.named("uid-lead", "lead", OLD).unwrap();
+        s.named("uid-nobody", "nobody", OLD).unwrap();
+        s.named("uid-new", "new", now_ms()).unwrap();
+
+        s.forget_old_now().unwrap();
+
+        let keys: Vec<String> = s
+            .conn
+            .prepare("SELECT key FROM raised ORDER BY key")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        let mut kept = vec![
+            format!("late:{}", a.id),
+            format!("leaderless:{}", j.id),
+            format!("quiet:{}:3", a.id),
+            "something".to_string(),
+        ];
+        kept.sort();
+        assert_eq!(keys, kept);
+        let handed: Vec<(String, Option<i64>)> = s
+            .conn
+            .prepare("SELECT box, dealt_at FROM handovers ORDER BY id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(handed.len(), 2, "{handed:?}");
+        assert_eq!(handed[1], ("job:2".to_string(), Some(OLD)), "each box keeps its latest");
+        assert!(s.unread("tab:uid-gone").unwrap().is_empty());
+        assert_eq!(s.unread("tab:uid-lead").unwrap().len(), 1, "told fewer times than the most: kept");
+        assert_eq!(s.name_of("uid-lead").unwrap(), "lead", "it leads a job");
+        assert_eq!(s.name_of("uid-nobody").unwrap(), "uid-nobody");
+        assert_eq!(s.name_of("uid-new").unwrap(), "new", "seen lately");
+    }
+
+    /// The stamp moves with every write, through this connection or any other
+    #[test]
+    fn the_stamp_moves_with_every_write_from_anywhere() {
+        let dir = std::env::temp_dir().join(format!("orch-stamp-{}-{}", std::process::id(), now_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("orchestration.db");
+        let mut s = Store::open(&path).unwrap();
+        let before = s.stamp();
+        assert_eq!(s.stamp(), before);
+        s.job_open("uid-lead", "one").unwrap();
+        let mine = s.stamp();
+        assert_ne!(mine, before);
+        let mut other = Store::open(&path).unwrap();
+        other.job_open("uid-lead", "two").unwrap();
+        assert_ne!(s.stamp(), mine, "another connection's write is seen");
+        drop((s, other));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

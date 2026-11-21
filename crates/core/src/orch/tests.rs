@@ -1174,3 +1174,20 @@ fn a_tab_is_opened_in_a_folder_written_the_way_a_shell_keeps_it() {
     assert_eq!(open_in(&share), r#"shikisha open_ai_tab <claude|codex|gemini> '{"folder":"//server/projects/x"}'"#);
     assert_eq!(open_in("/home/me/x"), r#"shikisha open_ai_tab <claude|codex|gemini> '{"folder":"/home/me/x"}'"#);
 }
+
+/// The board is read from the record again only when the record changed:
+/// drawn again with nothing written in between, it is the same; a task added
+/// by a command shows at once
+#[test]
+fn the_board_follows_every_change_to_the_record_and_only_then_reads_it() {
+    let mut w = World::new();
+    w.ok("lead", "job_open", vec![json!("ship it")]);
+    let first = w.o.board(&w.scene);
+    assert_eq!(first[0]["tasks"].as_array().unwrap().len(), 0, "{first}");
+    let stamp = w.o.store.as_ref().unwrap().stamp();
+    assert_eq!(w.o.board(&w.scene), first);
+    assert_eq!(w.o.store.as_ref().unwrap().stamp(), stamp, "drawing the board wrote nothing");
+    w.ok("lead", "task_add", vec![json!("Build it.")]);
+    let after = w.o.board(&w.scene);
+    assert_eq!(after[0]["tasks"].as_array().unwrap().len(), 1, "{after}");
+}

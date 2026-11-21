@@ -10190,7 +10190,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     engine = crate::hooks::HookEngine::with_caps(crate::hooks::Caps::clone(&caps)).ok();
                 }
                 if let Some(eng) = engine.as_mut() {
-                    for at in due {
+                    let room = NAMING_AT_ONCE.saturating_sub(label_jobs.len() + port_jobs.len());
+                    for at in due.into_iter().take(room) {
                         let Some(f) = desk.folder_at(&at) else { continue };
                         let asks = heard.take(&at);
                         // What it is called and said to be now, when that was
@@ -10292,7 +10293,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             });
                         }
                     }
-                    if asked.is_empty() || settling {
+                    // Asked later, as the asks out now come back
+                    if asked.is_empty() || settling || label_jobs.len() + port_jobs.len() >= NAMING_AT_ONCE {
                         continue;
                     }
                     if engine.is_none() {
@@ -10491,10 +10493,16 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     };
                     // The words for the AI, from the project's prompt, with
                     // what is handed in last: nothing from GitHub is taken
-                    // for a word to fill in
-                    let words = |items: &[serde_json::Value], lead: &str| {
+                    // for a word to fill in. As many of the items as fit
+                    // (`handed::prompt_items`), and how many those are:
+                    // only they are remembered as handed
+                    let words = |items: &[serde_json::Value], lead: &str| -> (String, usize) {
                         let git = desk.git_of(&at);
-                        let shown = if review { crate::handed::for_prompt(items) } else { items.to_vec() };
+                        let (mut listed, left_out) = crate::handed::prompt_items(items, review);
+                        if left_out > 0 {
+                            listed.push_str("\n\n");
+                            listed.push_str(&i18n::tp("ai.items.left_out", &[("n", &left_out.to_string()), ("url", &url)]));
+                        }
                         let body = match review {
                             true => git.review_prompt(),
                             false => git.ci_prompt(),
@@ -10512,8 +10520,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             .replace("{language}", &i18n::t("lang.self"))
                             .replace("{url}", &url)
                             .replace("{title}", &title)
-                            .replace(if review { "{comments}" } else { "{checks}" }, &serde_json::to_string_pretty(&shown).unwrap_or_default());
-                        if lead.is_empty() { body } else { format!("{lead}\n\n{body}") }
+                            .replace(if review { "{comments}" } else { "{checks}" }, &listed);
+                        let text = if lead.is_empty() { body } else { format!("{lead}\n\n{body}") };
+                        (text, items.len() - left_out)
                     };
                     // Remembered as handed once the words are in their tab
                     let note = |items: &[serde_json::Value]| match review {
@@ -10533,10 +10542,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         // it is busy -- as more of the same work
                         Some((tab_title, name)) => {
                             let lead = i18n::t(if review { "ai.review.more" } else { "ai.ci.more" });
-                            match follow_up_in_tab(&label, &at, &name, &tab_title, words(&fresh, &lead), note(&fresh), &tabs, &mut pending_quicks) {
+                            let (text, shown) = words(&fresh, &lead);
+                            match follow_up_in_tab(&label, &at, &name, &tab_title, text, note(&fresh[..shown]), &tabs, &mut pending_quicks) {
                                 Some(busy) => {
                                     reveal = Some((name, Instant::now() + Duration::from_secs(20)));
-                                    serde_json::json!({"ok": true, "data": {"title": tab_title, "state": if busy { "queued" } else { "sent" }, "n": fresh.len(), "what": what}})
+                                    serde_json::json!({"ok": true, "data": {"title": tab_title, "state": if busy { "queued" } else { "sent" }, "n": shown, "what": what}})
                                 }
                                 None => serde_json::json!({"ok": false, "error": i18n::tp("msg.quick.open_failed", &[("label", &label)])}),
                             }
@@ -10549,15 +10559,15 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             let again = fresh.is_empty();
                             let items = if again { &all } else { &fresh };
                             let lead = if again { i18n::t(if review { "ai.review.again" } else { "ai.ci.again" }) } else { String::new() };
-                            let text = words(items, &lead);
+                            let (text, shown) = words(items, &lead);
                             match hand_to_ai_tab(desk, &at, &label, choice, &tabs, &mut pending_quicks, &mut reveal, || text) {
                                 Ok(tab) => {
                                     // The words just queued for the new tab
                                     if let Some(p) = pending_quicks.last_mut().filter(|p| p.label == label) {
-                                        p.handed = Some(note(items));
+                                        p.handed = Some(note(&items[..shown]));
                                     }
                                     watcher.poke();
-                                    serde_json::json!({"ok": true, "data": {"title": tab["title"], "state": if again { "again" } else { "opened" }, "n": items.len(), "what": what}})
+                                    serde_json::json!({"ok": true, "data": {"title": tab["title"], "state": if again { "again" } else { "opened" }, "n": shown, "what": what}})
                                 }
                                 Err(why) => serde_json::json!({"ok": false, "error": why}),
                             }
@@ -10848,8 +10858,19 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     let label = label.to_string();
                     let read = move |dir: &std::path::Path| {
                         let against = format!("origin/{into}");
-                        let commits = crate::git::run(dir, &["log", "--no-color", "--format=- %s", &format!("{against}..HEAD")])
+                        // A branch far from its base -- a long-lived one, or
+                        // a base not fetched for months -- has thousands of
+                        // commits. The newest are listed, and how many more
+                        let most = format!("-n{}", PR_COMMITS_MOST + 1);
+                        let listed = crate::git::run(dir, &["log", "--no-color", &most, "--format=- %s", &format!("{against}..HEAD")])
                             .unwrap_or_default();
+                        let total = match listed.lines().count() > PR_COMMITS_MOST {
+                            true => crate::git::run(dir, &["rev-list", "--count", &format!("{against}..HEAD")])
+                                .ok()
+                                .and_then(|n| n.trim().parse().ok()),
+                            false => None,
+                        };
+                        let commits = commits_up_to(&listed, PR_COMMITS_MOST, total);
                         let mut change = crate::git::run(dir, &["diff", "--no-color", &format!("{against}...HEAD")]).unwrap_or_default();
                         // A change can be a megabyte. The shape of it is in the first pages
                         if change.len() > 12000 {
@@ -22155,6 +22176,30 @@ const LABEL_TAG: &str = "folder_label:";
 /// next time. The AI is given ninety seconds, and asked twice at most
 const LABEL_GIVE_UP: Duration = Duration::from_secs(5 * 60);
 
+/// How many of a branch's commits a pull request's draft is written from
+const PR_COMMITS_MOST: usize = 200;
+
+/// The first `most` lines of `listed` (one commit each, newest first), and
+/// a line saying how many more there are when there are: `total` all told,
+/// when it is known
+fn commits_up_to(listed: &str, most: usize, total: Option<usize>) -> String {
+    let lines: Vec<&str> = listed.trim().lines().collect();
+    if lines.len() <= most {
+        return lines.join("\n");
+    }
+    let more = match total {
+        Some(t) if t > most => format!("- ... and {} more commits", t - most),
+        _ => "- ... and more commits".to_string(),
+    };
+    format!("{}\n{more}", lines[..most].join("\n"))
+}
+
+/// How many asks for automatic names -- a folder's, or its servers' -- are
+/// out at once. Each starts an AI's program of its own, a few hundred
+/// megabytes: a desk opened with twenty folders nobody had named started
+/// twenty in the same second. The rest stay due, and go as these come back
+const NAMING_AT_ONCE: usize = 2;
+
 /// The AI that writes a desk's automatic names -- its folders', and their
 /// servers' (`portinfo`): the desk's own answer, then the app's, then the
 /// assistant AI. Three steps rather than two because the app-wide one is where
@@ -24023,6 +24068,17 @@ mod survey_tests {
 
 #[cfg(test)]
 mod tests {
+    /// A branch with more commits than a draft is written from lists the
+    /// newest and says how many more; one with fewer lists them all
+    #[test]
+    fn a_draft_lists_the_newest_commits_and_how_many_more() {
+        let listed = "- c\n- b\n- a\n";
+        assert_eq!(super::commits_up_to(listed, 3, None), "- c\n- b\n- a");
+        assert_eq!(super::commits_up_to(listed, 2, Some(1500)), "- c\n- b\n- ... and 1498 more commits");
+        assert_eq!(super::commits_up_to(listed, 2, None), "- c\n- b\n- ... and more commits");
+        assert_eq!(super::commits_up_to("", 2, None), "");
+    }
+
     /// A machine with a tab open is asked about the bridge only while the
     /// settings have no answer about it, either way
     #[test]

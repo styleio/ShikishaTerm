@@ -1067,7 +1067,7 @@ pub fn annotate(hits: &mut [Hit]) {
         h.thread = store.tab_of(&h.id).ok().flatten();
         h.thread_name = h.thread.as_deref().and_then(|uid| store.name_of(uid).ok().flatten());
         if let Some(said) = h.said.as_ref().filter(|s| s.who == crate::reader::Who::You) {
-            h.from = crate::convo::read::origins(&h.id, &[(said.when, said.head.as_str())]).into_iter().next().flatten();
+            h.from = crate::convo::read::origins(store, &h.id, &[(said.when, said.head.as_str())]).into_iter().next().flatten();
         }
     }
 }
