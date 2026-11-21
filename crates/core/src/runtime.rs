@@ -1792,6 +1792,46 @@ fn tree_file_write(dir: &std::path::Path, rel: &str, at: Option<&crate::elsewher
         }
     }
 }
+/// Several files of a working tree, as text, each in its place. On another
+/// machine they come over one connection together, not one each
+fn tree_files_read(dir: &std::path::Path, rels: &[String], at: Option<&crate::elsewhere::Elsewhere>) -> Vec<anyhow::Result<String>> {
+    let Some(at) = at else { return rels.iter().map(|r| tree_file_read(dir, r, None)).collect() };
+    let root = crate::desk::far_path(dir).trim_end_matches('/').to_string();
+    let mut out: Vec<anyhow::Result<String>> = Vec::with_capacity(rels.len());
+    for some in rels.chunks(FAR_READS_TO_A_JOB) {
+        let paths: Vec<String> = some.iter().map(|r| format!("{root}/{r}")).collect();
+        match crate::elsewhere::files(at, crate::ssh::FileJob::ReadAll { paths, most: TREE_FILE_MOST }, TREE_FILE_WAIT_MS) {
+            Ok(crate::ssh::FileAnswer::Several(read)) if read.len() == some.len() => out.extend(some.iter().zip(read).map(|(r, b)| match b {
+                Some(b) => Ok(String::from_utf8_lossy(&b).into_owned()),
+                // Not there, or larger than anything that would be handed
+                // over: read on its own, so what it says is why
+                None => tree_file_read(dir, r, Some(at)),
+            })),
+            Ok(_) => out.extend(some.iter().map(|_| Err(anyhow::anyhow!(crate::i18n::t("err.files.far_odd"))))),
+            Err(e) => {
+                let why = format!("{e:#}");
+                out.extend(some.iter().map(|_| Err(anyhow::anyhow!(why.clone()))));
+            }
+        }
+    }
+    out
+}
+/// Several files written back where the tree is, each answered in its
+/// place. On another machine a few go at once
+fn tree_files_write(dir: &std::path::Path, files: &[(String, String)], at: Option<&crate::elsewhere::Elsewhere>) -> Vec<anyhow::Result<()>> {
+    let mut out = Vec::with_capacity(files.len());
+    for some in files.chunks(crate::ssh::READS_AT_ONCE) {
+        std::thread::scope(|s| {
+            let going: Vec<_> = some.iter().map(|(f, text)| s.spawn(move || tree_file_write(dir, f, at, text))).collect();
+            out.extend(going.into_iter().map(|g| g.join().unwrap_or_else(|_| Err(anyhow::anyhow!(crate::i18n::t("err.files.far_odd"))))));
+        });
+    }
+    out
+}
+/// The most of one file of a tree read for handing to the AI: four bytes
+/// for each character it may hand over, so nothing it would take is left
+/// unread
+const TREE_FILE_MOST: u64 = 4 * 60_000;
 /// How long a file of a tree on another machine may take to come or go
 const TREE_FILE_WAIT_MS: u64 = 60_000;
 fn tab_place(t: &Tab) -> hooks::TabPlace {
@@ -9821,23 +9861,35 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 "catch_up" => crate::git::catch_up(&dir, &base, &who)
                                     .map(|n| serde_json::json!({"taken": n, "base": base}).to_string()),
                                 #[allow(unreachable_patterns)]
-                                // Every file git left marked, one at a time.
-                                // Nothing is staged and nothing is committed:
-                                // what comes back is written into the tree, and
-                                // the person reads it as a diff like any other
+                                // Every file git left marked: read together,
+                                // handed over a few to a question, written
+                                // back together. Nothing is staged and
+                                // nothing is committed: what comes back is
+                                // written into the tree, and the person
+                                // reads it as a diff like any other
                                 "resolve" => crate::git::tangled(&dir).and_then(|files| {
                                     let mut done: Vec<String> = Vec::new();
                                     let mut failed: Vec<String> = Vec::new();
-                                    for f in &files {
-                                        // The file where the tree is: read
-                                        // and written back over there when
-                                        // the folder is on another machine
-                                        let said = tree_file_read(&dir, f, at.as_ref())
-                                            .and_then(|body| {
-                                                crate::webui::resolve_conflict(f, &body, ai.as_deref())
-                                            })
-                                            .and_then(|text| tree_file_write(&dir, f, at.as_ref(), &text));
+                                    // The files where the tree is: read and
+                                    // written back over there when the
+                                    // folder is on another machine
+                                    let mut given: Vec<(String, String)> = Vec::new();
+                                    for (f, body) in files.iter().zip(tree_files_read(&dir, &files, at.as_ref())) {
+                                        match body {
+                                            Ok(body) => given.push((f.clone(), body)),
+                                            Err(e) => failed.push(format!("{f}: {e}")),
+                                        }
+                                    }
+                                    let answers = crate::webui::resolve_conflicts(&given, ai.as_deref());
+                                    let mut write: Vec<(String, String)> = Vec::new();
+                                    for ((f, _), said) in given.into_iter().zip(answers) {
                                         match said {
+                                            Ok(text) => write.push((f, text)),
+                                            Err(e) => failed.push(format!("{f}: {e}")),
+                                        }
+                                    }
+                                    for ((f, _), wrote) in write.iter().zip(tree_files_write(&dir, &write, at.as_ref())) {
+                                        match wrote {
                                             Ok(()) => done.push(f.clone()),
                                             Err(e) => failed.push(format!("{f}: {e}")),
                                         }

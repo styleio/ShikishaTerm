@@ -60,6 +60,9 @@ const SEARCH_ROOM: usize = 12_000;
 /// the ceiling is for a folder that turned out to be something else
 const MOST: usize = 2000;
 
+/// How many records are asked for in one question
+const RECORDS_TO_A_QUESTION: usize = 32;
+
 /// Room for the words of a file name taken from a title, in characters
 const SLUG_ROOM: usize = 60;
 
@@ -730,9 +733,13 @@ fn clean_file(name: &str) -> Option<String> {
 /// The template the folder keeps, and what it was read from; MADR when it
 /// keeps none
 fn fields_of(disk: &dyn Disk, dir: &str) -> (Vec<Field>, Option<String>) {
-    // Both asked at once: on a far machine that is one wait, not one each
+    // Both asked at once: on a far machine that is one wait, not one each.
+    // One that will not read fails the question for both, and then each is
+    // read on its own, so the one that reads is still the template
     let paths: Vec<String> = TEMPLATES.iter().map(|n| join(dir, n)).collect();
-    let read = disk.read_all(&paths, RECORD_LIMIT).unwrap_or_default();
+    let read = disk
+        .read_all(&paths, RECORD_LIMIT)
+        .unwrap_or_else(|_| paths.iter().map(|p| disk.read(p).ok().flatten().filter(|b| b.len() <= RECORD_LIMIT)).collect());
     for (name, bytes) in TEMPLATES.iter().zip(read) {
         if let Some(bytes) = bytes
             && let Some(fields) = template_fields(&crate::charset::read(&bytes).text)
@@ -752,17 +759,20 @@ pub fn records(disk: &dyn Disk, dir: &str, fields: &[Field]) -> Result<Option<Ve
     });
     names.sort_by(|a, b| number_of(a).cmp(&number_of(b)).then_with(|| a.cmp(b)));
     names.truncate(MOST);
-    // All of them in one question: on a far machine, a folder of a hundred
-    // records was two waits for each
-    let paths: Vec<String> = names.iter().map(|n| join(dir, n)).collect();
-    let read = disk.read_all(&paths, RECORD_LIMIT)?;
+    // A few dozen to a question: on a far machine, a folder of a hundred
+    // records was two waits for each. Each few is read into records before
+    // the next is asked for, so what is held at once is a few dozen files'
+    // worth, not every record of the folder at its largest
     let mut out = Vec::new();
-    for (name, bytes) in names.iter().zip(read) {
-        let Some(bytes) = bytes else { continue };
-        if bytes.contains(&0) {
-            continue;
+    for some in names.chunks(RECORDS_TO_A_QUESTION) {
+        let paths: Vec<String> = some.iter().map(|n| join(dir, n)).collect();
+        for (name, bytes) in some.iter().zip(disk.read_all(&paths, RECORD_LIMIT)?) {
+            let Some(bytes) = bytes else { continue };
+            if bytes.contains(&0) {
+                continue;
+            }
+            out.push(parse(name, &crate::charset::read(&bytes).text, fields));
         }
-        out.push(parse(name, &crate::charset::read(&bytes).text, fields));
     }
     // "Superseded by ADR-0005" names a record by number: said as its file,
     // so the list can link the two
@@ -1079,9 +1089,48 @@ mod tests {
         assert_eq!(records.len(), 120, "every record and nothing else");
         assert_eq!(records[0]["title"], "Pick 1");
         assert_eq!(records[119]["title"], "Pick 120");
-        // The templates, the listing, the records: three questions, however
-        // many records there are
-        assert_eq!(far.asks.get(), 3, "one question for each kind of thing, not one for each file");
+        // The templates, the listing, and the records a few dozen at a
+        // time: six questions for a hundred and twenty-two files, not two
+        // hundred and forty-four
+        assert_eq!(far.asks.get(), 2 + 122_usize.div_ceil(RECORDS_TO_A_QUESTION), "a question for a few dozen files, not one for each");
+    }
+
+    /// A far folder where one file is there and will not read: asking for it
+    /// with others fails the whole question, the way one SFTP read does
+    struct Locked {
+        mem: Mem,
+        locked: &'static str,
+    }
+
+    impl Disk for Locked {
+        fn files(&self, dir: &str) -> Result<Option<Vec<String>>, String> {
+            self.mem.files(dir)
+        }
+        fn folders(&self, dir: &str) -> Result<Vec<String>, String> {
+            self.mem.folders(dir)
+        }
+        fn read(&self, path: &str) -> Result<Option<Vec<u8>>, String> {
+            if path.ends_with(self.locked) { Err("permission denied".into()) } else { self.mem.read(path) }
+        }
+        fn read_all(&self, paths: &[String], most: usize) -> Result<Vec<Option<Vec<u8>>>, String> {
+            if paths.iter().any(|p| p.ends_with(self.locked)) { Err("permission denied".into()) } else { self.mem.read_all(paths, most) }
+        }
+        fn write(&self, path: &str, bytes: &[u8], fresh: bool) -> Result<(), String> {
+            self.mem.write(path, bytes, fresh)
+        }
+        fn make_dirs(&self, dir: &str) -> Result<(), String> {
+            self.mem.make_dirs(dir)
+        }
+    }
+
+    #[test]
+    fn a_template_that_reads_is_kept_when_the_other_one_will_not_read() {
+        let disk = Locked { mem: Mem::default(), locked: "/template.md" };
+        disk.mem.put("docs/decisions/adr-template.md", "# {short title}\n\n## Why\n\n{why}\n");
+        disk.mem.put("docs/decisions/template.md", "unreadable");
+        let (fields, from) = fields_of(&disk, "docs/decisions");
+        assert_eq!(from.as_deref(), Some("adr-template.md"), "the template that reads is the one used");
+        assert_ne!(fields, madr());
     }
 
     #[test]

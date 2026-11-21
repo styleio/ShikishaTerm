@@ -69,6 +69,13 @@ pub const UNTANGLE: &str = "The file below is a git merge conflict, exactly as g
          File: {file}\n\n\
          {body}";
 
+/// Several conflicted files at once, each between lines that say where it
+/// begins and ends. The lines carry a word made for this one question, so a
+/// file that happens to hold a line like them is not taken for one
+pub const UNTANGLE_MANY: &str = "Each file below is a git merge conflict, exactly as git left it, including the <<<<<<< ======= >>>>>>> markers. Each one begins with a line @@@ {seal} FILE n: path @@@ and ends with a line @@@ {seal} END n @@@.\n\n\
+         For every file, work out what it should be: keep what both sides were trying to do, and remove every marker. The files are from the same project, so what one side did in one file may explain what it did in another. Reply with every file, in the same order, each between the line @@@ {seal} FILE n @@@ and the line @@@ {seal} END n @@@, holding the finished contents of that file and nothing else. Do not comment, do not explain, do not fence anything, and write nothing outside those lines.\n\n\
+         {files}";
+
 /// Who is answering, when the ? is asked a question
 pub const HELP_WHO: &str = "You answer questions about using SHIKISHA-TERM, a terminal that runs several AI assistants side by side. Everything below the line is what this copy of the program actually has: its manual, which says how the screen is used, its keys and where things are, and its settings screens with what is on each one. Answer only from it. When it does not say, say plainly that the manual and the settings do not cover it, and do not send the person to a screen that does not hold the answer.";
 
