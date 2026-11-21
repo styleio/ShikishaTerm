@@ -251,6 +251,9 @@ struct Stamped {
     out: bool,
     /// Asked for since the table was last tidied
     wanted: bool,
+    /// Moves with every mark put in by the app: a look begun before that
+    /// brings back what the disk said before the app wrote, and is dropped
+    put: u64,
 }
 
 /// The one table, for the whole app
@@ -272,15 +275,24 @@ impl Stamps {
         e.wanted = true;
         if !e.out && e.read.is_none_or(|r| r.elapsed() >= STAMP_FRESH) {
             e.out = true;
-            let at = at.to_path_buf();
+            let (at, put) = (at.to_path_buf(), e.put);
             std::thread::spawn(move || {
                 let stamp = stamp_of(&at);
-                if let Some(e) = self.table().get_mut(&at) {
-                    (e.stamp, e.read, e.out) = (stamp, Some(std::time::Instant::now()), false);
-                }
+                self.settle(&at, put, stamp);
             });
         }
         e.stamp.clone()
+    }
+
+    /// What the disk said, for a look begun when `put` marks were in: kept
+    /// only if the app has put none since
+    fn settle(&self, at: &Path, put: u64, stamp: String) {
+        if let Some(e) = self.table().get_mut(at) {
+            e.out = false;
+            if e.put == put {
+                (e.stamp, e.read) = (stamp, Some(std::time::Instant::now()));
+            }
+        }
     }
 
     /// What the app itself just read or wrote: the mark it handed the page
@@ -288,6 +300,7 @@ impl Stamps {
         let mut known = self.table();
         let e = known.entry(at.to_path_buf()).or_default();
         (e.stamp, e.read) = (stamp.to_string(), Some(std::time::Instant::now()));
+        e.put = e.put.wrapping_add(1);
     }
 
     /// Forget the files not asked about since the last time: those no editor
@@ -1854,6 +1867,13 @@ mod tests {
         }
         marks.tidy();
         assert!(!marks.table().contains_key(&at), "a file no editor has open is kept");
+        // A look begun before the app wrote brings back what was there before:
+        // the mark the app put stands
+        marks.look(&at);
+        let begun = marks.table().get(&at).map(|e| e.put).unwrap();
+        marks.put(&at, "after-the-save");
+        marks.settle(&at, begun, "before-the-save".into());
+        assert_eq!(marks.table().get(&at).map(|e| e.stamp.clone()).as_deref(), Some("after-the-save"));
     }
 
     /// What another machine prints for a search by name reads as the same

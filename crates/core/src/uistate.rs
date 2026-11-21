@@ -3012,16 +3012,19 @@ impl UiState {
             .iter()
             .enumerate()
             .filter(|(i, t)| before.tabs.get(*i).is_none_or(|b| b.activity != t.activity || b.cost != t.cost))
-            .map(|(i, t)| Pulse { at: i, activity: t.activity.clone(), cost: t.cost.clone() })
+            .map(|(i, t)| Pulse { at: i, key: t.key.clone(), activity: t.activity.clone(), cost: t.cost.clone() })
             .collect()
     }
 }
 
 /// One tab's part of what moves on its own (`UiState::pulse_since`): which
-/// tab, by its place in `UiState::tabs`, and its bars and cost now
+/// tab -- by what it is (`TabState::key`), which a page drawing it later, after
+/// the tabs moved about, still finds it by; and by its place then -- and its
+/// bars and cost now
 #[derive(Clone, Serialize, PartialEq, Debug)]
 pub struct Pulse {
     pub at: usize,
+    pub key: String,
     pub activity: Vec<u8>,
     pub cost: Option<String>,
 }
@@ -3495,7 +3498,7 @@ mod tests {
         assert_eq!(now.without_pulse(), before.without_pulse(), "the bars and the cost count as a change of the rest");
         assert_eq!(
             now.pulse_since(&before),
-            vec![Pulse { at: 1, activity: vec![0, 3, 7], cost: Some("2% · 80 MB".into()) }],
+            vec![Pulse { at: 1, key: now.tabs[1].key.clone(), activity: vec![0, 3, 7], cost: Some("2% · 80 MB".into()) }],
             "only the tab that moved is told"
         );
         let mut renamed = now.clone();

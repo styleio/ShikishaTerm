@@ -369,19 +369,24 @@ for (const side of ['window', 'remote']) {
         const held = await chrome.run(`(async () => {
           const was = JSON.stringify(S);
           try {
-            S = {...S, active: 1, tabs: [{index: 1, name: "sh", id: "sh", key: "pulse-held", kind: "pty", state: "WAIT",
-              state_label: "WAIT", profile: "GENERIC", activity: [0], cost: ""}]};
+            const one = (key, n) => ({index: n, name: key, id: key, key, kind: "pty", state: "WAIT",
+              state_label: "WAIT", profile: "GENERIC", activity: [0], cost: ""});
+            S = {...S, active: 1, tabs: [one("held-a", 1), one("held-b", 2)]};
             drawTabs();
             holding = true;
-            window.__pulse([{at: 0, activity: [5, 5], cost: "3%"}]);
+            window.__pulse([{at: 0, key: "held-a", activity: [5, 5], cost: "3%"}]);
             const during = S.tabs[0].activity.join("");
+            // The tabs moved about meanwhile: the bars still go to the tab they were for
+            S.tabs = [S.tabs[1], S.tabs[0]];
             release();
             await new Promise(r => setTimeout(r, 20));
-            return {during, after: S.tabs[0].activity.join("")};
+            const by = k => S.tabs.find(t => t.key === k).activity.join("");
+            return {during, after: by("held-a"), other: by("held-b")};
           } finally { holding = false; S = JSON.parse(was); drawTabs(); }
         })()`);
         if (held.during !== "0") fail(what, 'the bars were drawn under a press');
         if (held.after !== "55") fail(what, 'the bars that moved under a press were not drawn after it: ' + held.after);
+        if (held.other !== "0") fail(what, 'the bars held over a press went to another tab once the tabs moved about');
       } catch (e) { fail(what, 'the bars moving threw: ' + String(e.message).split('\n')[0]); }
       // Removing a worktree that holds thousands of new files: the question
       // names the first of them, and the rest a press away

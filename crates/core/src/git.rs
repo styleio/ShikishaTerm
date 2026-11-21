@@ -630,15 +630,25 @@ fn run_bytes_as(dir: &Path, args: &[&str], input: &[u8], limit: Duration, who: &
         std::io::ErrorKind::NotFound => anyhow::Error::new(NotInstalled),
         _ => e.into(),
     })?;
-    if !input.is_empty() {
-        use std::io::Write as _;
-        if let Some(mut w) = child.stdin.take() {
-            w.write_all(input)?;
-        }
-    }
+    // What git says is read from the start, and what it is given is written
+    // on a thread of its own: written here first, a message larger than the
+    // pipe holds waited for git to read it while git -- or a hook it runs --
+    // waited for its output to be read, and neither ever moved. The time
+    // allowed is counted from the start too
+    let started = Instant::now();
     let out = child.stdout.take().map(drain);
     let err = child.stderr.take().map(drain);
-    let started = Instant::now();
+    if !input.is_empty()
+        && let Some(mut w) = child.stdin.take()
+    {
+        let given = input.to_vec();
+        std::thread::spawn(move || {
+            use std::io::Write as _;
+            // A git that ended before reading it all closes the pipe: what it
+            // made of that is in its status, read below
+            let _ = w.write_all(&given);
+        });
+    }
     let status = loop {
         match child.try_wait()? {
             Some(s) => break s,
@@ -3273,6 +3283,39 @@ fatal: repository 'https://github.com/te0ai/helloworld.git/' not found";
         commit(&dir, "first", &[], false, false, &who).unwrap();
         let by = run(&dir, &["log", "-1", "--format=%an <%ae>"]).unwrap();
         assert_eq!(by.trim(), "Work Name <work@example.invalid>");
+    }
+
+    /// A message larger than a pipe holds, with a hook that says a lot before
+    /// it reads anything: neither waits on the other
+    #[test]
+    fn a_large_message_and_a_talkative_hook_do_not_wait_on_each_other() {
+        let Some(dir) = scratch_repo("talkative-hook") else { return };
+        std::fs::write(dir.join("a.txt"), "hello").unwrap();
+        stage(&dir, &["a.txt".to_string()]).unwrap();
+        let hook = dir.join(".git/hooks/pre-commit");
+        std::fs::write(&hook, "#!/bin/sh\nyes xxxxxxxxxxxxxxx | head -c 1048576 >&2\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let message = format!("big\n\n{}", "y".repeat(1024 * 1024));
+        commit(&dir, &message, &[], false, false, &As::default()).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The same on any machine, with git's own input: a message of megabytes
+    /// goes in while what git says is read
+    #[test]
+    fn a_message_of_megabytes_is_committed() {
+        let Some(dir) = scratch_repo("huge-message") else { return };
+        std::fs::write(dir.join("a.txt"), "hello").unwrap();
+        stage(&dir, &["a.txt".to_string()]).unwrap();
+        let message = format!("big\n\n{}", "y".repeat(4 * 1024 * 1024));
+        commit(&dir, &message, &[], false, false, &As::default()).unwrap();
+        let said = run(&dir, &["log", "-1", "--format=%B"]).unwrap();
+        assert_eq!(said.trim_end().len(), message.len());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A message longer than a command line can be -- one that lists every

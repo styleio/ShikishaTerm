@@ -17887,8 +17887,10 @@ window.__pulse = function (list) {
   // Not under a press: the bars are on the row being pressed
   if (holding) { heldPulses.push(list); return; }
   if (!S || !S.tabs) return;
+  // Found by what the tab is: one held over a press may come after a state
+  // in which the tabs moved about, and its place then is another tab's now
   for (const p of list || []) {
-    const t = S.tabs[p.at];
+    const t = p.key ? S.tabs.find(x => x.key === p.key) : S.tabs[p.at];
     if (t) { t.activity = p.activity; t.cost = p.cost; }
   }
   for (const box of document.querySelectorAll(".spark[data-spark]")) {
@@ -22197,7 +22199,7 @@ function cfGot(d) {
   CF.loading = false;
   // Read for a desk no longer in front
   if (d.desk !== undefined && d.desk !== CF.desk) return;
-  if (!d.ok) { CF.loading = false; CF.bad = d.error || ""; CF.drawn = ""; drawConvo(); return; }
+  if (!d.ok) { CF.loading = false; CF.bad = d.error || ""; CF.drawn = ""; CF.lastPage = ""; drawConvo(); return; }
   CF.bad = "";
   if (d.act === "confer_threads") {
     if ((d.tab || null) !== CF.focus || (d.folder || null) !== CF.folder) return;
@@ -22225,7 +22227,9 @@ function cfGot(d) {
     // as the last one changes nothing, and every line is not made again
     const fresh = d.said || [];
     const page = JSON.stringify([d.thread, fresh, !!d.more]);
-    if (page === CF.lastPage && CF.said.length && !CF.bad) return;
+    // (After a failure the page is drawn whatever it holds: the failure was
+    // said in its place, and lastPage was let go with it)
+    if (page === CF.lastPage && CF.said.length) return;
     CF.lastPage = page;
     const first = fresh.length ? fresh[0].at : Infinity;
     const fresh_keys = new Set(fresh.map(cfKey));

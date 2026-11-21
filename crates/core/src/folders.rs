@@ -857,21 +857,26 @@ impl Drifts {
     pub fn look(&self, paths: &[PathBuf]) -> HashMap<PathBuf, Drift> {
         let now = Instant::now();
         let mut out = HashMap::with_capacity(paths.len());
-        let mut send: Vec<PathBuf> = Vec::new();
+        let send: Vec<PathBuf>;
         {
             let mut known = self.known.lock().unwrap_or_else(|e| e.into_inner());
             let wanted: std::collections::HashSet<&PathBuf> = paths.iter().collect();
             known.retain(|k, _| wanted.contains(k));
-            let mut busy = known.values().filter(|e| e.out).count();
+            let busy = known.values().filter(|e| e.out).count();
+            let mut due: Vec<(Option<Instant>, PathBuf)> = Vec::new();
             for p in paths {
                 let e = known.entry(p.clone()).or_default();
                 if e.settled && e.of.is_some() {
                     out.insert(p.clone(), e.drift.clone());
                 }
-                if busy < DRIFTS_AT_ONCE && !e.out && e.read.is_none_or(|at| now.duration_since(at) >= DRIFT_FRESH) {
+                if !e.out && e.read.is_none_or(|at| now.duration_since(at) >= DRIFT_FRESH) {
+                    due.push((e.read, p.clone()));
+                }
+            }
+            send = the_longest_waiting(due, DRIFTS_AT_ONCE.saturating_sub(busy));
+            for p in &send {
+                if let Some(e) = known.get_mut(p) {
                     e.out = true;
-                    busy += 1;
-                    send.push(p.clone());
                 }
             }
         }
@@ -931,6 +936,17 @@ const LEFT_REST: u32 = 30;
 /// How many worktrees are looked at together
 const LEFT_AT_ONCE: usize = 2;
 
+/// Of the folders due to be looked at -- each with when it last was -- the
+/// `room` that have waited longest, never looked at first. Taken from the top
+/// of the list instead, folders that take a while to look at kept the first
+/// places to themselves and the ones further down were never looked at
+fn the_longest_waiting(mut due: Vec<(Option<Instant>, PathBuf)>, room: usize) -> Vec<PathBuf> {
+    // None (never) sorts before any time; a stable sort keeps the list's order
+    // among equals
+    due.sort_by_key(|(at, _)| *at);
+    due.into_iter().take(room).map(|(_, p)| p).collect()
+}
+
 /// One folder's last answer about what is left, and whether one is out
 #[derive(Default)]
 struct Leaving {
@@ -960,23 +976,28 @@ impl Leftovers {
     pub fn look(&self, paths: &[PathBuf]) -> HashMap<PathBuf, Left> {
         let now = Instant::now();
         let mut out = HashMap::new();
-        let mut send = Vec::new();
+        let send: Vec<PathBuf>;
         {
             let mut known = self.known.lock().unwrap_or_else(|e| e.into_inner());
             let wanted: std::collections::HashSet<&PathBuf> = paths.iter().collect();
             known.retain(|k, _| wanted.contains(k));
             // A few at a time: each look is several gits, and two hundred
             // worktrees asked at once would be eight hundred gits at once
-            let mut busy = known.values().filter(|e| e.out).count();
+            let busy = known.values().filter(|e| e.out).count();
+            let mut due: Vec<(Option<Instant>, PathBuf)> = Vec::new();
             for p in paths {
                 let e = known.entry(p.clone()).or_default();
                 if let Some(left) = &e.left {
                     out.insert(p.clone(), left.clone());
                 }
-                if busy < LEFT_AT_ONCE && !e.out && e.settled.is_none_or(|at| now.duration_since(at) >= LEFT_FRESH.max(e.took * LEFT_REST)) {
+                if !e.out && e.settled.is_none_or(|at| now.duration_since(at) >= LEFT_FRESH.max(e.took * LEFT_REST)) {
+                    due.push((e.settled, p.clone()));
+                }
+            }
+            send = the_longest_waiting(due, LEFT_AT_ONCE.saturating_sub(busy));
+            for p in &send {
+                if let Some(e) = known.get_mut(p) {
                     e.out = true;
-                    busy += 1;
-                    send.push(p.clone());
                 }
             }
         }
@@ -1134,6 +1155,18 @@ mod tests {
             }
         }
         panic!("the look never came back");
+    }
+
+    /// The folders looked at next are the ones that have waited longest: the
+    /// first of the list taking a while to look at does not keep the rest out
+    #[test]
+    fn the_folders_that_waited_longest_are_looked_at_first() {
+        let t0 = Instant::now();
+        let at = |s: u64| Some(t0 + Duration::from_secs(s));
+        let p = |n: &str| PathBuf::from(n);
+        let due = vec![(at(9), p("a")), (at(8), p("b")), (None, p("e")), (at(1), p("c")), (None, p("f"))];
+        assert_eq!(the_longest_waiting(due, 3), vec![p("e"), p("f"), p("c")]);
+        assert!(the_longest_waiting(vec![(None, p("a"))], 0).is_empty(), "no room is no look");
     }
 
     /// How far a folder is from the remote is worked out off the drawing and

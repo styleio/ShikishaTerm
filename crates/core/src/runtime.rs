@@ -2047,17 +2047,18 @@ fn reload_said_only_that(note: &str) -> bool {
 /// (see the call). `where_` names the desk in the log when it is not the
 /// one in front
 fn probe_sessions(tabs: &mut [Tab], where_: &str) {
-    // Worked out only when a tab is due to look: on every pass for every tab
-    // it was every tab against every other
-    let due = tabs.iter().any(|t| t.session_probe.is_some_and(|(at, _)| std::time::Instant::now() >= at));
-    let alone_all = if due { alone_each(tabs) } else { Vec::new() };
+    // Worked out the first time a tab is found due to look, and once: on
+    // every pass for every tab it was every tab against every other. One
+    // moment for the whole pass, so a tab is not due to look and then not
+    let now = std::time::Instant::now();
+    let mut alone_all: Option<Vec<bool>> = None;
     for i in 0..tabs.len() {
-        let alone = alone_all.get(i).copied().unwrap_or(false);
-        let Some(t) = tabs.get_mut(i) else { continue };
-        let Some((at, left)) = t.session_probe else { continue };
-        if std::time::Instant::now() < at {
+        if !tabs[i].session_probe.is_some_and(|(at, _)| now >= at) {
             continue;
         }
+        let alone = alone_all.get_or_insert_with(|| alone_each(tabs)).get(i).copied().unwrap_or(false);
+        let Some(t) = tabs.get_mut(i) else { continue };
+        let Some((_, left)) = t.session_probe else { continue };
         let spec = t.resume.as_ref().and_then(|r| r.record.clone());
         let found = match (&spec, alone) {
             (Some(spec), true) => sessionfind::find(spec, t.cwd(), t.born()),
