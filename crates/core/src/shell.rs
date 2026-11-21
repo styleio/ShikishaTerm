@@ -5536,9 +5536,9 @@ let holding = false, queued = null, holdTimer = 0;
 // The bars that moved while a press was held, in the order they came, after
 // the state held back (which carries the bars as they were when it was made)
 let heldPulses = [];
-// How many states have been taken in: what was held over a press is put in a
-// moment after it ends, and a state that came in that moment is newer than
-// all of it -- what was held is then dropped, not laid over the newer state
+// How many states and bars have been taken in: what was held over a press is
+// put in a moment after it ends, and a state or bars that came in that moment
+// are newer than all of it -- what was held is then dropped, not laid over the newer state
 let statesTaken = 0;
 const release = () => {
   holding = false;
@@ -17892,6 +17892,8 @@ window.__pulse = function (list) {
   // Not under a press: the bars are on the row being pressed
   if (holding) { heldPulses.push(list); return; }
   if (!S || !S.tabs) return;
+  // Newer than anything held over a press too
+  statesTaken++;
   // Found by what the tab is: one held over a press may come after a state
   // in which the tabs moved about, and its place then is another tab's now
   for (const p of list || []) {

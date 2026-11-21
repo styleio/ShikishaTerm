@@ -381,6 +381,7 @@ for (const side of ['window', 'remote']) {
             release();
             await new Promise(r => setTimeout(r, 20));
             const by = k => S.tabs.find(t => t.key === k).activity.join("");
+            const other = by("held-b"), after = by("held-a");
             // Held again, and a newer state comes in the moment the press ends:
             // what was held is older than it and is dropped
             holding = true;
@@ -391,11 +392,19 @@ for (const side of ['window', 'remote']) {
             window.__state(JSON.stringify(newer));
             await new Promise(r => setTimeout(r, 20));
             const kept = S.tabs.find(t => t.key === "held-b").cost;
-            return {during, after: by("held-a"), other: by("held-b"), kept};
+            // ...and the same for bars that come in that moment
+            holding = true;
+            window.__pulse([{at: 0, key: "held-b", activity: [1], cost: "5%"}]);
+            release();
+            window.__pulse([{at: 0, key: "held-b", activity: [2], cost: "11%"}]);
+            await new Promise(r => setTimeout(r, 20));
+            const keptBars = S.tabs.find(t => t.key === "held-b").cost;
+            return {during, after, other, kept, keptBars};
           } finally { holding = false; S = JSON.parse(was); drawTabs(); }
         })()`);
         if (held.during !== "0") fail(what, 'the bars were drawn under a press');
         if (held.after !== "55") fail(what, 'the bars that moved under a press were not drawn after it: ' + held.after);
+        if (held.keptBars !== "11%") fail(what, "bars held over a press were laid over newer bars: " + held.keptBars);
         if (held.kept !== "9%") fail(what, "what was held over a press was laid over a newer state: " + held.kept);
         if (held.other !== "0") fail(what, 'the bars held over a press went to another tab once the tabs moved about');
       } catch (e) { fail(what, 'the bars moving threw: ' + String(e.message).split('\n')[0]); }
