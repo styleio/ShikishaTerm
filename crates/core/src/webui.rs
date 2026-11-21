@@ -698,6 +698,10 @@ const UNTANGLE_GROUP_MOST: usize = 6;
 /// person can go on working on
 const UNTANGLE_AT_ONCE: usize = 3;
 
+/// How many conflicted files are read, answered and written back before the
+/// next are read: as many as are asked about at once
+pub const UNTANGLE_BATCH: usize = UNTANGLE_AT_ONCE * UNTANGLE_GROUP_MOST;
+
 /// What an answer for a file comes to, checked: something there, with no
 /// marker left in it, ending the way the file ended
 fn untangled(name: &str, body: &str, text: &str) -> Result<String> {
@@ -830,7 +834,8 @@ fn untangle_together(files: &[(&str, &str)], ask: Asker) -> Vec<Option<String>> 
             return files.iter().map(|_| None).collect();
         }
     };
-    let parts = framed(&said, &seal, files.len());
+    let names: Vec<&str> = files.iter().map(|(n, _)| *n).collect();
+    let parts = framed(&said, &seal, &names);
     files
         .iter()
         .zip(parts)
@@ -847,8 +852,11 @@ fn seal_word() -> String {
 }
 
 /// The files an answer gives back between its lines, by number. One said
-/// twice, or not closed, is not taken: there is no telling which is meant
-fn framed(said: &str, seal: &str, count: usize) -> Vec<Option<String>> {
+/// twice, not closed, or said back under another file's path is not taken:
+/// there is no telling which is meant, and an answer in the wrong file is
+/// worse than a question asked again
+fn framed(said: &str, seal: &str, names: &[&str]) -> Vec<Option<String>> {
+    let count = names.len();
     let mut out: Vec<Option<String>> = vec![None; count];
     let mut seen = vec![0u8; count];
     let opens = format!("@@@ {seal} FILE ");
@@ -857,8 +865,19 @@ fn framed(said: &str, seal: &str, count: usize) -> Vec<Option<String>> {
         let bare = line.trim();
         if let Some(rest) = bare.strip_prefix(&opens).and_then(|r| r.strip_suffix("@@@")) {
             // "FILE 2 @@@", or "FILE 2: path @@@" said back the way it was given
-            let n: Option<usize> = rest.split([':', ' ']).next().and_then(|n| n.trim().parse().ok());
-            open = n.filter(|n| (1..=count).contains(n)).map(|n| (n - 1, Vec::new()));
+            let (num, path) = match rest.split_once(':') {
+                Some((num, path)) => (num, Some(path.trim())),
+                None => (rest, None),
+            };
+            let n = num.trim().parse::<usize>().ok().filter(|n| (1..=count).contains(n)).map(|n| n - 1);
+            open = match (n, path) {
+                (Some(n), Some(path)) if path != names[n] => {
+                    seen[n] = u8::MAX;
+                    None
+                }
+                (Some(n), _) => Some((n, Vec::new())),
+                (None, _) => None,
+            };
             continue;
         }
         if let Some((n, lines)) = open.as_mut() {
@@ -21612,12 +21631,15 @@ mod tests {
     fn an_answer_is_taken_only_between_its_own_lines_once() {
         let seal = "s1";
         let said = "chatter first\n@@@ s1 FILE 2 @@@\nb\n@@@ s1 END 2 @@@\n@@@ s1 FILE 1: a.rs @@@\na1\na2\n@@@ s1 END 1 @@@\n@@@ s1 FILE 3 @@@\nc\n@@@ s1 END 3 @@@\n@@@ s1 FILE 3 @@@\nc again\n@@@ s1 END 3 @@@\n@@@ s1 FILE 4 @@@\nnot closed\n@@@ other FILE 5 @@@\n";
-        let got = framed(said, seal, 5);
+        let got = framed(said, seal, &["a.rs", "b.rs", "c.rs", "d.rs", "e.rs"]);
         assert_eq!(got[0].as_deref(), Some("a1\na2"), "said back with its path, still taken");
         assert_eq!(got[1].as_deref(), Some("b"), "in another order, still in its place");
         assert_eq!(got[2], None, "said twice: there is no telling which is meant");
         assert_eq!(got[3], None, "never closed");
         assert_eq!(got[4], None, "another question's lines are not this one's");
+        // Numbered for one file and named for another: neither is taken
+        let crossed = "@@@ s1 FILE 1: b.rs @@@\nfor b\n@@@ s1 END 1 @@@\n@@@ s1 FILE 2: a.rs @@@\nfor a\n@@@ s1 END 2 @@@\n";
+        assert_eq!(framed(crossed, seal, &["a.rs", "b.rs"]), vec![None, None]);
     }
 
     #[test]
