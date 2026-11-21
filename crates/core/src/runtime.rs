@@ -17655,6 +17655,20 @@ impl crate::disk::Disk for FolderHere {
             Ok(b) => Ok(Some(b)),
         }
     }
+    fn read_all(&self, paths: &[String], most: usize) -> std::result::Result<Vec<Option<Vec<u8>>>, String> {
+        paths
+            .iter()
+            .map(|p| {
+                // Sized before it is read: one too big is left unread, not
+                // read whole to be thrown away
+                let at = self.at(p)?;
+                match std::fs::metadata(&at) {
+                    Ok(m) if m.is_file() && m.len() <= most as u64 => self.read(p).map(|b| b.filter(|b| b.len() <= most)),
+                    _ => Ok(None),
+                }
+            })
+            .collect()
+    }
     fn write(&self, path: &str, bytes: &[u8], fresh: bool) -> std::result::Result<(), String> {
         use std::io::Write as _;
         let at = self.at(path)?;
@@ -17675,6 +17689,9 @@ impl crate::disk::Disk for FolderHere {
         std::fs::create_dir_all(self.at(dir)?).map_err(|e| e.to_string())
     }
 }
+
+/// How many files one question to another machine reads at most
+const FAR_READS_TO_A_JOB: usize = 200;
 
 /// A working folder on another machine (`crate::disk`): each step a file job
 /// over the connection that machine already has
@@ -17726,6 +17743,18 @@ impl crate::disk::Disk for FolderThere {
                 _ => Ok(None),
             },
         }
+    }
+    fn read_all(&self, paths: &[String], most: usize) -> std::result::Result<Vec<Option<Vec<u8>>>, String> {
+        let mut out = Vec::with_capacity(paths.len());
+        // A few hundred to a question: each question has its own time to
+        // answer in, and a folder of thousands is not asked to fit in one
+        for some in paths.chunks(FAR_READS_TO_A_JOB) {
+            match self.run(ssh::FileJob::ReadAll { paths: some.to_vec(), most: most as u64 })? {
+                ssh::FileAnswer::Several(read) if read.len() == some.len() => out.extend(read),
+                _ => return Err(i18n::t("err.files.far_odd")),
+            }
+        }
+        Ok(out)
     }
     fn write(&self, path: &str, bytes: &[u8], fresh: bool) -> std::result::Result<(), String> {
         if fresh && self.there(path).is_some() {

@@ -300,6 +300,12 @@ pub enum FileJob {
     /// Read a file out, without writing it down anywhere. What a script wants
     /// when it is going to look at the contents rather than keep them
     Read { path: String },
+    /// Read several files out at once, over one file session rather than
+    /// one for each: what a panel that shows a whole folder of small files
+    /// (decision records) asks for. Each comes back in the place it was
+    /// asked in, `None` for one that is not there, is a folder, or is over
+    /// `most` bytes -- left unread, not cut short
+    ReadAll { paths: Vec<String>, most: u64 },
     /// Send a file there
     Put { from: std::path::PathBuf, to: String, overwrite: bool },
     /// Put these contents in a file there, whatever was in it. What the editor
@@ -324,6 +330,8 @@ pub enum FileAnswer {
     /// what was on the far end, and deciding it is not text is the caller's
     /// to make
     Bytes(Vec<u8>),
+    /// What a [`FileJob::ReadAll`] read, in the order it was asked
+    Several(Vec<Option<Vec<u8>>>),
 }
 
 /// What the connection thread is asked to do: each one a piece of work that
@@ -1220,6 +1228,7 @@ async fn do_file_job(spec: &Spec, job: FileJob, until: tokio::time::Instant) -> 
     })
     .await
     .map_err(|_| late(spec, true, wait_ms))??;
+    let sftp = Arc::new(sftp);
     let out = tokio::time::timeout_at(until, run_file_job(&sftp, job)).await;
     // Bounded too: a far end that stopped answering does not answer this
     // either, and the channel closes when the session is dropped regardless
@@ -1227,11 +1236,51 @@ async fn do_file_job(spec: &Spec, job: FileJob, until: tokio::time::Instant) -> 
     out.map_err(|_| late(spec, true, wait_ms))?
 }
 
+/// How many files a [`FileJob::ReadAll`] has asked for at once on the one
+/// session: each answer waits a round trip on a far server, and asking for
+/// the next before the last has come back is what makes a folder of a
+/// hundred records one wait rather than a hundred
+pub(crate) const READS_AT_ONCE: usize = 8;
+
+/// Several files read over one session, a few asked for at a time
+async fn read_all(
+    sftp: &Arc<russh_sftp::client::SftpSession>,
+    paths: Vec<String>,
+    most: u64,
+) -> Result<Vec<Option<Vec<u8>>>> {
+    let mut out: Vec<Option<Vec<u8>>> = vec![None; paths.len()];
+    // Dropped with the job when it runs out of time: the reads still going
+    // are stopped, not left running on a server that has stopped answering
+    let mut going = tokio::task::JoinSet::new();
+    let mut ask = paths.into_iter().enumerate();
+    loop {
+        while going.len() < READS_AT_ONCE {
+            let Some((i, path)) = ask.next() else { break };
+            let sftp = Arc::clone(sftp);
+            going.spawn(async move {
+                // Not there, or not to be looked at, is said as not there,
+                // the way a single read finds it; a file that is there and
+                // will not read says why
+                let Ok(m) = sftp.metadata(&path).await else { return (i, Ok(None)) };
+                if m.is_dir() || m.size.unwrap_or(0) > most {
+                    return (i, Ok(None));
+                }
+                (i, sftp.read(&path).await.map(|b| (b.len() as u64 <= most).then_some(b)).map_err(anyhow::Error::from))
+            });
+        }
+        let Some(done) = going.join_next().await else { break };
+        let (i, read) = done?;
+        out[i] = read?;
+    }
+    Ok(out)
+}
+
 async fn run_file_job(
-    sftp: &russh_sftp::client::SftpSession,
+    sftp: &Arc<russh_sftp::client::SftpSession>,
     job: FileJob,
 ) -> Result<FileAnswer> {
     match job {
+        FileJob::ReadAll { paths, most } => Ok(FileAnswer::Several(read_all(sftp, paths, most).await?)),
         FileJob::List { path } => {
             let mut out = Vec::new();
             for e in sftp.read_dir(&path).await? {

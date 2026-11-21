@@ -22,6 +22,7 @@
 #     SHIKISHA_LIVE_SFTP_USER=<user>
 #     SHIKISHA_LIVE_SFTP_KEY=<a copy of key, byte for byte>
 #     SHIKISHA_LIVE_SFTP_ROOT=<serve>
+#     SHIKISHA_LIVE_SFTP_FINGERPRINT=<fingerprint>
 #     cargo test -p shikisha-core live_sftp -- --ignored --test-threads=1
 #
 # Copy the key with `cp` onto /mnt/c/... rather than through a Windows text
@@ -90,6 +91,9 @@ sleep 1
 echo "user=$(whoami)"
 echo "serve=$D/serve"
 echo "key=$D/etc/client_key"
+# What SHIKISHA_LIVE_SFTP_FINGERPRINT is given, so the tests can trust the
+# server the way a person does: by the fingerprint they were shown
+echo "fingerprint=$(ssh-keygen -lf "$D/etc/host_key.pub" | awk '{print $2}')"
 if ss -ltn | grep -q "127.0.0.1:$PORT"; then
   echo "listening=yes"
 else

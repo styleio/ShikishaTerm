@@ -81,6 +81,10 @@ once it reaches its first tagged release.
   - A commit message longer than a command line can be is committed, and a
     folder on another machine with many conflicted files is asked about in a
     few commands, not one per file.
+  - The decisions (ADR) list of a project on another machine reads all its
+    records over one connection, a few at a time, instead of opening a new
+    one twice for each record: a hundred records took eleven seconds even on
+    the same machine, and now take a tenth of one.
 - **The time at the master password lock is no longer taken for the window
   not answering.** The window was timed from when it opened, but asked to
   answer only once the lock was open, so the seconds spent typing the
