@@ -64,23 +64,26 @@ pub fn templates(disk: &dyn Disk) -> Result<Vec<(String, String)>, String> {
     let mut walk: Vec<(String, usize)> = vec![(String::new(), 0)];
     while let Some((rel, depth)) = walk.pop() {
         let dir = if rel.is_empty() { TEMPLATE_DIR.to_string() } else { join(TEMPLATE_DIR, &rel) };
-        let Some(mut files) = disk.files(&dir)? else { continue };
+        let Some((mut files, folders)) = disk.entries(&dir)? else { continue };
         files.sort();
-        for f in files.into_iter().filter(|f| is_markdown(f)) {
-            if found.len() >= MOST {
-                break;
+        // The folder's templates read together: on another machine one
+        // question for all of them, not one each
+        // As many as there is still room for at a time, so one that is not
+        // a template leaves room for the next
+        let mut left = files.into_iter().filter(|f| is_markdown(f)).peekable();
+        while found.len() < MOST && left.peek().is_some() {
+            let wanted: Vec<String> = left.by_ref().take(MOST - found.len()).collect();
+            let paths: Vec<String> = wanted.iter().map(|f| join(TEMPLATE_DIR, &join(&rel, f))).collect();
+            for (f, read) in wanted.iter().zip(disk.read_all(&paths, TEMPLATE_ROOM)?) {
+                let name = match read {
+                    Some(b) if !b.contains(&0) => front_title(&crate::charset::read(&b).text).unwrap_or_else(|| title_of(f)),
+                    _ => continue,
+                };
+                found.push((join(&rel, f), name));
             }
-            let at = join(&rel, &f);
-            let name = match disk.read(&join(TEMPLATE_DIR, &at))? {
-                Some(b) if b.len() <= TEMPLATE_ROOM && !b.contains(&0) => {
-                    front_title(&crate::charset::read(&b).text).unwrap_or_else(|| title_of(&f))
-                }
-                _ => continue,
-            };
-            found.push((at, name));
         }
         if depth + 1 < DEPTH {
-            for d in disk.folders(&dir)? {
+            for d in folders {
                 if !d.starts_with('.') {
                     walk.push((join(&rel, &d), depth + 1));
                 }
@@ -205,6 +208,23 @@ mod tests {
 
     fn put(m: &Mem, path: &str, text: &str) {
         m.0.borrow_mut().insert(path.into(), text.as_bytes().to_vec());
+    }
+
+    /// One that is not a template (too large) takes no place from the next:
+    /// with room for one more, the good one after it is still found
+    #[test]
+    fn a_file_that_is_not_a_template_leaves_room_for_the_next() {
+        let m = Mem::default();
+        for i in 0..MOST - 1 {
+            put(&m, &format!("{TEMPLATE_DIR}/t{i:03}.md"), "x");
+        }
+        let big = "y".repeat(TEMPLATE_ROOM + 1);
+        put(&m, &format!("{TEMPLATE_DIR}/z/a.md"), &big);
+        put(&m, &format!("{TEMPLATE_DIR}/z/b.md"), "fine");
+        let got = templates(&m).unwrap();
+        assert_eq!(got.len(), MOST);
+        assert!(got.iter().any(|(at, _)| at == "z/b.md"), "the good one after a too-large one was not found");
+        assert!(!got.iter().any(|(at, _)| at == "z/a.md"));
     }
 
     #[test]

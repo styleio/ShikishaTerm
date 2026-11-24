@@ -29697,10 +29697,15 @@ function sftpSend(which) {
       ? {from: ljoin(from.at, r.name), to: rjoin(to.at, r.name), overwrite: over}
       : {from: rjoin(from.at, r.name), to: ljoin(to.at, r.name), overwrite: over},
   }));
+  // Several go to the template the folder button uses, which hands them over
+  // a batch to a connection: one job a file was one connection a file
+  const go = over => files.length > 1
+    ? sftpMoveFolder(which, files.map(r => r.name), over, true)
+    : sftpMove(act, build(over));
   // Nothing is replaced, so nothing can be lost and there is nothing to ask.
   // A question whose only answer is yes is one people stop reading
-  if (!clash.length) return sftpMove(act, build(false));
-  askSend(which, files, there, () => sftpMove(act, build(true)));
+  if (!clash.length) return go(false);
+  askSend(which, files, there, () => go(true));
 }
 
 // What a folder gets asked instead: the folders by name, and one sentence
@@ -29733,7 +29738,7 @@ function askFolders(which, picked) {
 // Handed over, and then this page is out of it until the template says how far
 // it has got. Nothing is queued here: what to do in what order is the
 // template's, which is the whole reason it is a template
-function sftpMoveFolder(which, names) {
+function sftpMoveFolder(which, names, over, filesOnly) {
   F.queue = []; F.moving = null; F.total = 0; F.done = 0;
   F.said = T["sftp.folders.doing"] || "";
   F.bad = false;
@@ -29743,8 +29748,13 @@ function sftpMoveFolder(which, names) {
     here: F.local.at,
     there: F.remote.at,
     names,
-    // The question above said what happens to a name that is already there
-    overwrite: true,
+    // The question above said what happens to a name that is already there;
+    // files with nothing of their name there were asked nothing, and replace
+    // nothing
+    overwrite: over !== false,
+    // Ticked as files: one that has become a folder since is not walked
+    // into without the question a folder gets
+    files_only: filesOnly === true,
   });
 }
 

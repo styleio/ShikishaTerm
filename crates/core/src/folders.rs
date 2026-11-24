@@ -955,7 +955,18 @@ struct Leaving {
     /// How long the last look took
     took: Duration,
     out: bool,
+    /// What the folder's git files were like at the last look: unchanged,
+    /// git is not started again until `LEFT_STALE` has passed
+    mark: Option<Vec<(Option<std::time::SystemTime>, u64)>>,
+    /// When git was last started for it
+    asked: Option<Instant>,
 }
+
+/// How long a folder whose git files have not changed goes without git being
+/// started for it. Two hundred idle worktrees asked every twenty seconds kept
+/// two `git status` running all the time; a file written without git being
+/// told is still seen within this long
+const LEFT_STALE: Duration = Duration::from_secs(600);
 
 /// What is left in each worktree nobody works in, kept up to date in the
 /// background: git is run on a thread of its own, never by the drawing
@@ -1005,12 +1016,24 @@ impl Leftovers {
             let known = Arc::clone(&self.known);
             std::thread::spawn(move || {
                 let began = Instant::now();
-                let left = crate::worktree::left_in(&p);
+                let mark = crate::repo::quiet_mark(&p);
+                let (last, asked) = match known.lock() {
+                    Ok(map) => map.get(&p).map(|e| (e.mark.clone(), e.asked)).unwrap_or_default(),
+                    Err(_) => (None, None),
+                };
+                // Nothing git keeps has moved since the last look: the last
+                // answer stands, and no git is started
+                let same = mark.is_some() && mark == last && asked.is_some_and(|a| a.elapsed() < LEFT_STALE);
+                let left = (!same).then(|| crate::worktree::left_in(&p));
                 if let Ok(mut map) = known.lock()
                     && let Some(e) = map.get_mut(&p)
                 {
-                    e.left = left;
-                    e.took = began.elapsed();
+                    if let Some(left) = left {
+                        e.left = left;
+                        e.took = began.elapsed();
+                        e.mark = mark;
+                        e.asked = Some(Instant::now());
+                    }
                     e.settled = Some(Instant::now());
                     e.out = false;
                 }
@@ -1042,11 +1065,7 @@ fn ref_at(git: &Path, full: &str) -> Option<String> {
         }
     }
     // Refs that have been packed away live in one file, one per line
-    let packed = std::fs::read_to_string(git.join("packed-refs")).ok()?;
-    packed.lines().find_map(|l| {
-        let (sha, name) = l.split_once(' ')?;
-        (name.trim() == full).then(|| sha.trim().to_string())
-    })
+    crate::repo::packed_ref(git, full)
 }
 
 /// How many commits lie on each side. The one place a git process is started.

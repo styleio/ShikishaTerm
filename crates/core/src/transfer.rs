@@ -49,6 +49,19 @@ pub fn grant_of(job: &FileJob) -> &'static str {
         FileJob::MakeDir { .. } => "sftp_mkdir",
         FileJob::Rename { .. } => "sftp_rename",
         FileJob::Remove { .. } => "sftp_rm",
+        // Whether batching is allowed at all. Each job in it is asked for
+        // under its own name as well (`grants_of`), so this is never a door
+        // past the others
+        FileJob::Each { .. } => "sftp_each",
+    }
+}
+
+/// Every name a job asks permission under: one, or for several jobs sent
+/// together, the batch's own and each one's. Every one has to be allowed
+pub fn grants_of(job: &FileJob) -> Vec<&'static str> {
+    match job {
+        FileJob::Each { jobs } => std::iter::once("sftp_each").chain(jobs.iter().map(grant_of)).collect(),
+        one => vec![grant_of(one)],
     }
 }
 
@@ -120,6 +133,17 @@ pub fn inside(job: FileJob, fences: &Fences) -> Result<FileJob> {
             FileJob::Put { from: here(from)?, to: there(&to)?, overwrite }
         }
         FileJob::Write { to, bytes } => FileJob::Write { to: there(&to)?, bytes },
+        // Each settled the same way, and all of them before any runs. Never
+        // one of these inside another
+        FileJob::Each { jobs } => FileJob::Each {
+            jobs: jobs
+                .into_iter()
+                .map(|j| match j {
+                    FileJob::Each { .. } => Err(anyhow::anyhow!(crate::i18n::t("err.files.far_odd"))),
+                    j => inside(j, fences),
+                })
+                .collect::<Result<_>>()?,
+        },
     })
 }
 
@@ -134,9 +158,9 @@ pub fn ready(
     caps: &crate::caps::Capabilities,
     who: Subject,
 ) -> Result<FileJob> {
-    let name = grant_of(&job);
+    let names = grants_of(&job);
     let job = inside(job, fences)?;
-    if !caps.allows(name, who) {
+    if let Some(name) = names.into_iter().find(|n| !caps.allows(n, who)) {
         bail!(crate::i18n::tp(
             "err.hooks.not_permitted",
             &[
@@ -174,6 +198,36 @@ mod tests {
 
     fn fences(there: &str) -> Fences {
         Fences { here: None, there: there.into() }
+    }
+
+    /// Several jobs sent together ask under each one's own name and are each
+    /// fenced; one that climbs out refuses all of them, and one inside another
+    /// is not taken
+    #[test]
+    fn jobs_sent_together_are_each_fenced_and_each_asked_for() {
+        let each = FileJob::Each {
+            jobs: vec![
+                FileJob::MakeDir { path: "dist".into() },
+                FileJob::Put { from: "a".into(), to: "dist/a".into(), overwrite: false },
+                FileJob::List { path: "dist".into() },
+            ],
+        };
+        assert_eq!(grants_of(&each), vec!["sftp_each", "sftp_mkdir", "sftp_put", "sftp_ls"]);
+        match inside(each, &fences("/srv/app")).unwrap() {
+            FileJob::Each { jobs } => match jobs.as_slice() {
+                [FileJob::MakeDir { path }, FileJob::Put { to, .. }, FileJob::List { path: listed }] => {
+                    assert_eq!(path, "/srv/app/dist");
+                    assert_eq!(to, "/srv/app/dist/a");
+                    assert_eq!(listed, "/srv/app/dist");
+                }
+                other => panic!("came back as {other:?}"),
+            },
+            other => panic!("came back as {other:?}"),
+        }
+        let out = FileJob::Each { jobs: vec![FileJob::Read { path: "a".into() }, FileJob::Read { path: "../../etc/passwd".into() }] };
+        assert!(inside(out, &fences("/srv/app")).is_err(), "one outside the fence went with the rest");
+        let nested = FileJob::Each { jobs: vec![FileJob::Each { jobs: vec![] }] };
+        assert!(inside(nested, &fences("/srv/app")).is_err(), "a batch inside a batch was taken");
     }
 
     #[test]

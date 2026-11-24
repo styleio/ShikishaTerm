@@ -120,7 +120,14 @@ pub struct Log {
     /// Goes up every time the conference changes, so a panel showing it
     /// knows to read it again
     pub confer_rev: u64,
+    /// When what is past its keeping was last let go
+    forgot: std::time::Instant,
 }
+
+/// How often a running app lets go of what is past its keeping. It was done
+/// only when the record opened, and an app left running for weeks kept
+/// every state change of every tab all that while
+const FORGET_EVERY: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
 
 impl Default for Log {
     fn default() -> Self {
@@ -137,7 +144,15 @@ impl Log {
                 (None, true)
             }
         };
-        Log { store, said_failure, seen: HashMap::new(), names: HashMap::new(), by_name: HashMap::new(), confer_rev: 0 }
+        Log {
+            store,
+            said_failure,
+            seen: HashMap::new(),
+            names: HashMap::new(),
+            by_name: HashMap::new(),
+            confer_rev: 0,
+            forgot: std::time::Instant::now(),
+        }
     }
 
     /// A record that lives only as long as this value (tests)
@@ -149,6 +164,7 @@ impl Log {
             names: HashMap::new(),
             by_name: HashMap::new(),
             confer_rev: 0,
+            forgot: std::time::Instant::now(),
         }
     }
 
@@ -183,6 +199,9 @@ impl Log {
     /// is taken to mean the tab called that now, and what a closed tab took
     /// part in still reads with the name it had
     pub fn roster<'a>(&mut self, tabs: impl IntoIterator<Item = (&'a str, &'a str, &'a str)>) {
+        if self.forgot.elapsed() >= FORGET_EVERY {
+            self.forget_old_now(db::now_ms());
+        }
         let at = db::now_ms();
         let mut current: HashMap<String, Option<String>> = HashMap::new();
         for (desk, name, uid) in tabs {
@@ -219,6 +238,15 @@ impl Log {
             self.said_failure = true;
             crate::append_hook_log(&format!("conversations: could not record {what} ({e:#}); later failures are not repeated"));
         }
+    }
+
+    /// Let go of what is past its keeping as of `now`. A tab's name let go
+    /// with it is written again on the next roster, so what was written is
+    /// forgotten here too
+    pub fn forget_old_now(&mut self, now: i64) {
+        self.forgot = std::time::Instant::now();
+        self.write("what is past its keeping", |s| s.forget_old(now));
+        self.names.clear();
     }
 
     /// Where a tab is: which conversation its CLI is on, which CLI, and

@@ -265,10 +265,10 @@ pub fn call(
         }
         // The branches the servers have, each with what bringing it in runs
         "git_remote_branches" => {
-            let rows: Vec<Value> = crate::git::remote_branches(dir)
+            let rows: Vec<Value> = crate::git::remote_branches_with_steps(dir)
                 .map_err(e)?
                 .into_iter()
-                .map(|name| json!({ "catch_up": crate::git::said(&crate::git::catch_up_steps(dir, &name)), "name": name }))
+                .map(|(name, steps)| json!({ "catch_up": crate::git::said(&steps), "name": name }))
                 .collect();
             json!(rows)
         }

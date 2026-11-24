@@ -156,21 +156,44 @@ fn newest_records(sessions: &std::path::Path) -> Vec<std::path::PathBuf> {
 }
 
 /// The last reading in a record, read from its end.
+///
+/// The line it was found on is kept with how long the record was and when it
+/// was written: asked every few seconds of records that mostly have not
+/// moved, a megabyte of each was read again to find the same line
 fn last_reading_in(path: &std::path::Path, now: i64) -> Option<Limits> {
     use std::io::{Read as _, Seek as _, SeekFrom};
-    let mut f = std::fs::File::open(path).ok()?;
-    let len = f.metadata().ok()?.len();
-    f.seek(SeekFrom::Start(len.saturating_sub(TAIL))).ok()?;
-    let mut bytes = Vec::new();
-    f.read_to_end(&mut bytes).ok()?;
-    // A cut through the middle of a character or a line is only ever at the
-    // front, and a line that does not read -- that one, or a reading of some
-    // other allowance -- gives way to the one before it
-    let text = String::from_utf8_lossy(&bytes);
-    text.lines()
-        .rev()
-        .filter(|l| l.contains("\"rate_limits\":{"))
-        .find_map(|l| parse_line(l, now))
+    type Kept = std::collections::HashMap<std::path::PathBuf, (u64, Option<std::time::SystemTime>, Vec<String>)>;
+    static KEPT: std::sync::Mutex<Option<Kept>> = std::sync::Mutex::new(None);
+    let meta = std::fs::metadata(path).ok()?;
+    let mark = (meta.len(), meta.modified().ok());
+    let kept = KEPT
+        .lock()
+        .ok()
+        .and_then(|k| k.as_ref()?.get(path).filter(|(len, at, _)| (*len, *at) == mark).map(|(_, _, lines)| lines.clone()));
+    let lines = match kept {
+        Some(lines) => lines,
+        None => {
+            let mut f = std::fs::File::open(path).ok()?;
+            f.seek(SeekFrom::Start(mark.0.saturating_sub(TAIL))).ok()?;
+            let mut bytes = Vec::new();
+            f.read_to_end(&mut bytes).ok()?;
+            // A cut through the middle of a character or a line is only ever
+            // at the front. Every reading in it, newest first: one that does
+            // not read -- that one, or a reading of some other allowance --
+            // gives way to the one before it
+            let text = String::from_utf8_lossy(&bytes);
+            let lines: Vec<String> = text.lines().rev().filter(|l| l.contains("\"rate_limits\":{")).map(str::to_string).collect();
+            if let Ok(mut k) = KEPT.lock() {
+                let k = k.get_or_insert_with(Default::default);
+                if k.len() >= RECORDS * 4 {
+                    k.clear();
+                }
+                k.insert(path.to_path_buf(), (mark.0, mark.1, lines.clone()));
+            }
+            lines
+        }
+    };
+    lines.iter().find_map(|l| parse_line(l, now))
 }
 
 /// One record line as a reading, at `now` (seconds since the epoch).

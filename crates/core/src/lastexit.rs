@@ -267,6 +267,52 @@ pub fn mark_running() {
     if let Ok(text) = serde_json::to_string(&mark) {
         let _ = crate::crypto::write_atomic(&mark_path(), &text);
     }
+    // Once a run, before this run writes to them: what the run before wrote
+    // is at their ends, and stays
+    for log in [crate::config::logs_dir().join("crash.log"), memory_notes_file()] {
+        keep_small(&log, ENDING_LOG_MOST, ENDING_LOG_KEPT);
+    }
+}
+
+/// How large `crash.log` and `memory.log` grow before they are cut back.
+/// Both are appended to for as long as the program is installed
+const ENDING_LOG_MOST: u64 = 1024 * 1024;
+
+/// How much of their ends is kept when they are cut back
+const ENDING_LOG_KEPT: u64 = 256 * 1024;
+
+/// How much of the end of either is read for the run that ended: its own
+/// entries are the last ones written
+const ENDING_LOG_READ: u64 = ENDING_LOG_MOST;
+
+/// A log larger than `most` cut back to the whole lines in its last `kept`
+/// bytes
+fn keep_small(path: &std::path::Path, most: u64, kept: u64) {
+    if !std::fs::metadata(path).is_ok_and(|m| m.len() > most) {
+        return;
+    }
+    if let Some(end) = end_of(path, kept) {
+        let _ = crate::crypto::write_atomic(path, &end);
+    }
+}
+
+/// The whole lines in the last `most` bytes of a file: a line the cut falls
+/// inside is left out
+fn end_of(path: &std::path::Path, most: u64) -> Option<String> {
+    use std::io::{Read as _, Seek as _};
+    let mut file = std::fs::File::open(path).ok()?;
+    let size = file.metadata().ok()?.len();
+    // From the byte before the cut, so a cut that falls between two lines
+    // loses neither: what is dropped is up to the first line end read
+    let from = size.saturating_sub(most).saturating_sub(1);
+    file.seek(std::io::SeekFrom::Start(from)).ok()?;
+    let mut bytes = Vec::new();
+    file.take(most + 1).read_to_end(&mut bytes).ok()?;
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    Some(match size > most {
+        true => text.split_once('\n').map_or(String::new(), |(_, rest)| rest.to_string()),
+        false => text,
+    })
 }
 
 /// Say that this run finished properly. Anything that leaves the mark behind
@@ -651,7 +697,7 @@ pub fn note_memory(what: &str) {
 
 /// The last few things the run that ended noted about the machine's memory
 fn memory_notes(mark: &Mark) -> Option<String> {
-    let text = std::fs::read_to_string(memory_notes_file()).ok()?;
+    let text = end_of(&memory_notes_file(), ENDING_LOG_READ)?;
     let tail = written_by(&text, mark);
     (!tail.is_empty()).then(|| tail.join("\n"))
 }
@@ -661,7 +707,7 @@ fn memory_notes(mark: &Mark) -> Option<String> {
 /// Only its own: an entry from another run, or one written before this
 /// format said whose it was, is somebody else's story
 fn crash_log_tail(mark: &Mark) -> Option<String> {
-    let text = std::fs::read_to_string(crate::config::logs_dir().join("crash.log")).ok()?;
+    let text = end_of(&crate::config::logs_dir().join("crash.log"), ENDING_LOG_READ)?;
     let tail = written_by(&text, mark);
     (!tail.is_empty()).then(|| tail.join("\n"))
 }
@@ -688,6 +734,26 @@ fn written_by<'a>(log: &'a str, mark: &Mark) -> Vec<&'a str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A log past its size is cut back to the whole lines at its end, and
+    /// only the end of one is read
+    #[test]
+    fn an_ending_log_is_kept_small_and_read_from_its_end() {
+        let dir = std::env::temp_dir().join(format!("shikisha-ending-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("crash.log");
+        let text: String = (0..1000).map(|i| format!("entry {i:04}\n")).collect();
+        std::fs::write(&log, &text).unwrap();
+        keep_small(&log, 20_000, 1_000);
+        assert_eq!(std::fs::read_to_string(&log).unwrap(), text, "under its size, left alone");
+        keep_small(&log, 5_000, 1_000);
+        let kept = std::fs::read_to_string(&log).unwrap();
+        assert!(kept.len() <= 1_000 && kept.ends_with("entry 0999\n"), "{kept}");
+        assert!(kept.starts_with("entry "), "a line cut in two is left out: {kept}");
+        assert_eq!(end_of(&log, 22).as_deref(), Some("entry 0998\nentry 0999\n"));
+        assert_eq!(end_of(&log, 1_000_000).as_deref(), Some(kept.as_str()), "the whole of a small one");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn ended(settled: bool) -> Mark {
         Mark { pid: 7, version: String::new(), started: 0, settled }

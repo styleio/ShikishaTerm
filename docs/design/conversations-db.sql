@@ -1,5 +1,5 @@
 -- The record of conversations (conversations.db), as the steps in
--- crates/core/src/convo/migrations/ leave it at version 5.
+-- crates/core/src/convo/migrations/ leave it at version 6.
 --
 -- Written by a test; do not edit. Change the tables by adding a step (see
 -- conversations-db.md), then write this again:
@@ -165,6 +165,8 @@ CREATE TABLE threads (
 CREATE INDEX asks_by_desk ON asks (desk, asked_at);
 
 CREATE INDEX asks_by_thread ON asks (thread_id);
+
+CREATE INDEX conversations_by_folder ON conversations (observed_cwd, tab) WHERE observed_cwd IS NOT NULL;
 
 CREATE INDEX conversations_by_tab ON conversations (tab, first_at);
 

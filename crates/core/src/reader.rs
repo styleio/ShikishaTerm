@@ -451,17 +451,52 @@ fn kind_from_json(v: &Value) -> FailKind {
 /// no further than [`TURN_READ_MAX`] bytes: a turn is found near its start,
 /// and a record that has grown past that since is read as "not known", which
 /// leaves the screen to judge
+///
+/// Asked again about the same turn while it goes on -- every few seconds by a
+/// tab waiting on another -- it reads on from where the last look stopped,
+/// not from the turn's start: a long turn is megabytes of tool output
 pub fn turn_end_after(path: &Path, from: u64) -> Option<TurnEnd> {
     let mut file = File::open(path).ok()?;
     let len = file.metadata().ok()?.len();
-    turn_end_by(len, from, from, &mut |start, n| {
+    let key = (path.to_path_buf(), from);
+    let resume = TURN_LOOKS
+        .lock()
+        .ok()
+        .and_then(|m| m.get(&key).copied())
+        // A record shorter than it was then was written again
+        .filter(|(_, was)| len >= *was)
+        .map_or(from, |(at, _)| at);
+    let (end, to) = turn_end_by(len, from, resume, &mut |start, n| {
         let mut buf = vec![0u8; n];
         file.seek(SeekFrom::Start(start))?;
         file.read_exact(&mut buf)?;
         Ok(buf)
-    })
-    .0
+    });
+    if let Ok(mut m) = TURN_LOOKS.lock() {
+        match end {
+            Some(_) => {
+                m.remove(&key);
+            }
+            None => {
+                if m.len() >= TURN_LOOKS_KEPT {
+                    m.clear();
+                }
+                m.insert(key, (to, len));
+            }
+        }
+    }
+    end
 }
+
+/// Where the last look at a turn still going on stopped, by record and the
+/// turn's start: that place, and how long the record was then
+static TURN_LOOKS: std::sync::LazyLock<std::sync::Mutex<TurnLooks>> = std::sync::LazyLock::new(Default::default);
+
+/// (record, turn's start) -> (where the look stopped, the record's length then)
+type TurnLooks = std::collections::HashMap<(std::path::PathBuf, u64), (u64, u64)>;
+
+/// How many turns' places are kept: one for each tab being waited on
+const TURN_LOOKS_KEPT: usize = 256;
 
 /// [`turn_end_after`] over a record `len` long read a piece at a time by
 /// `read_at`, starting at `resume`: the start of a line at or after `from`
@@ -1039,6 +1074,7 @@ impl Record {
     /// so it is for a thread of its own
     pub fn turn_end_after(&self, from: u64, resume: u64) -> (Option<TurnEnd>, u64) {
         match self {
+            // Read on from where it last stopped, which this side keeps
             Record::Here { glob, id } => match crate::sessionfind::locate(glob, id) {
                 Some(path) => (turn_end_after(&path, from), from),
                 None => (None, from),
@@ -1192,6 +1228,25 @@ pub fn locate_far(at: &crate::elsewhere::Elsewhere, glob: &str, id: &str) -> Opt
     find_far(at, glob, id).ok().flatten()
 }
 
+/// Where records on other machines were found, and when: a record stays
+/// where it is, and each tab there is looked at every few seconds -- each look
+/// asking the machine where the record was first was a round trip of its own
+static FAR_FOUND: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, (String, std::time::Instant)>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// How long a record's place on another machine is trusted before it is
+/// looked for again
+const FAR_FOUND_FOR: std::time::Duration = std::time::Duration::from_secs(120);
+
+fn far_found_key(at: &crate::elsewhere::Elsewhere, glob: &str, id: &str) -> String {
+    format!("{}\u{1f}{glob}\u{1f}{id}", at.machine_key())
+}
+
+/// A record is not where it was last found: looked for again next time
+fn far_lost(path: &str) {
+    FAR_FOUND.lock().unwrap_or_else(|e| e.into_inner()).retain(|_, (p, _)| p != path);
+}
+
 /// [`locate_far`], telling a record that is not there (`Ok(None)`) from one
 /// that could not be looked for
 fn find_far(at: &crate::elsewhere::Elsewhere, glob: &str, id: &str) -> Result<Option<String>, String> {
@@ -1207,17 +1262,46 @@ fn find_far(at: &crate::elsewhere::Elsewhere, glob: &str, id: &str) -> Result<Op
     if !safe(&rest) {
         return Err(format!("{rest:?} is not a name that can be looked for"));
     }
+    let key = far_found_key(at, glob, id);
+    if let Some((path, _)) = FAR_FOUND.lock().unwrap_or_else(|e| e.into_inner()).get(&key).filter(|(_, when)| when.elapsed() < FAR_FOUND_FOR) {
+        return Ok(Some(path.clone()));
+    }
     let ran = crate::elsewhere::exec(at, &format!("cd \"$HOME\" && ls -1d {rest} 2>/dev/null | head -n 1 | sed \"s#^#$HOME/#\""), 30_000)
         .map_err(|e| format!("{e:#}"))?;
-    Ok(ran.out.lines().next().map(|l| l.trim().to_string()).filter(|p| !p.is_empty()))
+    let found = ran.out.lines().next().map(|l| l.trim().to_string()).filter(|p| !p.is_empty());
+    if let Some(path) = &found {
+        let mut kept = FAR_FOUND.lock().unwrap_or_else(|e| e.into_inner());
+        if kept.len() >= FAR_FOUND_KEPT {
+            kept.clear();
+        }
+        kept.insert(key, (path.clone(), std::time::Instant::now()));
+    }
+    Ok(found)
 }
+
+/// How many records' places are kept
+const FAR_FOUND_KEPT: usize = 256;
 
 /// [`Standing`] of a record on another machine without a bridge: its length,
 /// and its end fetched in one piece
 fn standing_far(at: &crate::elsewhere::Elsewhere, path: &str) -> Option<Standing> {
-    let (len, mut read_at) = far_pieces(at, path).ok()?;
-    let start = len.saturating_sub(TAIL_READ);
-    let tail = read_at(start, (len - start) as usize).ok()?;
+    use base64::Engine as _;
+    // Measured and its end fetched in one command there, from the one
+    // length: this is asked of every tab there every few seconds
+    let quoted = crate::worktree::for_a_shell(&[path.to_string()]);
+    let line = format!(
+        "n=$({}) && s=$(( n > {TAIL_READ} ? n - {TAIL_READ} : 0 )) && echo \"$n\" && tail -c +$((s + 1)) -- {quoted} | head -c $((n - s)) | {}",
+        crate::elsewhere::sh::size(&quoted),
+        crate::elsewhere::sh::BASE64
+    );
+    let Some(ran) = crate::elsewhere::exec(at, &line, 60_000).ok().filter(|r| r.ok()) else {
+        far_lost(path);
+        return None;
+    };
+    let mut lines = ran.out.splitn(2, '\n');
+    let len: u64 = lines.next()?.trim().parse().ok()?;
+    let tail = base64::engine::general_purpose::STANDARD.decode(lines.next().unwrap_or_default().trim()).ok()?;
+    let start = len.saturating_sub(tail.len() as u64);
     Some(standing_in(len, &tail, start > 0))
 }
 
@@ -1233,13 +1317,14 @@ fn far_pieces<'a>(at: &'a crate::elsewhere::Elsewhere, path: &str) -> std::io::R
     use base64::Engine as _;
     let err = |e: anyhow::Error| std::io::Error::other(format!("{e:#}"));
     let quoted = crate::worktree::for_a_shell(&[path.to_string()]);
-    let len: u64 = crate::elsewhere::exec(at, &crate::elsewhere::sh::size(&quoted), 30_000)
-        .map_err(err)?
-        .out
-        .trim()
-        .parse()
-        .map_err(|_| std::io::Error::new(std::io::ErrorKind::NotFound, "no such record"))?;
-    Ok((len, Box::new(move |start: u64, n: usize| {
+    let len: u64 = match crate::elsewhere::exec(at, &crate::elsewhere::sh::size(&quoted), 30_000).map_err(err)?.out.trim().parse() {
+        Ok(n) => n,
+        Err(_) => {
+            far_lost(path);
+            return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "no such record"));
+        }
+    };
+    let fetch = move |start: u64, n: usize| -> std::io::Result<Vec<u8>> {
         let ran = crate::elsewhere::exec(
             at,
             &format!("tail -c +{} -- {quoted} | head -c {n} | {}", start + 1, crate::elsewhere::sh::BASE64),
@@ -1249,7 +1334,47 @@ fn far_pieces<'a>(at: &'a crate::elsewhere::Elsewhere, path: &str) -> std::io::R
         base64::engine::general_purpose::STANDARD
             .decode(ran.out.trim())
             .map_err(|e| std::io::Error::other(e.to_string()))
-    })))
+    };
+    Ok((len, windowed(len, fetch)))
+}
+
+/// How much of a record on another machine is fetched at a time: the readers
+/// ask for a piece of a quarter of a megabyte at a time, which there was a
+/// command each
+const FAR_WINDOW: usize = 2 * 1024 * 1024;
+
+/// The readers' pieces, served out of a larger window fetched once: the next
+/// piece a reader asks for is beside the last, so a window is fetched in the
+/// direction it is going -- forward after a piece further on, back otherwise
+fn windowed<'a>(len: u64, mut fetch: impl FnMut(u64, usize) -> std::io::Result<Vec<u8>> + 'a) -> Pieces<'a> {
+    let mut held: Option<(u64, Vec<u8>)> = None;
+    let mut last: Option<u64> = None;
+    Box::new(move |start: u64, n: usize| {
+        let end = start.saturating_add(n as u64).min(len);
+        if let Some((at, bytes)) = &held
+            && start >= *at
+            && end <= *at + bytes.len() as u64
+        {
+            last = Some(start);
+            return Ok(bytes[(start - at) as usize..(end - at) as usize].to_vec());
+        }
+        let forward = last.is_some_and(|l| start > l);
+        last = Some(start);
+        let want = (FAR_WINDOW as u64).max(end - start.min(end));
+        let from = match forward {
+            true => start,
+            false => end.saturating_sub(want).min(start),
+        };
+        let to = from.saturating_add(want).min(len).max(end);
+        let bytes = fetch(from, (to - from) as usize)?;
+        let got_end = from + bytes.len() as u64;
+        let out = match start >= from && start <= got_end {
+            true => bytes[(start - from) as usize..(end.min(got_end) - from) as usize].to_vec(),
+            false => Vec::new(),
+        };
+        held = Some((from, bytes));
+        Ok(out)
+    })
 }
 
 /// A way to fetch a piece of a record (from, how many bytes)
@@ -1948,6 +2073,43 @@ pub fn find_ascii_blind(hay: &[u8], needle: &[u8], from: usize) -> Option<usize>
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    /// A record elsewhere is fetched a large window at a time, in the
+    /// direction the reader is going, and each piece asked for is exactly the
+    /// bytes it would be read alone
+    #[test]
+    fn far_pieces_come_out_of_a_window_fetched_once() {
+        let record: Vec<u8> = (0..(5 * FAR_WINDOW as u64)).map(|i| (i % 251) as u8).collect();
+        let len = record.len() as u64;
+        let fetched = std::cell::Cell::new(0);
+        let fetch = |from: u64, n: usize| -> std::io::Result<Vec<u8>> {
+            fetched.set(fetched.get() + 1);
+            let end = (from as usize + n).min(record.len());
+            Ok(record[from as usize..end].to_vec())
+        };
+        let mut pieces = windowed(len, fetch);
+        let piece = 256 * 1024;
+        // Back from the end, the way a page of a conversation is read
+        let mut at = len;
+        while at > len - 3 * FAR_WINDOW as u64 {
+            let from = at.saturating_sub(piece as u64);
+            let got = pieces(from, (at - from) as usize).unwrap();
+            assert_eq!(got, record[from as usize..at as usize], "the piece at {from} is not the record's");
+            at = from;
+        }
+        assert!(fetched.get() <= 4, "fetched {} times for three windows", fetched.get());
+        // Then forward from the start
+        let before = fetched.get();
+        let mut from = 0u64;
+        while from < 2 * FAR_WINDOW as u64 {
+            let got = pieces(from, piece).unwrap();
+            assert_eq!(got, record[from as usize..from as usize + piece]);
+            from += piece as u64;
+        }
+        assert!(fetched.get() - before <= 3, "fetched {} times for two windows", fetched.get() - before);
+        // Past the end is what is there, as one fetch would say
+        assert!(pieces(len, 10).unwrap().is_empty());
+    }
 
     fn tmp(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join("shikisha-reader");
@@ -2719,6 +2881,20 @@ mod tests {
         let shorter = format!("{began}\n{failed}\n");
         let (end, _) = turn_end_by(shorter.len() as u64, 0, to, &mut read(&shorter));
         assert_eq!(end.map(|e| e.mark), Some(TurnMark::Failed), "the end before the old stopping place is found");
+        // A record on this PC asked about again keeps its place too
+        let f = std::env::temp_dir().join(format!("reader-going-{}.jsonl", std::process::id()));
+        std::fs::write(&f, &going).unwrap();
+        assert_eq!(turn_end_after(&f, 0), None);
+        let kept = TURN_LOOKS.lock().unwrap().get(&(f.clone(), 0)).copied();
+        assert_eq!(kept, Some((going.len() as u64, going.len() as u64)), "where the look stopped is kept");
+        std::fs::write(&f, &ended).unwrap();
+        assert_eq!(turn_end_after(&f, 0).map(|e| (e.mark, e.at)), Some((TurnMark::Failed, going.len() as u64)));
+        assert!(!TURN_LOOKS.lock().unwrap().contains_key(&(f.clone(), 0)), "an ended turn's place is let go");
+        std::fs::write(&f, &going).unwrap();
+        assert_eq!(turn_end_after(&f, 0), None);
+        std::fs::write(&f, &shorter).unwrap();
+        assert_eq!(turn_end_after(&f, 0).map(|e| e.mark), Some(TurnMark::Failed), "written again shorter, read anew");
+        let _ = std::fs::remove_file(&f);
         // A Codex at its usage limit says so in the kind of its error
         let limited = r#"{"type":"event_msg","payload":{"type":"task_complete","error":{"message":"You've hit your usage limit.","codex_error_info":"usage_limit_exceeded"}}}"#;
         assert_eq!(

@@ -3281,6 +3281,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // Where the window's drawing stood when the phone's copy of it was taken
     // (`Shell::drawn_gen`)
     let mut remote_drawn_gen: Option<u64> = None;
+    // Each tab's screen as the phone's copy has it, with what it was made
+    // from and when: made again when the tab printed, scrolled or was
+    // resized, and at least every PHONE_SCREEN_AGAIN -- not for every tab
+    // five times a second
+    let mut phone_screens: std::collections::HashMap<String, (PhoneScreenMark, Instant, String)> = std::collections::HashMap::new();
     let mut last_remote_rows: Vec<String> = Vec::new();
     let mut last_remote_push = Instant::now() - Duration::from_secs(1);
     // The panes, for the viewers from afar that lay the board out in them
@@ -5454,15 +5459,25 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             name: t.title.clone(),
                             state: t.state.label().to_string(),
                             locked: t.locked,
-                            output: trim_for_phone(
-                                &t.last_response.clone().unwrap_or_default(),
-                                200,
-                            ),
+                            // Read where it is: the whole answer is not
+                            // copied to keep its last lines
+                            output: trim_for_phone(t.last_response.as_deref().unwrap_or_default(), 200),
                             // Carries appearance, so read line by line rather than via contents()
-                            screen: trim_for_phone(
-                                &tab::visible_text(t.parser.lock().unwrap_or_else(|e| e.into_inner()).screen()),
-                                200,
-                            ),
+                            screen: {
+                                let p = t.parser.lock().unwrap_or_else(|e| e.into_inner());
+                                let mark: PhoneScreenMark = (t.output_count(), p.screen().scrollback(), p.screen().size());
+                                // The count goes up as output is read, a moment
+                                // before the screen takes it in: a copy made in
+                                // between is made again within the second
+                                match phone_screens.get(t.uid()) {
+                                    Some((was, at, text)) if *was == mark && at.elapsed() < PHONE_SCREEN_AGAIN => text.clone(),
+                                    _ => {
+                                        let text = trim_for_phone(&tab::visible_text(p.screen()), 200);
+                                        phone_screens.insert(t.uid().to_string(), (mark, Instant::now(), text.clone()));
+                                        text
+                                    }
+                                }
+                            },
                             cwd: tab_cwd_abs(t),
                             machine: t.machine(),
                             remote_cwd: t.remote_cwd().unwrap_or_default().to_string(),
@@ -5495,6 +5510,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     }
                 }
                 *held = snap;
+                // A tab that has gone takes its copy with it
+                if phone_screens.len() > tabs.len() {
+                    phone_screens.retain(|uid, _| tabs.iter().any(|t| t.uid() == uid));
+                }
             }
 
             // The AIs of the servers this desk has folders on, asked ahead of
@@ -10190,7 +10209,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     engine = crate::hooks::HookEngine::with_caps(crate::hooks::Caps::clone(&caps)).ok();
                 }
                 if let Some(eng) = engine.as_mut() {
-                    for at in due {
+                    let room = NAMING_AT_ONCE.saturating_sub(label_jobs.len() + port_jobs.len());
+                    for at in due.into_iter().take(room) {
                         let Some(f) = desk.folder_at(&at) else { continue };
                         let asks = heard.take(&at);
                         // What it is called and said to be now, when that was
@@ -10292,7 +10312,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             });
                         }
                     }
-                    if asked.is_empty() || settling {
+                    // Asked later, as the asks out now come back
+                    if asked.is_empty() || settling || label_jobs.len() + port_jobs.len() >= NAMING_AT_ONCE {
                         continue;
                     }
                     if engine.is_none() {
@@ -10491,10 +10512,16 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     };
                     // The words for the AI, from the project's prompt, with
                     // what is handed in last: nothing from GitHub is taken
-                    // for a word to fill in
-                    let words = |items: &[serde_json::Value], lead: &str| {
+                    // for a word to fill in. As many of the items as fit
+                    // (`handed::prompt_items`), and how many those are:
+                    // only they are remembered as handed
+                    let words = |items: &[serde_json::Value], lead: &str| -> (String, usize) {
                         let git = desk.git_of(&at);
-                        let shown = if review { crate::handed::for_prompt(items) } else { items.to_vec() };
+                        let (mut listed, left_out) = crate::handed::prompt_items(items, review);
+                        if left_out > 0 {
+                            listed.push_str("\n\n");
+                            listed.push_str(&i18n::tp("ai.items.left_out", &[("n", &left_out.to_string()), ("url", &url)]));
+                        }
                         let body = match review {
                             true => git.review_prompt(),
                             false => git.ci_prompt(),
@@ -10512,8 +10539,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             .replace("{language}", &i18n::t("lang.self"))
                             .replace("{url}", &url)
                             .replace("{title}", &title)
-                            .replace(if review { "{comments}" } else { "{checks}" }, &serde_json::to_string_pretty(&shown).unwrap_or_default());
-                        if lead.is_empty() { body } else { format!("{lead}\n\n{body}") }
+                            .replace(if review { "{comments}" } else { "{checks}" }, &listed);
+                        let text = if lead.is_empty() { body } else { format!("{lead}\n\n{body}") };
+                        (text, items.len() - left_out)
                     };
                     // Remembered as handed once the words are in their tab
                     let note = |items: &[serde_json::Value]| match review {
@@ -10533,10 +10561,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         // it is busy -- as more of the same work
                         Some((tab_title, name)) => {
                             let lead = i18n::t(if review { "ai.review.more" } else { "ai.ci.more" });
-                            match follow_up_in_tab(&label, &at, &name, &tab_title, words(&fresh, &lead), note(&fresh), &tabs, &mut pending_quicks) {
+                            let (text, shown) = words(&fresh, &lead);
+                            match follow_up_in_tab(&label, &at, &name, &tab_title, text, note(&fresh[..shown]), &tabs, &mut pending_quicks) {
                                 Some(busy) => {
                                     reveal = Some((name, Instant::now() + Duration::from_secs(20)));
-                                    serde_json::json!({"ok": true, "data": {"title": tab_title, "state": if busy { "queued" } else { "sent" }, "n": fresh.len(), "what": what}})
+                                    serde_json::json!({"ok": true, "data": {"title": tab_title, "state": if busy { "queued" } else { "sent" }, "n": shown, "what": what}})
                                 }
                                 None => serde_json::json!({"ok": false, "error": i18n::tp("msg.quick.open_failed", &[("label", &label)])}),
                             }
@@ -10549,15 +10578,15 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             let again = fresh.is_empty();
                             let items = if again { &all } else { &fresh };
                             let lead = if again { i18n::t(if review { "ai.review.again" } else { "ai.ci.again" }) } else { String::new() };
-                            let text = words(items, &lead);
+                            let (text, shown) = words(items, &lead);
                             match hand_to_ai_tab(desk, &at, &label, choice, &tabs, &mut pending_quicks, &mut reveal, || text) {
                                 Ok(tab) => {
                                     // The words just queued for the new tab
                                     if let Some(p) = pending_quicks.last_mut().filter(|p| p.label == label) {
-                                        p.handed = Some(note(items));
+                                        p.handed = Some(note(&items[..shown]));
                                     }
                                     watcher.poke();
-                                    serde_json::json!({"ok": true, "data": {"title": tab["title"], "state": if again { "again" } else { "opened" }, "n": items.len(), "what": what}})
+                                    serde_json::json!({"ok": true, "data": {"title": tab["title"], "state": if again { "again" } else { "opened" }, "n": shown, "what": what}})
                                 }
                                 Err(why) => serde_json::json!({"ok": false, "error": why}),
                             }
@@ -10848,8 +10877,19 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     let label = label.to_string();
                     let read = move |dir: &std::path::Path| {
                         let against = format!("origin/{into}");
-                        let commits = crate::git::run(dir, &["log", "--no-color", "--format=- %s", &format!("{against}..HEAD")])
+                        // A branch far from its base -- a long-lived one, or
+                        // a base not fetched for months -- has thousands of
+                        // commits. The newest are listed, and how many more
+                        let most = format!("-n{}", PR_COMMITS_MOST + 1);
+                        let listed = crate::git::run(dir, &["log", "--no-color", &most, "--format=- %s", &format!("{against}..HEAD")])
                             .unwrap_or_default();
+                        let total = match listed.lines().count() > PR_COMMITS_MOST {
+                            true => crate::git::run(dir, &["rev-list", "--count", &format!("{against}..HEAD")])
+                                .ok()
+                                .and_then(|n| n.trim().parse().ok()),
+                            false => None,
+                        };
+                        let commits = commits_up_to(&listed, PR_COMMITS_MOST, total);
                         let mut change = crate::git::run(dir, &["diff", "--no-color", &format!("{against}...HEAD")]).unwrap_or_default();
                         // A change can be a megabyte. The shape of it is in the first pages
                         if change.len() > 12000 {
@@ -17698,6 +17738,13 @@ impl FolderHere {
 }
 
 impl crate::disk::Disk for FolderHere {
+    fn size(&self, path: &str) -> std::result::Result<Option<u64>, String> {
+        match std::fs::metadata(self.at(path)?) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.to_string()),
+            Ok(m) => Ok(m.is_file().then_some(m.len())),
+        }
+    }
     fn files(&self, dir: &str) -> std::result::Result<Option<Vec<String>>, String> {
         match std::fs::read_dir(self.at(dir)?) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -17791,6 +17838,27 @@ impl FolderThere {
 }
 
 impl crate::disk::Disk for FolderThere {
+    // Asked of a file that was listed a moment ago: a question that fails
+    // is the machine not answering, and said, never taken for the file gone
+    fn size(&self, path: &str) -> std::result::Result<Option<u64>, String> {
+        match self.run(ssh::FileJob::Stat { path: path.to_string() })? {
+            ssh::FileAnswer::One(e) if !e.dir => Ok(Some(e.size)),
+            _ => Ok(None),
+        }
+    }
+    // One listing, asked straight away: one that is not a folder there
+    // fails, and that is no folder
+    fn entries(&self, dir: &str) -> std::result::Result<Option<crate::disk::Entries>, String> {
+        match self.run(ssh::FileJob::List { path: dir.to_string() }) {
+            Ok(ssh::FileAnswer::Listing(rows)) => {
+                let (dirs, files): (Vec<_>, Vec<_>) = rows.into_iter().filter(|r| r.name != "." && r.name != "..").partition(|r| r.dir);
+                Ok(Some((files.into_iter().map(|r| r.name).collect(), dirs.into_iter().map(|r| r.name).collect())))
+            }
+            Ok(_) => Ok(Some((Vec::new(), Vec::new()))),
+            Err(_) if self.there(dir).is_none_or(|e| !e.dir) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
     fn files(&self, dir: &str) -> std::result::Result<Option<Vec<String>>, String> {
         if self.there(dir).is_none_or(|e| !e.dir) {
             return Ok(None);
@@ -18567,6 +18635,11 @@ fn far_stamp_polls(
     polls: &mut std::collections::HashMap<String, FarPoll>,
     tx: &std::sync::mpsc::Sender<FarFiles>,
 ) {
+    // The editors due, a machine at a time: every file open there is asked
+    // about in one question, not one each
+    // (the editor, the file as it shows it, the file on the machine)
+    type Asked = (String, String, String);
+    let mut due: Vec<(crate::elsewhere::Elsewhere, Vec<Asked>)> = Vec::new();
     for e in editors {
         let (Some(at), Some(dir), Some(rel), None) = (&e.at, &e.dir, &e.showing, &e.diff) else { continue };
         if polls.get(&e.key).is_some_and(|p| p.busy || p.at.elapsed() < FAR_STAMP_EVERY) {
@@ -18584,17 +18657,32 @@ fn far_stamp_polls(
             continue;
         }
         let Some(path) = crate::transfer::under_remote(&crate::desk::far_path(dir), rel) else { continue };
-        let asked = Instant::now();
-        polls.insert(e.key.clone(), FarPoll { at: asked, busy: true });
-        let (at, key, rel, tx) = (at.clone(), e.key.clone(), rel.clone(), tx.clone());
+        polls.insert(e.key.clone(), FarPoll { at: Instant::now(), busy: true });
+        let one = (e.key.clone(), rel.clone(), path);
+        match due.iter_mut().find(|(m, _)| m == at) {
+            Some((_, list)) => list.push(one),
+            None => due.push((at.clone(), vec![one])),
+        }
+    }
+    for (at, list) in due {
+        let tx = tx.clone();
         std::thread::spawn(move || {
-            let stamp = match crate::elsewhere::files(&at, ssh::FileJob::Stat { path }, SFTP_WAIT_MS) {
-                Ok(ssh::FileAnswer::One(e)) => Some(crate::files::stamp_from(e.modified, e.size)),
-                // Gone, or not answering: nothing to follow, and nothing said.
-                // The save is what finds out, and says so
-                _ => None,
+            let asked = Instant::now();
+            let jobs = list.iter().map(|(_, _, path)| ssh::FileJob::Stat { path: path.clone() }).collect();
+            let said = match crate::elsewhere::files(&at, ssh::FileJob::Each { jobs }, SFTP_WAIT_MS) {
+                Ok(ssh::FileAnswer::Each(said)) if said.len() == list.len() => said,
+                _ => Vec::new(),
             };
-            let _ = tx.send(FarFiles { key, path: rel, js: None, stamp, asked, polled: true });
+            let mut said = said.into_iter();
+            for (key, rel, _) in list {
+                let stamp = match said.next() {
+                    Some(Ok(ssh::FileAnswer::One(e))) => Some(crate::files::stamp_from(e.modified, e.size)),
+                    // Gone, or not answering: nothing to follow, and nothing
+                    // said. The save is what finds out, and says so
+                    _ => None,
+                };
+                let _ = tx.send(FarFiles { key, path: rel, js: None, stamp, asked, polled: true });
+            }
         });
     }
 }
@@ -19135,27 +19223,42 @@ fn files_there(
             let Some(kind) = picture_kind(&path) else {
                 return fail(i18n::t("err.files.not_picture"));
             };
-            let (look, read) = match (
+            // Sized and read in one session there: a document of a hundred
+            // screenshots was two hundred sessions. Only one that does not
+            // come back is looked at again, to say why
+            let (read, look, alone) = match (
+                ready(ssh::FileJob::ReadAll { paths: vec![path.clone()], most: PICTURE_LIMIT }),
                 ready(ssh::FileJob::Stat { path: path.clone() }),
                 ready(ssh::FileJob::Read { path: path.clone() }),
             ) {
-                (Ok(l), Ok(r)) => (l, r),
-                (Err(e), _) | (_, Err(e)) => return fail(format!("{e}")),
+                (Ok(r), Ok(l), Ok(a)) => (r, l, a),
+                (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => return fail(format!("{e}")),
             };
             let panel = panel.clone();
             std::thread::spawn(move || {
-                let js = match crate::elsewhere::files(&at, look, SFTP_WAIT_MS) {
-                    Ok(ssh::FileAnswer::One(e)) if e.size > PICTURE_LIMIT => {
-                        let mb = (PICTURE_LIMIT / (1024 * 1024)).to_string();
-                        failed("image", &panel, i18n::tp("err.files.too_big", &[("mb", &mb)]))
+                let js = match crate::elsewhere::files(&at, read, SFTP_WAIT_MS) {
+                    Ok(ssh::FileAnswer::Several(mut got)) if matches!(got.first(), Some(Some(_))) => {
+                        let bytes = got.swap_remove(0).unwrap_or_default();
+                        serde_json::from_str(&picture_reply(&panel, &path, kind, &bytes)).unwrap_or_default()
                     }
-                    Ok(_) => match crate::elsewhere::files(&at, read, SFTP_WAIT_MS) {
-                        Ok(ssh::FileAnswer::Bytes(bytes)) => {
-                            serde_json::from_str(&picture_reply(&panel, &path, kind, &bytes)).unwrap_or_default()
+                    Ok(ssh::FileAnswer::Several(_)) => match crate::elsewhere::files(&at, look, SFTP_WAIT_MS) {
+                        Ok(ssh::FileAnswer::One(e)) if e.size > PICTURE_LIMIT => {
+                            let mb = (PICTURE_LIMIT / (1024 * 1024)).to_string();
+                            failed("image", &panel, i18n::tp("err.files.too_big", &[("mb", &mb)]))
                         }
+                        // There and small enough, and still not read: read
+                        // alone, so what it says is why
+                        Ok(ssh::FileAnswer::One(e)) if !e.dir => match crate::elsewhere::files(&at, alone, SFTP_WAIT_MS) {
+                            Ok(ssh::FileAnswer::Bytes(bytes)) => {
+                                serde_json::from_str(&picture_reply(&panel, &path, kind, &bytes)).unwrap_or_default()
+                            }
+                            Ok(_) => failed("image", &panel, i18n::t("err.files.not_picture")),
+                            Err(e) => failed("image", &panel, format!("{e:#}")),
+                        },
                         Ok(_) => failed("image", &panel, i18n::t("err.files.not_picture")),
                         Err(e) => failed("image", &panel, format!("{e:#}")),
                     },
+                    Ok(_) => failed("image", &panel, i18n::t("err.files.far_odd")),
                     Err(e) => failed("image", &panel, format!("{e:#}")),
                 };
                 answer(js, String::new(), None);
@@ -19945,20 +20048,27 @@ pub fn session_mut<'a>(tabs: &'a mut [Tab], surfaces: &[Surface], active: usize)
 /// Trims the screen text sent to the phone.
 /// Trailing blank lines from the terminal would otherwise hide the content, so
 /// those are dropped from the end; line count is also capped to save bandwidth.
+///
+/// Read from the end: only the lines kept are looked at, however long the
+/// answer they end is
 pub fn trim_for_phone(s: &str, max_lines: usize) -> String {
-    let lines: Vec<&str> = s.lines().collect();
-    let end = lines
-        .iter()
-        .rposition(|l| !l.trim().is_empty())
-        .map(|i| i + 1)
-        .unwrap_or(0);
-    let start = end.saturating_sub(max_lines);
-    lines[start..end]
-        .iter()
-        .map(|l| l.trim_end())
-        .collect::<Vec<_>>()
-        .join("\n")
+    let mut kept: Vec<&str> = s
+        .lines()
+        .rev()
+        .skip_while(|l| l.trim().is_empty())
+        .take(max_lines)
+        .map(str::trim_end)
+        .collect();
+    kept.reverse();
+    kept.join("\n")
 }
+
+/// What a tab's screen as the phone has it is made from: how much the tab
+/// has printed, how far back it is scrolled, and its size
+type PhoneScreenMark = (u64, usize, (u16, u16));
+
+/// How long a tab's screen as the phone has it stands, unchanged as its mark is
+const PHONE_SCREEN_AGAIN: Duration = Duration::from_secs(1);
 /// Starts the remote UI according to config (None if disabled)
 /// Start the remote server WITHOUT making the caller wait for the bind (a
 /// lingering earlier instance can hold the port for up to a second, and the
@@ -22155,6 +22265,30 @@ const LABEL_TAG: &str = "folder_label:";
 /// next time. The AI is given ninety seconds, and asked twice at most
 const LABEL_GIVE_UP: Duration = Duration::from_secs(5 * 60);
 
+/// How many of a branch's commits a pull request's draft is written from
+const PR_COMMITS_MOST: usize = 200;
+
+/// The first `most` lines of `listed` (one commit each, newest first), and
+/// a line saying how many more there are when there are: `total` all told,
+/// when it is known
+fn commits_up_to(listed: &str, most: usize, total: Option<usize>) -> String {
+    let lines: Vec<&str> = listed.trim().lines().collect();
+    if lines.len() <= most {
+        return lines.join("\n");
+    }
+    let more = match total {
+        Some(t) if t > most => format!("- ... and {} more commits", t - most),
+        _ => "- ... and more commits".to_string(),
+    };
+    format!("{}\n{more}", lines[..most].join("\n"))
+}
+
+/// How many asks for automatic names -- a folder's, or its servers' -- are
+/// out at once. Each starts an AI's program of its own, a few hundred
+/// megabytes: a desk opened with twenty folders nobody had named started
+/// twenty in the same second. The rest stay due, and go as these come back
+const NAMING_AT_ONCE: usize = 2;
+
 /// The AI that writes a desk's automatic names -- its folders', and their
 /// servers' (`portinfo`): the desk's own answer, then the app's, then the
 /// assistant AI. Three steps rather than two because the app-wide one is where
@@ -24023,6 +24157,17 @@ mod survey_tests {
 
 #[cfg(test)]
 mod tests {
+    /// A branch with more commits than a draft is written from lists the
+    /// newest and says how many more; one with fewer lists them all
+    #[test]
+    fn a_draft_lists_the_newest_commits_and_how_many_more() {
+        let listed = "- c\n- b\n- a\n";
+        assert_eq!(super::commits_up_to(listed, 3, None), "- c\n- b\n- a");
+        assert_eq!(super::commits_up_to(listed, 2, Some(1500)), "- c\n- b\n- ... and 1498 more commits");
+        assert_eq!(super::commits_up_to(listed, 2, None), "- c\n- b\n- ... and more commits");
+        assert_eq!(super::commits_up_to("", 2, None), "");
+    }
+
     /// A machine with a tab open is asked about the bridge only while the
     /// settings have no answer about it, either way
     #[test]
@@ -26694,6 +26839,9 @@ mod tests {
         assert_eq!(out.lines().count(), 10);
         assert!(out.ends_with("line300"));
         assert_eq!(trim_for_phone("   \n\n", 200), "");
+        // Blank lines inside what is kept stay; only the trailing ones go
+        assert_eq!(trim_for_phone("a\n\nb  \n \n", 2), "\nb");
+        assert_eq!(trim_for_phone("a\r\nb\r\n", 200), "a\nb");
     }
 
     #[test]

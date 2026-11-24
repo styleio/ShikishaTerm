@@ -149,18 +149,53 @@ pub fn send_away(at: &crate::elsewhere::Elsewhere, from: &std::path::Path) -> an
         Some(i) if i > 0 => (&name[..i], &name[i..]),
         _ => (name.as_str(), ""),
     };
+    // What is there already, asked once: the twentieth copy of a name was
+    // twenty questions to the machine, one a name tried
+    let taken: std::collections::HashSet<String> = match crate::elsewhere::files(at, FileJob::List { path: dir.clone() }, 60_000) {
+        // Without case: on a machine whose disk does not tell `Report.pdf`
+        // from `report.pdf`, either is taken. Where it does, a name passed
+        // over is only a number more
+        Ok(crate::ssh::FileAnswer::Listing(rows)) => rows.into_iter().map(|r| r.name.to_lowercase()).collect(),
+        _ => Default::default(),
+    };
+    // A file of that name can still arrive in between, or be one the disk
+    // there takes for the same name (another case, another way of writing
+    // an accent): the send refuses to write over it before writing anything,
+    // in words of its own, and that name is passed over. Any other failure
+    // -- one part way through, which leaves what it wrote -- counts against
+    // the few tries
+    let mut tries = 0;
+    let mut last = None;
     for n in 0..1000 {
         let file = if n == 0 { name.clone() } else { format!("{stem} ({n}){ext}") };
-        let to = format!("{dir}/{file}");
-        if crate::elsewhere::files(at, FileJob::Stat { path: to.clone() }, 60_000).is_ok() {
+        if taken.contains(&file.to_lowercase()) {
             continue;
         }
-        crate::elsewhere::files(at, FileJob::Put { from: from.to_path_buf(), to: to.clone(), overwrite: false }, CROSS_MS)?;
-        let _ = std::fs::remove_file(from);
-        return Ok(to);
+        let to = format!("{dir}/{file}");
+        match crate::elsewhere::files(at, FileJob::Put { from: from.to_path_buf(), to: to.clone(), overwrite: false }, CROSS_MS) {
+            Ok(_) => {
+                let _ = std::fs::remove_file(from);
+                return Ok(to);
+            }
+            Err(e) => {
+                let refused = crate::i18n::tp("err.ssh.file_exists", &[("path", &to)]);
+                if format!("{e:#}").contains(&refused) {
+                    continue;
+                }
+                tries += 1;
+                last = Some(e);
+                if tries >= SEND_TRIES {
+                    break;
+                }
+            }
+        }
     }
-    anyhow::bail!(crate::i18n::t("msg.download.why.disk"))
+    Err(last.unwrap_or_else(|| anyhow::anyhow!(crate::i18n::t("msg.download.why.disk"))))
 }
+
+/// How many names a download is tried under on another machine before what
+/// the last try said is the answer
+const SEND_TRIES: usize = 3;
 
 /// Bring a file from another machine into `dir` on this one, under its own
 /// name (numbered if that is taken). Answers where it landed

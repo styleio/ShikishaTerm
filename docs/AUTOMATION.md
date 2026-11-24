@@ -1264,13 +1264,17 @@ can watch.
 | `shikisha.sftp_mkdir(tab, "public/img")` | Make a folder |
 | `shikisha.sftp_rename(tab, "a.txt", "b.txt")` | Rename or move |
 | `shikisha.sftp_rm(tab, "b.txt")` | Delete. **A file, or a folder with nothing in it** |
+| `shikisha.sftp_each(tab, jobs)` | Several of the commands above over one connection, in order. Each job is written as the command takes it -- `{ "put", "here", "there", overwrite = true }`, `{ "mkdir", "public/img" }`, `{ "ls", "public" }` -- and each answer says how it went, in its place: `{ ok = true, value = ... }` or `{ ok = false, error = why }`. One that fails does not stop the rest. Each is allowed or not under its own command's permission |
 
 `sftp_read` is what `shikisha.diff` is usually handed: read the copy over
 there, compare it with the one here, and a script can say what a send would
 change before anything is sent.
 
 **There is no "send the whole folder".** Write it as `sftp_ls_here` and
-`sftp_put` in a loop going out, `sftp_ls` and `sftp_get` coming back. The
+`sftp_put` in a loop going out, `sftp_ls` and `sftp_get` coming back --
+handed over a few dozen at a time with `sftp_each`, since every command alone
+is a connection opened and closed, and a thousand files one at a time is a
+thousand of them. The
 panel's own folder button is that loop, written as a template rather than built
 in -- deepest first, biggest first, skip what matches, stop on the first refusal
 are all arrangements somebody might want, and a command would be one of them. One command for it could only ever be the first arrangement somebody

@@ -61,6 +61,7 @@ pub const STEPS: &[(i64, &str, Step)] = &[
     (3, "threads", Step::Sql(include_str!("migrations/0003_threads.sql"))),
     (4, "tab_uids", Step::Sql(include_str!("migrations/0004_tab_uids.sql"))),
     (5, "conversation_folder", Step::Sql(include_str!("migrations/0005_conversation_folder.sql"))),
+    (6, "conversations_by_folder", Step::Sql(include_str!("migrations/0006_conversations_by_folder.sql"))),
 ];
 
 /// The uid a name stands for once no tab on its desk answers to it: worked
@@ -979,12 +980,13 @@ impl Store {
                 tabs.insert(who(&tab)?);
             }
         }
-        let mut st = self.conn.prepare("SELECT DISTINCT thread_id, tab FROM thread_tabs")?;
+        // The conversations of those tabs, each found by its tab rather than
+        // by reading who took part in every conversation there is
+        let mut st = self.conn.prepare_cached("SELECT thread_id FROM thread_tabs WHERE tab = ?1")?;
         let mut held = std::collections::HashSet::new();
-        for row in st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))? {
-            let (thread, tab) = row?;
-            if tabs.contains(&tab) {
-                held.insert(thread);
+        for tab in &tabs {
+            for thread in st.query_map(params![tab], |r| r.get::<_, i64>(0))? {
+                held.insert(thread?);
             }
         }
         self.threads_among(desk, None, Some(&held), want)
@@ -999,8 +1001,9 @@ impl Store {
         want: usize,
     ) -> Result<Vec<ThreadRow>> {
         let tab = tab.map(|t| self.uid_of(desk, t)).transpose()?;
-        // Read whole when picking among some: which ones is not something
-        // the database was told
+        // Not cut by the database when picking among some -- which ones is
+        // not something it was told -- but read newest first only until
+        // `want` of them are found, never the whole desk's
         let limit = if only.is_some() { -1 } else { want as i64 };
         let mut st = self.conn.prepare(
             "SELECT t.id, t.last_at FROM threads t WHERE t.desk = ?1 AND t.merged_into IS NULL \
@@ -1008,14 +1011,21 @@ impl Store {
              AND EXISTS (SELECT 1 FROM lines l WHERE l.thread_id = t.id) \
              ORDER BY t.last_at DESC, t.id DESC LIMIT ?2",
         )?;
-        let mut rows = st
-            .query_map(params![desk, limit, tab], |r| {
-                Ok(ThreadRow { id: r.get(0)?, last_at: r.get(1)?, tabs: Vec::new(), first: String::new() })
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        if let Some(only) = only {
-            rows.retain(|t| only.contains(&t.id));
-            rows.truncate(want);
+        let mut rows: Vec<ThreadRow> = Vec::new();
+        if want == 0 || only.is_some_and(|o| o.is_empty()) {
+            return Ok(rows);
+        }
+        for row in st.query_map(params![desk, limit, tab], |r| {
+            Ok(ThreadRow { id: r.get(0)?, last_at: r.get(1)?, tabs: Vec::new(), first: String::new() })
+        })? {
+            let row = row?;
+            if only.is_some_and(|o| !o.contains(&row.id)) {
+                continue;
+            }
+            rows.push(row);
+            if rows.len() >= want {
+                break;
+            }
         }
         let mut who = self.conn.prepare(
             "SELECT COALESCE(n.name, m.tab) FROM thread_tabs m LEFT JOIN tab_names n ON n.uid = m.tab \

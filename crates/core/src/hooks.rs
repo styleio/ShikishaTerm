@@ -594,6 +594,23 @@ fn git_place(
     Ok((root, place.protect.clone(), place.git.clone()))
 }
 
+/// The file job a script's file command names: `a` and `b` are the paths, in
+/// the order the command takes them
+fn file_job_of(act: &str, a: String, b: String, over: bool) -> anyhow::Result<crate::ssh::FileJob> {
+    use crate::ssh::FileJob;
+    Ok(match act {
+        "ls" => FileJob::List { path: a },
+        "stat" => FileJob::Stat { path: a },
+        "read" => FileJob::Read { path: a },
+        "mkdir" => FileJob::MakeDir { path: a },
+        "rm" => FileJob::Remove { path: a },
+        "rename" => FileJob::Rename { from: a, to: b },
+        "get" => FileJob::Get { from: a, to: b.into(), overwrite: over },
+        "put" => FileJob::Put { from: a.into(), to: b, overwrite: over },
+        other => anyhow::bail!(crate::i18n::tp("err.hooks.unknown_yield", &[("other", other)])),
+    })
+}
+
 /// One sentence out of what Lua said, for a screen rather than a log.
 ///
 /// The same trimming the git panel does to a primitive's error: the marks of
@@ -1620,6 +1637,17 @@ function shikisha.sftp_rm(tab, path) return file("rm", tab, path) end
 function shikisha.sftp_rename(tab, from, to) return file("rename", tab, from, to) end
 function shikisha.sftp_get(tab, from, to, opts) return file("get", tab, from, to, opts) end
 function shikisha.sftp_put(tab, from, to, opts) return file("put", tab, from, to, opts) end
+-- Several of the commands above at once, over one connection rather than one
+-- each. Each job is written the way the command alone takes it --
+-- { "put", from, to, overwrite = true }, { "mkdir", path }, { "ls", path } --
+-- and run in the order given; one that fails does not stop the rest. What
+-- comes back says how each went, in its place: { ok = true, value = ... } or
+-- { ok = false, error = why }
+function shikisha.sftp_each(tab, jobs)
+  local got, err = coroutine.yield({ op = "file", act = "each", tab = tab, jobs = jobs })
+  if err then error(err, 0) end
+  return got
+end
 -- Wait until the state changes (built from state + sleep, so it's implemented on the Lua side)
 function shikisha.wait_state(tab, want, timeout_ms)
   local left = timeout_ms or 60000
@@ -1882,7 +1910,6 @@ pub const PANEL_HOOK: &str = "panel";
 pub const FOLDER_MOVE_LUA: &str = r#"
 local at, out = job.tab, job.send
 local list = out and shikisha.sftp_ls_here or shikisha.sftp_ls
-local move = out and shikisha.sftp_put or shikisha.sftp_get
 local from = out and job.here or job.there
 local to = out and job.there or job.here
 
@@ -1892,57 +1919,131 @@ local function join(a, b)
   return a .. "/" .. b
 end
 
--- What was ticked, and everything under it. Folders are collected on the way
--- so that nothing has to hold the whole tree at once, and so a file never
--- lands before the folder it goes in exists
+-- Handed over a batch at a time, each batch over one connection: a folder of
+-- a thousand files sent a file to a connection was a thousand connections
+-- opened and closed. A batch is a few dozen files, or a few megabytes
+local JOBS_AT_ONCE, BYTES_AT_ONCE = 64, 8 * 1024 * 1024
+
+local function each(jobs)
+  local said = {}
+  for s = 1, #jobs, JOBS_AT_ONCE do
+    local some = {}
+    for i = s, math.min(s + JOBS_AT_ONCE - 1, #jobs) do some[#some + 1] = jobs[i] end
+    for k, a in ipairs(shikisha.sftp_each(at, some)) do said[s + k - 1] = a end
+  end
+  return said
+end
+
+-- The folders of one level, all listed together: over there, a batch to the
+-- connection; here, where nothing is waited for, one by one
+local function listed(rels)
+  local got = {}
+  if out then
+    for i, rel in ipairs(rels) do got[i] = list(at, join(from, rel)) end
+    return got
+  end
+  local jobs = {}
+  for i, rel in ipairs(rels) do jobs[i] = { "ls", join(from, rel) } end
+  for i, a in ipairs(each(jobs)) do
+    if not a.ok then error(a.error, 0) end
+    got[i] = a.value
+  end
+  return got
+end
+
+-- What was ticked, and everything under it, a level at a time. Folders are
+-- collected on the way so that a file never lands before the folder it goes
+-- in exists: a level's folders come before the next level's
 local want, files, dirs = {}, {}, {}
 for _, name in ipairs(job.names) do want[name] = true end
 
-local function walk(rel)
-  for _, e in ipairs(list(at, join(from, rel))) do
-    local path = join(rel, e.name)
-    if e.dir then
-      dirs[#dirs + 1] = path
-      walk(path)
-    else
-      files[#files + 1] = path
+-- A name ticked that is no longer there is said, not passed over: the rest
+-- would go and the send would say it finished
+local level, seen, top = {}, {}, list(at, from)
+for _, e in ipairs(top) do
+  seen[e.name] = true
+end
+for _, name in ipairs(job.names) do
+  if not seen[name] then
+    shikisha.set_progress(nil, name .. ": " .. shikisha.t("err.files.gone"), at)
+    return
+  end
+end
+-- Ticked as files, and one is a folder now: not walked into, since what is
+-- in a folder was never asked about
+if job.files_only then
+  for _, e in ipairs(top) do
+    if want[e.name] and e.dir then
+      shikisha.set_progress(nil, e.name .. ": " .. shikisha.t("err.files.became_folder"), at)
+      return
     end
   end
 end
-
-for _, e in ipairs(list(at, from)) do
+for _, e in ipairs(top) do
   if want[e.name] then
     if e.dir then
       dirs[#dirs + 1] = e.name
-      walk(e.name)
+      level[#level + 1] = e.name
     else
-      files[#files + 1] = e.name
+      files[#files + 1] = { path = e.name, size = e.size or 0 }
     end
   end
+end
+while #level > 0 do
+  local below = {}
+  for i, entries in ipairs(listed(level)) do
+    for _, e in ipairs(entries) do
+      local path = join(level[i], e.name)
+      if e.dir then
+        dirs[#dirs + 1] = path
+        below[#below + 1] = path
+      else
+        files[#files + 1] = { path = path, size = e.size or 0 }
+      end
+    end
+  end
+  level = below
 end
 
 -- The places, before the things that go in them. Only going out: a file
 -- brought back makes its own folders on the way in.
 --
 -- Making one that is already there is not a fault -- it is the ordinary case
--- the second time a folder is sent -- so the refusal is swallowed here rather
--- than asked about first, which would be a second round trip per folder
-if out then
-  for _, d in ipairs(dirs) do
-    pcall(shikisha.sftp_mkdir, at, join(to, d))
-  end
+-- the second time a folder is sent -- so the refusal is passed over here
+-- rather than asked about first, which would be a second question per folder
+if out and #dirs > 0 then
+  local jobs = {}
+  for i, d in ipairs(dirs) do jobs[i] = { "mkdir", join(to, d) } end
+  each(jobs)
 end
 
 -- `nil` as the amount means "nothing is running"; a word beside it then means
--- something went wrong, and no word means it finished
-local total = #files
-for i, f in ipairs(files) do
-  shikisha.set_progress(i / total, f, at)
-  local ok, why = pcall(move, at, join(from, f), join(to, f), { overwrite = job.overwrite })
+-- something went wrong, and no word means it finished. Stopped at the end of
+-- the batch the first refusal is in
+local act = out and "put" or "get"
+local total, done, i = #files, 0, 1
+while i <= total do
+  local some, bytes = {}, 0
+  while i <= total and #some < JOBS_AT_ONCE and (#some == 0 or bytes + files[i].size <= BYTES_AT_ONCE) do
+    local f = files[i]
+    some[#some + 1] = { act, join(from, f.path), join(to, f.path), overwrite = job.overwrite }
+    bytes = bytes + f.size
+    i = i + 1
+  end
+  shikisha.set_progress(done / total, files[done + 1].path, at)
+  local ok, said = pcall(shikisha.sftp_each, at, some)
   if not ok then
-    shikisha.set_progress(nil, tostring(why), at)
+    shikisha.set_progress(nil, tostring(said), at)
     return
   end
+  for k, a in ipairs(said) do
+    if not a.ok then
+      shikisha.set_progress(nil, files[done + k].path .. ": " .. tostring(a.error), at)
+      return
+    end
+  end
+  done = done + #some
+  shikisha.set_progress(done / total, files[done].path, at)
 end
 shikisha.set_progress(nil, "", at)
 "#;
@@ -6446,26 +6547,20 @@ return o"#,
                     });
                 }
                 let job = match act.as_str() {
-                    "ls" => crate::ssh::FileJob::List { path: a },
-                    "stat" => crate::ssh::FileJob::Stat { path: a },
-                    "read" => crate::ssh::FileJob::Read { path: a },
-                    "mkdir" => crate::ssh::FileJob::MakeDir { path: a },
-                    "rm" => crate::ssh::FileJob::Remove { path: a },
-                    "rename" => crate::ssh::FileJob::Rename { from: a, to: b },
-                    "get" => crate::ssh::FileJob::Get {
-                        from: a,
-                        to: b.into(),
-                        overwrite: over,
-                    },
-                    "put" => crate::ssh::FileJob::Put {
-                        from: a.into(),
-                        to: b,
-                        overwrite: over,
-                    },
-                    other => anyhow::bail!(crate::i18n::tp(
-                        "err.hooks.unknown_yield",
-                        &[("other", other)]
-                    )),
+                    // Several at once, over one session: each `{act, a, b,
+                    // overwrite = ...}` read the way one alone is
+                    "each" => {
+                        let list: Table = t.get("jobs").map_err(lerr)?;
+                        let mut jobs = Vec::new();
+                        for one in list.sequence_values::<Table>() {
+                            let one = one.map_err(lerr)?;
+                            let word = |k: i64| -> String { one.get::<Option<String>>(k).ok().flatten().unwrap_or_default() };
+                            let over = one.get::<Option<bool>>("overwrite").ok().flatten().unwrap_or(false);
+                            jobs.push(file_job_of(&word(1), word(2), word(3), over)?);
+                        }
+                        crate::ssh::FileJob::Each { jobs }
+                    }
+                    other => file_job_of(other, a, b, over)?,
                 };
                 // Which machine, how far it may reach, and whether whoever is
                 // running may ask -- all settled before a thread is started, so
@@ -6491,6 +6586,29 @@ return o"#,
             }
             other => anyhow::bail!(crate::i18n::tp("err.hooks.unknown_yield", &[("other", other)])),
         }
+    }
+
+    /// One answer of several sent together ([`crate::ssh::FileJob::Each`]):
+    /// `{ok = true, value = ...}`, or `{ok = false, error = why}`
+    fn each_answer(&self, said: Vec<Result<crate::ssh::FileAnswer, String>>) -> mlua::Result<Value> {
+        let out = self.lua.create_table()?;
+        for (i, one) in said.into_iter().enumerate() {
+            let row = self.lua.create_table()?;
+            match one {
+                Ok(answer) => {
+                    row.set("ok", true)?;
+                    // Read the way one alone is; nothing back is done
+                    let mut v = self.file_answer("each", Ok(answer)).into_iter();
+                    row.set("value", v.next().unwrap_or(Value::Boolean(true)))?;
+                }
+                Err(why) => {
+                    row.set("ok", false)?;
+                    row.set("error", plain_lua_error(&why))?;
+                }
+            }
+            out.set(i + 1, row)?;
+        }
+        Ok(Value::Table(out))
     }
 
     /// What a file command hands back, shaped to fit the command that asked.
@@ -6548,6 +6666,7 @@ return o"#,
                     }
                     Value::Table(out)
                 }
+                Ok(crate::ssh::FileAnswer::Each(said)) => self.each_answer(said)?,
                 // A listing asked for by `stat` that came back as nothing
                 Ok(crate::ssh::FileAnswer::Nothing) if act == "stat" => Value::Nil,
                 Ok(crate::ssh::FileAnswer::Nothing) => Value::Boolean(true),
@@ -9271,6 +9390,13 @@ mod live_sftp {
         std::fs::create_dir_all(here.join("dist/a/b")).unwrap();
         std::fs::write(here.join("dist/top.txt"), "top").unwrap();
         std::fs::write(here.join("dist/a/b/deep.txt"), "deep").unwrap();
+        // More than a batch of them, over two levels: they go a batch to a
+        // connection, and every one arrives
+        for i in 0..150 {
+            let sub = if i % 2 == 0 { "dist/many" } else { "dist/many/inner" };
+            std::fs::create_dir_all(here.join(sub)).unwrap();
+            std::fs::write(here.join(format!("{sub}/f{i}.txt")), format!("file {i}")).unwrap();
+        }
         let mut e = engine_at(&l, &here);
         let out = json!({
             "tab": "deploy", "send": true,
@@ -9289,10 +9415,36 @@ mod live_sftp {
             let got = e.call_primitive("sftp_read", &[json!("deploy"), json!(path)]).unwrap();
             assert_eq!(got, json!(holds), "{path} did not arrive as it left");
         }
+        for i in [0, 63, 64, 65, 127, 128, 149] {
+            let sub = if i % 2 == 0 { "dist/many" } else { "dist/many/inner" };
+            let path = format!("{sub}/f{i}.txt");
+            let got = e.call_primitive("sftp_read", &[json!("deploy"), json!(path)]).unwrap();
+            assert_eq!(got, json!(format!("file {i}")), "{path} did not arrive as it left");
+        }
 
         // The same folder a second time. Its folders are already there, which is
         // the ordinary case rather than a fault
         finished(&run_template(&mut e, out)).expect("sending the same folder again");
+
+        // A name ticked that is gone by the time it is sent is said, not
+        // passed over while the rest go
+        let gone = run_template(&mut e, json!({
+            "tab": "deploy", "send": true,
+            "here": slashed(&here), "there": site(&l),
+            "names": ["dist", "no-such-thing.txt"], "overwrite": true,
+        }));
+        let why = finished(&gone).expect_err("a missing name was passed over");
+        assert!(why.contains("no-such-thing.txt"), "{why}");
+
+        // Ticked as files, and one is a folder by the time it is sent: not
+        // walked into without the question a folder gets
+        let became = run_template(&mut e, json!({
+            "tab": "deploy", "send": true,
+            "here": slashed(&here), "there": site(&l),
+            "names": ["dist"], "overwrite": true, "files_only": true,
+        }));
+        let why = finished(&became).expect_err("a folder ticked as a file was walked into");
+        assert!(why.starts_with("dist: "), "{why}");
 
         // Back: a folder from the server, landing in folders made on the way in
         let said = run_template(&mut e, json!({
